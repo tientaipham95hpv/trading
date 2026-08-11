@@ -47,3 +47,4 @@ class Settings(BaseSettings):
     maker_fee_rate: float = 0.0002
     slippage_bps: float = 2.0
     funding_rate_per_8h: float = 0.0001
+    runtime_config_path: str = "runtime-config.json"

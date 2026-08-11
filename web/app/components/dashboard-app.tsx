@@ -7,8 +7,10 @@ import {
   FileText,
   Gauge,
   ListFilter,
+  LockKeyhole,
   Pause,
   Play,
+  Radio,
   Search,
   Settings,
   ShieldAlert,
@@ -18,6 +20,7 @@ import {
   TrendingUp,
   WalletCards,
   XCircle,
+  Zap,
 } from "lucide-react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
@@ -147,12 +150,12 @@ export function DashboardApp({ page }: { page: PageKey }) {
   const currentPage = nav.find((item) => item.key === page) ?? nav[0];
 
   return (
-    <main className="grid min-h-screen grid-cols-1 bg-slate-100 text-slate-900 lg:grid-cols-[248px_1fr]">
-      <aside className="border-r border-slate-200 bg-slate-950 text-white">
+    <main className="grid min-h-screen grid-cols-1 bg-[#f3f5f2] text-slate-900 lg:grid-cols-[264px_1fr]">
+      <aside className="border-r border-slate-200 bg-[#101820] text-white">
         <div className="flex items-center justify-between border-b border-white/10 px-5 py-5 lg:block">
           <div>
-            <p className="text-xs font-bold uppercase text-teal-300">Binance USD-M</p>
-            <h1 className="mt-1 text-xl font-bold">Điều khiển giao dịch</h1>
+            <p className="text-xs font-bold uppercase text-cyan-300">USD-M Futures</p>
+            <h1 className="mt-1 text-xl font-bold">Trading Cockpit</h1>
           </div>
           <StatusBadge value={wsState} />
         </div>
@@ -163,7 +166,7 @@ export function DashboardApp({ page }: { page: PageKey }) {
             return (
               <Link
                 className={`flex min-h-10 items-center gap-3 rounded-md px-3 text-sm font-semibold ${
-                  active ? "bg-teal-600 text-white" : "text-slate-300 hover:bg-white/10 hover:text-white"
+                  active ? "bg-cyan-500 text-slate-950" : "text-slate-300 hover:bg-white/10 hover:text-white"
                 }`}
                 href={item.href}
                 key={item.key}
@@ -179,7 +182,7 @@ export function DashboardApp({ page }: { page: PageKey }) {
       <section className="min-w-0">
         <header className="flex flex-col gap-4 border-b border-slate-200 bg-white px-5 py-4 xl:flex-row xl:items-center xl:justify-between">
           <div>
-            <p className="text-xs font-bold uppercase text-slate-500">Chế độ PAPER</p>
+            <p className="text-xs font-bold uppercase text-slate-500">Control Surface</p>
             <h2 className="text-2xl font-bold">{currentPage.label}</h2>
           </div>
           <div className="flex flex-wrap items-center gap-2">
@@ -199,14 +202,14 @@ export function DashboardApp({ page }: { page: PageKey }) {
 
         <div className="p-5">
           {error && <div className="mb-4 rounded-md border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">{error}</div>}
-          {page === "dashboard" && <Dashboard exchange={exchange ?? status?.exchange ?? null} performance={performance} positions={positions} status={status} />}
+          {page === "dashboard" && <Dashboard exchange={exchange ?? status?.exchange ?? null} onDone={refresh} performance={performance} positions={positions} status={status} />}
           {page === "markets" && <Markets markets={markets} />}
           {page === "scanner" && <Scanner scanner={scanner} />}
           {page === "positions" && <Positions markets={markets} positions={positions} />}
           {page === "trades" && <Trades trades={trades} />}
           {page === "strategies" && <Strategies scanner={scanner} />}
           {page === "analytics" && <Analytics performance={performance} trades={trades} />}
-          {page === "risk" && <Risk status={status} />}
+          {page === "risk" && <Risk onDone={refresh} status={status} />}
           {page === "logs" && <Logs logs={logs} />}
           {page === "settings" && settings && <SettingsPage onSaved={refresh} settings={settings} />}
         </div>
@@ -215,10 +218,11 @@ export function DashboardApp({ page }: { page: PageKey }) {
   );
 }
 
-function Dashboard({ exchange, performance, positions, status }: { exchange: ExchangeSnapshot | null; performance: Performance | null; positions: Position[]; status: StatusPayload | null }) {
+function Dashboard({ exchange, onDone, performance, positions, status }: { exchange: ExchangeSnapshot | null; onDone: () => Promise<void>; performance: Performance | null; positions: Position[]; status: StatusPayload | null }) {
   const equitySeries = useMemo(() => buildEquitySeries(performance), [performance]);
   return (
     <div className="grid gap-4">
+      <CommandCenter exchange={exchange} onDone={onDone} status={status} />
       <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
         <Metric label="Vốn hiện tại" value={money(performance?.equity)} />
         <Metric label="PNL hôm nay" value={money(performance?.realized_pnl)} tone={(performance?.realized_pnl ?? 0) >= 0 ? "good" : "bad"} />
@@ -247,13 +251,46 @@ function Dashboard({ exchange, performance, positions, status }: { exchange: Exc
         <ExchangeOrders orders={exchange?.orders ?? []} />
         <ExchangePositions positions={exchange?.positions ?? []} />
       </div>
-      <LiveReadinessPanel status={status} />
+      <LiveReadinessPanel onDone={onDone} status={status} />
     </div>
   );
 }
 
-function LiveReadinessPanel({ status }: { status: StatusPayload | null }) {
+function CommandCenter({ exchange, onDone, status }: { exchange: ExchangeSnapshot | null; onDone: () => Promise<void>; status: StatusPayload | null }) {
+  return (
+    <section className="grid gap-4 rounded-lg border border-slate-200 bg-white p-4 xl:grid-cols-[1.2fr_1fr]">
+      <div className="grid gap-3 sm:grid-cols-3">
+        <ModeCard label="Trading mode" value={status?.mode ?? "PAPER"} tone={status?.mode === "LIVE" ? "danger" : status?.mode === "DEMO" ? "warning" : "safe"} />
+        <ModeCard label="Exchange" value={viExchangeConnection(exchange?.connection)} tone={exchange?.connection === "CONNECTED" ? "safe" : "danger"} />
+        <ModeCard label="LIVE gate" value={status?.live_readiness.allowed ? "READY" : "LOCKED"} tone={status?.live_readiness.allowed ? "warning" : "safe"} />
+      </div>
+      <div className="flex flex-wrap items-center justify-start gap-2 xl:justify-end">
+        <ModeSelector current={status?.mode ?? "PAPER"} liveAllowed={status?.live_readiness.allowed ?? false} onDone={onDone} />
+        <BotControls onDone={onDone} />
+      </div>
+    </section>
+  );
+}
+
+function ModeCard({ label, tone, value }: { label: string; value: string; tone: "safe" | "warning" | "danger" }) {
+  const iconColor = tone === "safe" ? "text-emerald-700" : tone === "warning" ? "text-amber-700" : "text-red-700";
+  return (
+    <div className="rounded-md border border-slate-200 bg-slate-50 p-4">
+      <div className={`mb-3 flex h-9 w-9 items-center justify-center rounded-md bg-white ${iconColor}`}>
+        {tone === "danger" ? <ShieldAlert size={18} /> : tone === "warning" ? <Radio size={18} /> : <LockKeyhole size={18} />}
+      </div>
+      <p className="text-xs font-bold uppercase text-slate-500">{label}</p>
+      <strong className="mt-1 block text-2xl">{value}</strong>
+    </div>
+  );
+}
+
+function LiveReadinessPanel({ onDone, status }: { onDone: () => Promise<void>; status: StatusPayload | null }) {
   const readiness = status?.live_readiness;
+  async function toggleLive(enabled: boolean) {
+    await api.liveConfig({ live_enabled: enabled });
+    await onDone();
+  }
   const checks = readiness
     ? [
         ["All tests", readiness.all_tests_pass],
@@ -266,6 +303,18 @@ function LiveReadinessPanel({ status }: { status: StatusPayload | null }) {
     : [];
   return (
     <DataPanel title="LIVE readiness">
+      <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
+        <Pill label="Runtime LIVE" value={readiness?.live_enabled ? "ON" : "OFF"} tone={readiness?.live_enabled ? "danger" : "safe"} />
+        <button
+          className="inline-flex items-center gap-2 rounded-md border border-slate-300 bg-white px-3 py-2 text-sm font-bold text-slate-800 hover:bg-slate-50 disabled:opacity-50"
+          disabled={readiness?.allowed !== true && readiness?.live_enabled !== true}
+          onClick={() => void toggleLive(!(readiness?.live_enabled ?? false))}
+          type="button"
+        >
+          <Zap size={16} />
+          {readiness?.live_enabled ? "Tắt LIVE gate" : "Bật LIVE gate"}
+        </button>
+      </div>
       <div className="grid gap-3 md:grid-cols-3">
         {checks.map(([label, ok]) => (
           <Pill key={String(label)} label={String(label)} value={ok ? "PASS" : "BLOCK"} tone={ok ? "safe" : "danger"} />
@@ -473,20 +522,45 @@ function Analytics({ performance, trades }: { performance: Performance | null; t
   );
 }
 
-function Risk({ status }: { status: StatusPayload | null }) {
+function Risk({ onDone, status }: { onDone: () => Promise<void>; status: StatusPayload | null }) {
   const risk = status?.risk;
+  const readiness = status?.live_readiness;
+  async function setCheck(key: keyof StatusPayload["live_readiness"], value: boolean) {
+    await api.liveConfig({ [key]: value });
+    await onDone();
+  }
   return (
-    <div className="grid gap-4 md:grid-cols-3">
-      <Metric label="Rủi ro mỗi lệnh" value={percent((risk?.risk_per_trade ?? 0) * 100)} />
-      <Metric label="Rủi ro tối đa mỗi lệnh" value={percent((risk?.max_risk_per_trade ?? 0) * 100)} />
-      <Metric label="Lỗ tối đa mỗi ngày" value={percent((risk?.max_daily_loss ?? 0) * 100)} />
-      <Metric label="Weekly DD" value={percent((risk?.max_weekly_drawdown ?? 0) * 100)} />
-      <Metric label="Vị thế tối đa" value={String(risk?.max_open_positions ?? "-")} />
-      <Metric label="Đòn bẩy tối đa" value={`${risk?.max_leverage ?? "-"}x`} />
-      <Metric label="Exposure tối đa" value={percent((risk?.max_portfolio_exposure ?? 0) * 100)} />
-      <Metric label="Correlation tối đa" value={String(risk?.max_correlated_positions ?? "-")} />
-      <Metric label="Loss streak" value={String(risk?.max_loss_streak ?? "-")} />
-      <Metric label="RR tối thiểu" value={number(risk?.minimum_risk_reward)} />
+    <div className="grid gap-4">
+      <div className="grid gap-4 md:grid-cols-3">
+        <Metric label="Rủi ro mỗi lệnh" value={percent((risk?.risk_per_trade ?? 0) * 100)} />
+        <Metric label="Rủi ro tối đa mỗi lệnh" value={percent((risk?.max_risk_per_trade ?? 0) * 100)} />
+        <Metric label="Lỗ tối đa mỗi ngày" value={percent((risk?.max_daily_loss ?? 0) * 100)} />
+        <Metric label="Weekly DD" value={percent((risk?.max_weekly_drawdown ?? 0) * 100)} />
+        <Metric label="Vị thế tối đa" value={String(risk?.max_open_positions ?? "-")} />
+        <Metric label="Đòn bẩy tối đa" value={`${risk?.max_leverage ?? "-"}x`} />
+        <Metric label="Exposure tối đa" value={percent((risk?.max_portfolio_exposure ?? 0) * 100)} />
+        <Metric label="Correlation tối đa" value={String(risk?.max_correlated_positions ?? "-")} />
+        <Metric label="Loss streak" value={String(risk?.max_loss_streak ?? "-")} />
+        <Metric label="RR tối thiểu" value={number(risk?.minimum_risk_reward)} />
+      </div>
+      <DataPanel title="LIVE preflight">
+        <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+          {([
+            ["all_tests_pass", "All tests pass"],
+            ["demo_stable", "Demo stable"],
+            ["sl_protection_pass", "SL protection"],
+            ["reconnect_pass", "Reconnect"],
+            ["reconciliation_pass", "Reconciliation"],
+            ["duplicate_order_tests_pass", "Duplicate order"],
+          ] as const).map(([key, label]) => (
+            <label className="flex items-center justify-between gap-3 rounded-md border border-slate-200 bg-slate-50 px-3 py-3 text-sm font-bold" key={key}>
+              <span>{label}</span>
+              <input checked={Boolean(readiness?.[key])} onChange={(event) => void setCheck(key, event.target.checked)} type="checkbox" />
+            </label>
+          ))}
+        </div>
+        {readiness?.blockers.length ? <p className="mt-3 text-sm font-semibold text-red-700">{readiness.blockers.join(" / ")}</p> : null}
+      </DataPanel>
     </div>
   );
 }

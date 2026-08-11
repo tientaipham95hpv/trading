@@ -7,6 +7,7 @@ from fastapi import APIRouter, HTTPException, Query, WebSocket, WebSocketDisconn
 from app.domain.models import (
     BotSettings,
     BotState,
+    LiveConfigUpdate,
     LiveReadiness,
     NotificationEvent,
     OrderPlan,
@@ -25,7 +26,7 @@ router = APIRouter(prefix="/api")
 async def status() -> dict[str, object]:
     return {
         "mode": state.trading_mode,
-        "live_enabled": state.settings.live_trading_enabled,
+        "live_enabled": state.live_trading_enabled,
         "bot_state": state.bot_state,
         "emergency_stop": state.emergency_stop.active,
         "safe_mode": state.safe_mode,
@@ -261,13 +262,14 @@ async def bot_stop() -> dict[str, object]:
 async def set_mode(mode: TradingMode) -> dict[str, object]:
     if mode == TradingMode.DEMO and state.safe_mode:
         return {"accepted": False, "reason": state.safe_mode_reason}
-    if mode == TradingMode.LIVE and not state.settings.live_trading_enabled:
+    if mode == TradingMode.LIVE and not state.live_trading_enabled:
         return {"accepted": False, "reason": "Chế độ LIVE đang bị tắt trong cấu hình"}
     if mode == TradingMode.LIVE:
         readiness = _live_readiness()
         if not readiness.allowed:
             return {"accepted": False, "reason": "; ".join(readiness.blockers)}
     state.trading_mode = mode
+    state.save_runtime_config()
     await state.storage.log("Đổi trading mode", {"mode": mode.value})
     return {"accepted": True, "mode": mode.value}
 
@@ -331,6 +333,22 @@ async def exchange_user_stream() -> dict[str, object]:
 @router.get("/live/readiness")
 async def live_readiness() -> dict[str, object]:
     return _live_readiness().model_dump(mode="json")
+
+
+@router.put("/live/config")
+async def update_live_config(update: LiveConfigUpdate) -> dict[str, object]:
+    if update.live_enabled is not None:
+        state.live_trading_enabled = update.live_enabled
+    for key in state.live_preflight:
+        value = getattr(update, key)
+        if value is not None:
+            state.live_preflight[key] = value
+    readiness = _live_readiness()
+    if not readiness.allowed and state.trading_mode == TradingMode.LIVE:
+        state.trading_mode = TradingMode.PAPER
+    state.save_runtime_config()
+    await state.storage.log("Cập nhật LIVE runtime config", readiness.model_dump(mode="json"), level="WARNING")
+    return readiness.model_dump(mode="json")
 
 
 @router.post("/controls/pause-new-trades")
@@ -533,20 +551,13 @@ def _loss_streak() -> int:
 
 def _live_readiness() -> LiveReadiness:
     blockers: list[str] = []
-    checks = {
-        "all_tests_pass": state.settings.live_preflight_all_tests_pass,
-        "demo_stable": state.settings.live_preflight_demo_stable,
-        "sl_protection_pass": state.settings.live_preflight_sl_protection_pass,
-        "reconnect_pass": state.settings.live_preflight_reconnect_pass,
-        "reconciliation_pass": state.settings.live_preflight_reconciliation_pass,
-        "duplicate_order_tests_pass": state.settings.live_preflight_duplicate_order_tests_pass,
-    }
-    if not state.settings.live_trading_enabled:
+    checks = dict(state.live_preflight)
+    if not state.live_trading_enabled:
         blockers.append("LIVE mặc định OFF, cần bật thủ công bằng cấu hình")
     for key, value in checks.items():
         if not value:
             blockers.append(key)
     if state.safe_mode:
         blockers.append(state.safe_mode_reason or "SAFE_MODE")
-    allowed = state.settings.live_trading_enabled and not blockers
-    return LiveReadiness(live_enabled=state.settings.live_trading_enabled, allowed=allowed, blockers=blockers, **checks)
+    allowed = state.live_trading_enabled and not blockers
+    return LiveReadiness(live_enabled=state.live_trading_enabled, allowed=allowed, blockers=blockers, **checks)

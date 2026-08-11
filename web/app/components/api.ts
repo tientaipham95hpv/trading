@@ -49,6 +49,8 @@ export const api = {
     request<{ accepted: boolean; reason?: string }>(`/api/controls/${action}`, { method: "POST" }),
   emergencyStop: () =>
     request<{ active: boolean; reason: string | null }>("/api/emergency-stop", { method: "POST" }),
+  liveConfig: (update: Partial<StatusPayload["live_readiness"]>) =>
+    request<StatusPayload["live_readiness"]>("/api/live/config", { method: "PUT", body: JSON.stringify(update) }),
 };
 
 export function wsUrl(channel: string): string {

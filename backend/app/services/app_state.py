@@ -1,3 +1,6 @@
+import json
+from pathlib import Path
+
 from app.core.settings import Settings
 from app.domain.models import BotSettings, BotState, EmergencyStopState, TradingMode
 from app.services.ai_evaluator import AiEvaluator
@@ -45,6 +48,17 @@ class AppState:
         self.settings = settings
         self.bot_settings = bot_settings
         self.trading_mode = TradingMode(settings.trading_mode)
+        self.live_trading_enabled = settings.live_trading_enabled
+        self.live_preflight = {
+            "all_tests_pass": settings.live_preflight_all_tests_pass,
+            "demo_stable": settings.live_preflight_demo_stable,
+            "sl_protection_pass": settings.live_preflight_sl_protection_pass,
+            "reconnect_pass": settings.live_preflight_reconnect_pass,
+            "reconciliation_pass": settings.live_preflight_reconciliation_pass,
+            "duplicate_order_tests_pass": settings.live_preflight_duplicate_order_tests_pass,
+        }
+        self.runtime_config_path = (Path(__file__).resolve().parents[3] / settings.runtime_config_path).resolve()
+        self._load_runtime_config()
         self.bot_state = BotState.STOPPED
         self.emergency_stop = EmergencyStopState(active=False, reason=None)
         self.market_client = BinanceMarketDataClient(settings.binance_base_url)
@@ -97,6 +111,32 @@ class AppState:
         self.bot_state = BotState.SAFE_MODE
         self.demo_exchange.snapshot_cache.safe_mode = True
         self.demo_exchange.snapshot_cache.safe_mode_reason = reason
+
+    def save_runtime_config(self) -> None:
+        payload = {
+            "trading_mode": self.trading_mode.value,
+            "live_trading_enabled": self.live_trading_enabled,
+            "live_preflight": self.live_preflight,
+        }
+        self.runtime_config_path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
+
+    def _load_runtime_config(self) -> None:
+        if not self.runtime_config_path.exists():
+            return
+        try:
+            payload = json.loads(self.runtime_config_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return
+        mode = payload.get("trading_mode")
+        if mode in {item.value for item in TradingMode}:
+            self.trading_mode = TradingMode(mode)
+        if isinstance(payload.get("live_trading_enabled"), bool):
+            self.live_trading_enabled = payload["live_trading_enabled"]
+        preflight = payload.get("live_preflight")
+        if isinstance(preflight, dict):
+            for key in self.live_preflight:
+                if isinstance(preflight.get(key), bool):
+                    self.live_preflight[key] = preflight[key]
 
 
 state = AppState(Settings())

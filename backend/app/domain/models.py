@@ -407,6 +407,16 @@ class LiveReadiness(BaseModel):
     blockers: list[str] = Field(default_factory=list)
 
 
+class LiveConfigUpdate(BaseModel):
+    live_enabled: bool | None = None
+    all_tests_pass: bool | None = None
+    demo_stable: bool | None = None
+    sl_protection_pass: bool | None = None
+    reconnect_pass: bool | None = None
+    reconciliation_pass: bool | None = None
+    duplicate_order_tests_pass: bool | None = None
+
+
 class BacktestMetrics(BaseModel):
     pnl: float = 0.0
     profit_factor: float = 0.0

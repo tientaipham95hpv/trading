@@ -157,6 +157,15 @@ public final class TradingViewModel: ObservableObject {
         }
     }
 
+    public func updateLiveConfig(_ update: LiveConfigUpdate) async {
+        do {
+            _ = try await api.updateLiveConfig(update)
+            await refreshAll()
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+
     private func setRealtime(_ state: KetNoiRealtime) {
         realtimeState = state
         if state == .live {

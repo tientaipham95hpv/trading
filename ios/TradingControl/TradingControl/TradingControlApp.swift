@@ -53,6 +53,9 @@ private struct HomeView: View {
     var body: some View {
         NavigationStack {
             ScrollView {
+                ModeControlPanel(model: model)
+                    .padding([.horizontal, .top])
+
                 LazyVGrid(columns: [GridItem(.adaptive(minimum: 156), spacing: 12)], spacing: 12) {
                     MetricTile(title: "Trạng thái bot", value: viBotState(model.status?.botState), tint: .blue)
                     MetricTile(title: "Chế độ", value: model.status?.mode ?? "PAPER", tint: .green)
@@ -100,6 +103,58 @@ private struct HomeView: View {
             .navigationTitle("Trang chủ")
             .toolbar { RefreshToolbarItem(model: model) }
         }
+    }
+}
+
+private struct ModeControlPanel: View {
+    @ObservedObject var model: TradingViewModel
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack {
+                Label("Trading Cockpit", systemImage: "bolt.shield")
+                    .font(.headline)
+                Spacer()
+                Text(model.status?.liveReadiness.allowed == true ? "LIVE READY" : "LIVE LOCKED")
+                    .font(.caption.bold())
+                    .foregroundStyle(model.status?.liveReadiness.allowed == true ? .orange : .green)
+            }
+            Picker("Chế độ", selection: Binding(
+                get: { model.status?.mode ?? "PAPER" },
+                set: { mode in Task { await model.setMode(mode) } }
+            )) {
+                Text("PAPER").tag("PAPER")
+                Text("DEMO").tag("DEMO")
+                Text("LIVE").tag("LIVE")
+            }
+            .pickerStyle(.segmented)
+            HStack {
+                Button {
+                    Task { await model.controlBot(.start) }
+                } label: {
+                    Label("Chạy", systemImage: "play.fill")
+                }
+                .buttonStyle(.borderedProminent)
+                .tint(.green)
+
+                Button {
+                    Task { await model.controlBot(.pause) }
+                } label: {
+                    Label("Pause", systemImage: "pause.fill")
+                }
+                .buttonStyle(.bordered)
+
+                Button(role: .destructive) {
+                    Task { await model.emergencyStop() }
+                } label: {
+                    Label("Emergency", systemImage: "hand.raised.fill")
+                }
+                .buttonStyle(.bordered)
+            }
+            .font(.subheadline.bold())
+        }
+        .padding()
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 8))
     }
 }
 
@@ -364,6 +419,10 @@ private struct MoreView: View {
                     }
                 }
                 Section("LIVE readiness") {
+                    Toggle("Runtime LIVE gate", isOn: Binding(
+                        get: { model.status?.liveReadiness.liveEnabled == true },
+                        set: { value in Task { await model.updateLiveConfig(LiveConfigUpdate(liveEnabled: value)) } }
+                    ))
                     InfoRow(label: "All tests", value: model.status?.liveReadiness.allTestsPass == true ? "PASS" : "BLOCK")
                     InfoRow(label: "Demo stable", value: model.status?.liveReadiness.demoStable == true ? "PASS" : "BLOCK")
                     InfoRow(label: "SL protection", value: model.status?.liveReadiness.slProtectionPass == true ? "PASS" : "BLOCK")

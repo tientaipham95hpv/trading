@@ -81,6 +81,11 @@ public actor TradingAPI {
         try await post("/api/emergency-stop")
     }
 
+    @discardableResult
+    public func updateLiveConfig(_ update: LiveConfigUpdate) async throws -> LiveReadiness {
+        try await send("/api/live/config", method: "PUT", body: update)
+    }
+
     public func websocketURL(channel: String) -> URL {
         var components = URLComponents(url: baseURL, resolvingAgainstBaseURL: false)!
         components.path = "/api/ws/\(channel)"
@@ -173,6 +178,26 @@ public struct ControlResponse: Codable {
 public struct EmergencyStopResponse: Codable {
     public let active: Bool
     public let reason: String?
+}
+
+public struct LiveConfigUpdate: Codable {
+    public var liveEnabled: Bool? = nil
+    public var allTestsPass: Bool? = nil
+    public var demoStable: Bool? = nil
+    public var slProtectionPass: Bool? = nil
+    public var reconnectPass: Bool? = nil
+    public var reconciliationPass: Bool? = nil
+    public var duplicateOrderTestsPass: Bool? = nil
+
+    enum CodingKeys: String, CodingKey {
+        case liveEnabled = "live_enabled"
+        case allTestsPass = "all_tests_pass"
+        case demoStable = "demo_stable"
+        case slProtectionPass = "sl_protection_pass"
+        case reconnectPass = "reconnect_pass"
+        case reconciliationPass = "reconciliation_pass"
+        case duplicateOrderTestsPass = "duplicate_order_tests_pass"
+    }
 }
 
 public struct ModeResponse: Codable {
