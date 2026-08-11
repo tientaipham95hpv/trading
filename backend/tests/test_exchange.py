@@ -28,19 +28,26 @@ class FakeBinanceAdapter(BinanceFuturesAdapter):
 
     async def _signed(self, method: str, path: str, params: dict[str, Any]) -> Any:
         self.calls.append((method, path, params))
-        if path == "/fapi/v1/order" and method == "POST":
+        if path in {"/fapi/v1/order", "/fapi/v1/algoOrder"} and method == "POST":
             return {
                 "symbol": params["symbol"],
                 "orderId": len(self.calls),
+                "algoId": len(self.calls),
                 "clientOrderId": params.get("newClientOrderId", ""),
+                "clientAlgoId": params.get("clientAlgoId", ""),
                 "side": params.get("side", ""),
                 "type": params.get("type", ""),
+                "orderType": params.get("type", ""),
                 "status": "NEW",
+                "algoStatus": "NEW",
                 "price": params.get("price", 0),
                 "origQty": params.get("quantity", 0),
+                "quantity": params.get("quantity", 0),
                 "executedQty": "0",
+                "actualQty": "0",
                 "reduceOnly": params.get("reduceOnly") == "true",
-                "stopPrice": params.get("stopPrice", 0),
+                "stopPrice": params.get("stopPrice", params.get("triggerPrice", 0)),
+                "triggerPrice": params.get("triggerPrice", 0),
             }
         if path == "/fapi/v1/order" and method == "GET":
             return {
@@ -59,20 +66,22 @@ class FakeBinanceAdapter(BinanceFuturesAdapter):
         if path == "/fapi/v2/positionRisk":
             return []
         if path == "/fapi/v1/openOrders":
+            return []
+        if path == "/fapi/v1/openAlgoOrders":
             if not self.sl_exists:
                 return []
             return [
                 {
                     "symbol": params.get("symbol", "BTCUSDT"),
-                    "orderId": 99,
-                    "clientOrderId": "demo-BTCUSDT-1-sl-0",
+                    "algoId": 99,
+                    "clientAlgoId": "demo-BTCUSDT-1-sl-0",
                     "side": "SELL",
-                    "type": "STOP_MARKET",
-                    "status": "NEW",
-                    "origQty": "0",
-                    "executedQty": "0",
+                    "orderType": "STOP_MARKET",
+                    "algoStatus": "NEW",
+                    "quantity": "0",
+                    "actualQty": "0",
                     "reduceOnly": False,
-                    "stopPrice": "95",
+                    "triggerPrice": "95",
                 }
             ]
         return {}
@@ -84,10 +93,15 @@ async def test_binance_demo_places_entry_sl_and_reduce_only_take_profits():
     result = await adapter.submit_order_plan(plan())
 
     assert result.accepted is True
-    order_types = [params.get("type") for _, path, params in adapter.calls if path == "/fapi/v1/order"]
+    order_types = [
+        params.get("type")
+        for _, path, params in adapter.calls
+        if path in {"/fapi/v1/order", "/fapi/v1/algoOrder"}
+    ]
     assert "MARKET" in order_types
     assert "STOP_MARKET" in order_types
     assert "TAKE_PROFIT_MARKET" in order_types
+    assert any(path == "/fapi/v1/algoOrder" for _, path, _ in adapter.calls)
     assert any(params.get("reduceOnly") == "true" for _, _, params in adapter.calls)
 
 
@@ -100,9 +114,15 @@ async def test_sl_failure_closes_position_and_returns_critical_alert():
     assert result.accepted is False
     assert result.critical_alert is not None
     assert any(
-        params.get("newClientOrderId") == "demo-BTCUSDT-1-critical-close"
+        params.get("newClientOrderId") == "demo-BTCUSDT-1-close"
         for _, path, params in adapter.calls
         if path == "/fapi/v1/order"
+    )
+    assert all(
+        len(str(params.get("newClientOrderId") or params.get("clientAlgoId") or "")) <= 36
+        for _, path, params in adapter.calls
+        if path in {"/fapi/v1/order", "/fapi/v1/algoOrder"}
+        and (params.get("newClientOrderId") or params.get("clientAlgoId"))
     )
 
 

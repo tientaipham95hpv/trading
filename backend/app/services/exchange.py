@@ -184,6 +184,7 @@ class BinanceFuturesAdapter(ExchangeAdapter):
         canceled: list[ExchangeOrder] = []
         for item in symbols:
             payload = await self._signed("DELETE", "/fapi/v1/allOpenOrders", {"symbol": item})
+            algo_payload = await self._signed("DELETE", "/fapi/v1/algoOpenOrders", {"symbol": item})
             canceled.append(
                 ExchangeOrder(
                     symbol=item,
@@ -191,7 +192,7 @@ class BinanceFuturesAdapter(ExchangeAdapter):
                     client_order_id=f"cancel-all-{item}",
                     side="",
                     order_type="CANCEL_ALL",
-                    status=str(payload.get("msg", "OK")),
+                    status=f"{payload.get('msg', 'OK')}; {algo_payload.get('msg', 'OK')}",
                 )
             )
         return canceled
@@ -200,7 +201,9 @@ class BinanceFuturesAdapter(ExchangeAdapter):
         orders: list[ExchangeOrder] = []
         for position in await self.positions():
             plan = OrderPlan(
-                client_order_id=f"{self.mode.value.lower()}-{position.symbol}-close-all-{int(time.time() * 1000)}",
+                client_order_id=_client_order_id(
+                    self.mode.value.lower(), position.symbol, "close", int(time.time() * 1000)
+                ),
                 symbol=position.symbol,
                 side=Side.LONG if position.side == "LONG" else Side.SHORT,
                 quantity=position.quantity,
@@ -208,8 +211,8 @@ class BinanceFuturesAdapter(ExchangeAdapter):
                 stop_loss=position.entry_price,
                 leverage=min(position.leverage or 1, 5),
             )
-            await self._close_position_market(plan)
-            existing = await self.query_order(plan.symbol, f"{plan.client_order_id}-critical-close")
+            close_client_id = await self._close_position_market(plan)
+            existing = await self.query_order(plan.symbol, close_client_id)
             if existing:
                 orders.append(self._normalize_order(existing))
         return orders
@@ -241,8 +244,11 @@ class BinanceFuturesAdapter(ExchangeAdapter):
 
     async def open_orders(self, symbol: str | None = None) -> list[ExchangeOrder]:
         params = {"symbol": symbol} if symbol else {}
-        data = await self._signed("GET", "/fapi/v1/openOrders", params)
-        return [self._normalize_order(item) for item in data]
+        regular = await self._signed("GET", "/fapi/v1/openOrders", params)
+        algo = await self._signed("GET", "/fapi/v1/openAlgoOrders", params)
+        return [self._normalize_order(item) for item in regular] + [
+            self._normalize_algo_order(item) for item in algo
+        ]
 
     async def positions(self, symbol: str | None = None) -> list[ExchangePosition]:
         params = {"symbol": symbol} if symbol else {}
@@ -301,7 +307,7 @@ class BinanceFuturesAdapter(ExchangeAdapter):
 
     async def _ensure_stop_loss(self, plan: OrderPlan) -> dict[str, Any] | None:
         for attempt in range(3):
-            client_id = f"{plan.client_order_id}-sl-{attempt}"
+            client_id = _client_order_id(plan.client_order_id, "sl", attempt)
             try:
                 order = await self._place_stop_loss(plan, client_id)
                 if await self._stop_loss_exists(plan.symbol, client_id):
@@ -313,15 +319,16 @@ class BinanceFuturesAdapter(ExchangeAdapter):
     async def _place_stop_loss(self, plan: OrderPlan, client_id: str) -> dict[str, Any]:
         return await self._signed(
             "POST",
-            "/fapi/v1/order",
+            "/fapi/v1/algoOrder",
             {
+                "algoType": "CONDITIONAL",
                 "symbol": plan.symbol,
                 "side": "SELL" if plan.side == Side.LONG else "BUY",
                 "type": "STOP_MARKET",
-                "stopPrice": _format_number(plan.stop_loss),
+                "triggerPrice": _format_number(plan.stop_loss),
                 "closePosition": "true",
                 "workingType": "CONTRACT_PRICE",
-                "newClientOrderId": client_id,
+                "clientAlgoId": client_id,
             },
         )
 
@@ -330,20 +337,22 @@ class BinanceFuturesAdapter(ExchangeAdapter):
     ) -> dict[str, Any]:
         return await self._signed(
             "POST",
-            "/fapi/v1/order",
+            "/fapi/v1/algoOrder",
             {
+                "algoType": "CONDITIONAL",
                 "symbol": plan.symbol,
                 "side": "SELL" if plan.side == Side.LONG else "BUY",
                 "type": "TAKE_PROFIT_MARKET",
-                "stopPrice": _format_number(take_profit),
+                "triggerPrice": _format_number(take_profit),
                 "quantity": _format_number(quantity),
                 "reduceOnly": "true",
                 "workingType": "CONTRACT_PRICE",
-                "newClientOrderId": f"{plan.client_order_id}-tp-{index}",
+                "clientAlgoId": _client_order_id(plan.client_order_id, "tp", index),
             },
         )
 
-    async def _close_position_market(self, plan: OrderPlan) -> None:
+    async def _close_position_market(self, plan: OrderPlan) -> str:
+        client_order_id = _client_order_id(plan.client_order_id, "close")
         await self._signed(
             "POST",
             "/fapi/v1/order",
@@ -353,9 +362,10 @@ class BinanceFuturesAdapter(ExchangeAdapter):
                 "type": "MARKET",
                 "quantity": _format_number(plan.quantity),
                 "reduceOnly": "true",
-                "newClientOrderId": f"{plan.client_order_id}-critical-close",
+                "newClientOrderId": client_order_id,
             },
         )
+        return client_order_id
 
     async def _stop_loss_exists(self, symbol: str, client_id: str) -> bool:
         orders = await self.open_orders(symbol)
@@ -422,6 +432,23 @@ class BinanceFuturesAdapter(ExchangeAdapter):
         )
 
     @staticmethod
+    def _normalize_algo_order(item: dict[str, Any]) -> ExchangeOrder:
+        return ExchangeOrder(
+            symbol=item["symbol"],
+            order_id=item.get("algoId", ""),
+            client_order_id=item.get("clientAlgoId", ""),
+            side=item.get("side", ""),
+            order_type=item.get("orderType", ""),
+            status=item.get("algoStatus", ""),
+            price=float(item.get("price", 0) or 0),
+            quantity=float(item.get("quantity", 0) or 0),
+            executed_quantity=float(item.get("actualQty", 0) or 0),
+            reduce_only=bool(item.get("reduceOnly", False)),
+            stop_price=_optional_float(item.get("triggerPrice")),
+            raw=item,
+        )
+
+    @staticmethod
     def _take_profit_quantity(quantity: float, index: int, total: int) -> float:
         if total <= 1:
             return quantity
@@ -434,6 +461,15 @@ class BinanceFuturesAdapter(ExchangeAdapter):
 
 def _format_number(value: float) -> str:
     return f"{value:.12f}".rstrip("0").rstrip(".")
+
+
+def _client_order_id(*parts: object, max_length: int = 36) -> str:
+    raw = "-".join(str(part) for part in parts if str(part))
+    if len(raw) <= max_length:
+        return raw
+    digest = hashlib.sha1(raw.encode()).hexdigest()[:8]
+    prefix_length = max_length - len(digest) - 1
+    return f"{raw[:prefix_length].rstrip('-')}-{digest}"
 
 
 def _optional_float(value: Any) -> float | None:

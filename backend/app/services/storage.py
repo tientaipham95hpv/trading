@@ -159,7 +159,7 @@ class Storage:
             session.add(
                 PositionRow(
                     symbol=position["symbol"],
-                    status=position["status"],
+                    status=position.get("status", "OPEN"),
                     payload=position,
                     updated_at=datetime.now(UTC),
                 )
