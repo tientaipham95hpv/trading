@@ -52,6 +52,14 @@ jobs:
           BUILD_STATUS=${PIPESTATUS[0]}
           set -e
           if [ "$BUILD_STATUS" -ne 0 ]; then
+            echo "### Xcode build failed" >> "$GITHUB_STEP_SUMMARY"
+            echo '```text' >> "$GITHUB_STEP_SUMMARY"
+            grep -E "error:|warning:|SwiftCompile|CompileSwift|CodeSign|Signing" xcodebuild.log | tail -80 >> "$GITHUB_STEP_SUMMARY" || tail -80 xcodebuild.log >> "$GITHUB_STEP_SUMMARY"
+            echo '```' >> "$GITHUB_STEP_SUMMARY"
+            SUMMARY=$(grep -E "error:" xcodebuild.log | tail -5 | sed 's/%/%25/g; s/\r/%0D/g; s/\n/%0A/g' || true)
+            if [ -n "$SUMMARY" ]; then
+              echo "::error title=Xcode build errors::$SUMMARY"
+            fi
             exit "$BUILD_STATUS"
           fi
 
