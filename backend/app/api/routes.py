@@ -45,6 +45,7 @@ async def status() -> dict[str, object]:
             "minimum_risk_reward": state.bot_settings.minimum_risk_reward,
         },
         "live_readiness": _live_readiness().model_dump(mode="json"),
+        "auto_trader": state.auto_trader.snapshot(),
     }
 
 
@@ -242,6 +243,11 @@ async def bot_start() -> dict[str, object]:
     state.bot_state = BotState.RUNNING
     await state.storage.log("Bot đã start", {"mode": state.trading_mode.value})
     return {"bot_state": state.bot_state}
+
+
+@router.post("/bot/auto/run-once")
+async def bot_auto_run_once() -> dict[str, object]:
+    return await state.auto_trader.run_once()
 
 
 @router.post("/bot/pause")

@@ -268,10 +268,11 @@ function Dashboard({ exchange, onDone, performance, positions, status }: { excha
 function CommandCenter({ exchange, onDone, status }: { exchange: ExchangeSnapshot | null; onDone: () => Promise<void>; status: StatusPayload | null }) {
   return (
     <section className="grid gap-4 rounded-lg border border-slate-200 bg-white p-4 shadow-sm xl:grid-cols-[1.2fr_1fr]">
-      <div className="grid gap-3 sm:grid-cols-3">
+      <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
         <ModeCard label="Trading mode" value={status?.mode ?? "PAPER"} tone={status?.mode === "LIVE" ? "danger" : status?.mode === "DEMO" ? "warning" : "safe"} />
         <ModeCard label="Exchange" value={viExchangeConnection(exchange?.connection)} tone={exchange?.connection === "CONNECTED" ? "safe" : "danger"} />
         <ModeCard label="LIVE gate" value={status?.live_readiness.allowed ? "READY" : "LOCKED"} tone={status?.live_readiness.allowed ? "warning" : "safe"} />
+        <ModeCard label="Auto loop" value={viAutoStatus(status?.auto_trader?.last_status)} tone={status?.auto_trader?.last_status === "ORDER_SUBMITTED" ? "safe" : "warning"} />
       </div>
       <div className="flex flex-col justify-center gap-3 xl:items-end">
         <p className="max-w-xl text-sm font-semibold text-slate-600 xl:text-right">
@@ -307,7 +308,7 @@ function ActivitySummary({ exchange, status }: { exchange: ExchangeSnapshot | nu
   const title = isRunning && connected ? "Bot đang online" : status?.safe_mode ? "Bot đang SAFE_MODE" : "Bot chưa sẵn sàng";
   const detail = hasOrders || hasPositions
     ? `Đang có ${exchange?.orders.length ?? 0} order và ${exchange?.positions.length ?? 0} vị thế trên ${exchange?.mode ?? status?.mode ?? "mode hiện tại"}.`
-    : "Backend đang chạy và kết nối exchange, nhưng hiện chưa có lệnh/vị thế mở.";
+    : status?.auto_trader?.last_reason ?? "Backend đang chạy và kết nối exchange, nhưng hiện chưa có lệnh/vị thế mở.";
   const tone = status?.safe_mode || status?.emergency_stop ? "border-red-200 bg-red-50 text-red-800" : isRunning && connected ? "border-emerald-200 bg-emerald-50 text-emerald-800" : "border-amber-200 bg-amber-50 text-amber-800";
 
   return (
@@ -321,6 +322,7 @@ function ActivitySummary({ exchange, status }: { exchange: ExchangeSnapshot | nu
           <Pill label="Mode" value={status?.mode ?? "-"} tone={status?.mode === "LIVE" ? "danger" : "safe"} />
           <Pill label="Bot" value={viBotState(status?.bot_state)} tone={isRunning ? "safe" : "neutral"} />
           <Pill label="Exchange" value={viExchangeConnection(exchange?.connection)} tone={connected ? "safe" : "danger"} />
+          <Pill label="Auto" value={viAutoStatus(status?.auto_trader?.last_status)} tone={status?.auto_trader?.last_status === "ORDER_SUBMITTED" ? "safe" : "neutral"} />
         </div>
       </div>
     </section>
@@ -955,6 +957,22 @@ function viExchangeConnection(value: ExchangeSnapshot["connection"] | undefined)
   if (value === "STALE") return "Chậm";
   if (value === "SAFE_MODE") return "SAFE_MODE";
   return "Chưa kết nối";
+}
+
+function viAutoStatus(value: string | undefined) {
+  const labels: Record<string, string> = {
+    IDLE: "Đang chờ",
+    BLOCKED: "Bị chặn",
+    SCANNING: "Đang quét",
+    NO_SIGNAL: "Chưa có signal",
+    NO_ACCEPTED_SIGNAL: "Signal bị chặn",
+    WAITING_POSITION: "Đang giữ lệnh",
+    SUBMITTING: "Đang vào lệnh",
+    ORDER_SUBMITTED: "Đã vào lệnh",
+    ORDER_ERROR: "Lỗi lệnh",
+    ERROR: "Lỗi worker",
+  };
+  return labels[value ?? ""] ?? "Đang chờ";
 }
 
 function viOrderType(value: string) {

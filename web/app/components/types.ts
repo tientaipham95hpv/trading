@@ -31,6 +31,18 @@ export type StatusPayload = {
     allowed: boolean;
     blockers: string[];
   };
+  auto_trader?: {
+    running: boolean;
+    interval_seconds: number;
+    last_run_at: string | null;
+    last_action_at: string | null;
+    last_status: string;
+    last_reason: string;
+    last_symbol: string | null;
+    cycles: number;
+    submitted: number;
+    rejected: number;
+  };
 };
 
 export type ExchangeSnapshot = {

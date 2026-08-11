@@ -3,6 +3,7 @@ import hmac
 import time
 from abc import ABC, abstractmethod
 from datetime import UTC, datetime
+from decimal import Decimal, ROUND_DOWN
 from typing import Any
 from urllib.parse import urlencode
 
@@ -80,6 +81,7 @@ class BinanceFuturesAdapter(ExchangeAdapter):
         self._submitted_client_ids: set[str] = set()
         self._listen_key: str | None = None
         self.snapshot_cache = ExchangeSnapshot(mode=mode)
+        self._symbol_filters: dict[str, dict[str, Decimal]] = {}
 
     @property
     def configured(self) -> bool:
@@ -87,6 +89,7 @@ class BinanceFuturesAdapter(ExchangeAdapter):
 
     async def submit_order_plan(self, plan: OrderPlan) -> ExchangeExecutionResult:
         self._require_credentials()
+        plan = await self._normalize_plan(plan)
         if plan.client_order_id in self._submitted_client_ids:
             existing = await self.query_order(plan.symbol, plan.client_order_id)
             if existing:
@@ -116,11 +119,23 @@ class BinanceFuturesAdapter(ExchangeAdapter):
             )
 
         take_profit_orders = []
-        for index, take_profit in enumerate(plan.take_profits):
-            quantity = self._take_profit_quantity(plan.quantity, index, len(plan.take_profits))
-            if quantity <= 0:
-                continue
-            take_profit_orders.append(await self._place_take_profit(plan, take_profit, quantity, index))
+        try:
+            for index, take_profit in enumerate(plan.take_profits):
+                quantity = await self._take_profit_quantity_for_plan(plan, index, len(plan.take_profits))
+                if quantity <= 0:
+                    continue
+                take_profit_orders.append(await self._place_take_profit(plan, take_profit, quantity, index))
+        except ExchangeError as exc:
+            await self.cancel_all_orders(plan.symbol)
+            await self._close_position_market(plan)
+            alert = f"CRITICAL: Không tạo được TP trên {self.mode.value}, đã hủy order và gửi lệnh đóng vị thế: {exc}"
+            return ExchangeExecutionResult(
+                accepted=False,
+                status=f"{self.mode.value}_TP_FAILED_POSITION_CLOSING",
+                client_order_id=plan.client_order_id,
+                order=self._normalize_order(entry).model_dump(mode="json"),
+                critical_alert=alert,
+            )
 
         return ExchangeExecutionResult(
             accepted=True,
@@ -284,6 +299,45 @@ class BinanceFuturesAdapter(ExchangeAdapter):
             unrealized_pnl=float(data.get("totalUnrealizedProfit", 0) or 0),
         )
 
+    async def _normalize_plan(self, plan: OrderPlan) -> OrderPlan:
+        filters = await self._filters_for(plan.symbol)
+        quantity = _round_step(plan.quantity, filters["quantity_step"])
+        if quantity < float(filters["min_quantity"]):
+            raise ExchangeError(
+                f"Quantity {quantity} nhỏ hơn minQty {filters['min_quantity']} cho {plan.symbol}"
+            )
+        return plan.model_copy(
+            update={
+                "quantity": quantity,
+                "entry_price": _round_tick(plan.entry_price, filters["price_tick"]),
+                "stop_loss": _round_tick(plan.stop_loss, filters["price_tick"]),
+                "take_profits": [
+                    _round_tick(take_profit, filters["price_tick"])
+                    for take_profit in plan.take_profits
+                ],
+            }
+        )
+
+    async def _filters_for(self, symbol: str) -> dict[str, Decimal]:
+        cached = self._symbol_filters.get(symbol)
+        if cached:
+            return cached
+        data = await self._request("GET", "/fapi/v1/exchangeInfo", signed=False)
+        for item in data.get("symbols", []):
+            if item.get("symbol") != symbol:
+                continue
+            filters = {entry.get("filterType"): entry for entry in item.get("filters", [])}
+            lot = filters.get("MARKET_LOT_SIZE") or filters.get("LOT_SIZE") or {}
+            price = filters.get("PRICE_FILTER") or {}
+            parsed = {
+                "quantity_step": Decimal(str(lot.get("stepSize", "0.001"))),
+                "min_quantity": Decimal(str(lot.get("minQty", "0"))),
+                "price_tick": Decimal(str(price.get("tickSize", "0.000001"))),
+            }
+            self._symbol_filters[symbol] = parsed
+            return parsed
+        raise ExchangeError(f"Không tìm thấy exchange filters cho {symbol}")
+
     async def _place_entry(self, plan: OrderPlan) -> dict[str, Any]:
         params: dict[str, Any] = {
             "symbol": plan.symbol,
@@ -349,6 +403,13 @@ class BinanceFuturesAdapter(ExchangeAdapter):
                 "workingType": "CONTRACT_PRICE",
                 "clientAlgoId": _client_order_id(plan.client_order_id, "tp", index),
             },
+        )
+
+    async def _take_profit_quantity_for_plan(self, plan: OrderPlan, index: int, total: int) -> float:
+        filters = await self._filters_for(plan.symbol)
+        return _round_step(
+            self._take_profit_quantity(plan.quantity, index, total),
+            filters["quantity_step"],
         )
 
     async def _close_position_market(self, plan: OrderPlan) -> str:
@@ -461,6 +522,20 @@ class BinanceFuturesAdapter(ExchangeAdapter):
 
 def _format_number(value: float) -> str:
     return f"{value:.12f}".rstrip("0").rstrip(".")
+
+
+def _round_step(value: float, step: Decimal) -> float:
+    if step <= 0:
+        return value
+    quantized = (Decimal(str(value)) / step).to_integral_value(rounding=ROUND_DOWN) * step
+    return float(quantized)
+
+
+def _round_tick(value: float, tick: Decimal) -> float:
+    if tick <= 0:
+        return value
+    quantized = (Decimal(str(value)) / tick).to_integral_value(rounding=ROUND_DOWN) * tick
+    return float(quantized)
 
 
 def _client_order_id(*parts: object, max_length: int = 36) -> str:

@@ -4,6 +4,7 @@ from pathlib import Path
 from app.core.settings import Settings
 from app.domain.models import BotSettings, BotState, EmergencyStopState, TradingMode
 from app.services.ai_evaluator import AiEvaluator
+from app.services.auto_trader import AutoTrader
 from app.services.backtest import BacktestService
 from app.services.binance_client import BinanceMarketDataClient
 from app.services.exchange import BinanceFuturesAdapter
@@ -98,6 +99,7 @@ class AppState:
             minimum_risk_reward=settings.minimum_risk_reward,
         )
         self.storage = Storage(settings.database_url)
+        self.auto_trader = AutoTrader(self)
 
     @property
     def safe_mode(self) -> bool:
