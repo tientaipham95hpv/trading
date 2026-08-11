@@ -9,8 +9,12 @@ class Settings(BaseSettings):
     trading_mode: str = "PAPER"
     live_trading_enabled: bool = False
     binance_base_url: str = "https://fapi.binance.com"
+    binance_demo_base_url: str = "https://demo-fapi.binance.com"
+    binance_demo_stream_url: str = "wss://demo-fstream.binance.com"
     binance_api_key: str = ""
     binance_api_secret: str = ""
+    binance_demo_api_key: str = ""
+    binance_demo_api_secret: str = ""
     database_url: str = "postgresql+asyncpg://trading:trading@localhost:5432/trading"
     redis_url: str = "redis://localhost:6379/0"
     max_leverage: int = Field(default=5, ge=1, le=125)

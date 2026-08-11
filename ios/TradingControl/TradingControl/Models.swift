@@ -11,6 +11,9 @@ public struct TrangThaiBot: Codable, Equatable {
     public let liveEnabled: Bool
     public let botState: String
     public let emergencyStop: Bool
+    public let safeMode: Bool
+    public let safeModeReason: String?
+    public let exchange: ExchangeSnapshot
     public let risk: RuiRo
 
     enum CodingKeys: String, CodingKey {
@@ -18,7 +21,126 @@ public struct TrangThaiBot: Codable, Equatable {
         case liveEnabled = "live_enabled"
         case botState = "bot_state"
         case emergencyStop = "emergency_stop"
+        case safeMode = "safe_mode"
+        case safeModeReason = "safe_mode_reason"
+        case exchange
         case risk
+    }
+}
+
+public struct ExchangeSnapshot: Codable, Equatable {
+    public let mode: String
+    public let connection: String
+    public let safeMode: Bool
+    public let safeModeReason: String?
+    public let balance: ExchangeBalance
+    public let orders: [ExchangeOrder]
+    public let positions: [ExchangePosition]
+    public let lastReconciledAt: String?
+    public let lastUserStreamAt: String?
+
+    enum CodingKeys: String, CodingKey {
+        case mode
+        case connection
+        case safeMode = "safe_mode"
+        case safeModeReason = "safe_mode_reason"
+        case balance
+        case orders
+        case positions
+        case lastReconciledAt = "last_reconciled_at"
+        case lastUserStreamAt = "last_user_stream_at"
+    }
+}
+
+public struct ExchangeBalance: Codable, Equatable {
+    public let asset: String
+    public let balance: Double
+    public let available: Double
+    public let marginBalance: Double
+    public let unrealizedPnl: Double
+
+    enum CodingKeys: String, CodingKey {
+        case asset
+        case balance
+        case available
+        case marginBalance = "margin_balance"
+        case unrealizedPnl = "unrealized_pnl"
+    }
+}
+
+public struct ExchangeOrder: Codable, Identifiable, Equatable {
+    public var id: String { clientOrderId }
+    public let symbol: String
+    public let orderId: FlexibleID
+    public let clientOrderId: String
+    public let side: String
+    public let orderType: String
+    public let status: String
+    public let price: Double
+    public let quantity: Double
+    public let executedQuantity: Double
+    public let reduceOnly: Bool
+    public let stopPrice: Double?
+
+    enum CodingKeys: String, CodingKey {
+        case symbol
+        case orderId = "order_id"
+        case clientOrderId = "client_order_id"
+        case side
+        case orderType = "order_type"
+        case status
+        case price
+        case quantity
+        case executedQuantity = "executed_quantity"
+        case reduceOnly = "reduce_only"
+        case stopPrice = "stop_price"
+    }
+}
+
+public struct ExchangePosition: Codable, Identifiable, Equatable {
+    public var id: String { "\(symbol)-\(side)" }
+    public let symbol: String
+    public let side: String
+    public let quantity: Double
+    public let entryPrice: Double
+    public let markPrice: Double
+    public let unrealizedPnl: Double
+    public let liquidationPrice: Double?
+    public let leverage: Int?
+    public let marginType: String?
+
+    enum CodingKeys: String, CodingKey {
+        case symbol
+        case side
+        case quantity
+        case entryPrice = "entry_price"
+        case markPrice = "mark_price"
+        case unrealizedPnl = "unrealized_pnl"
+        case liquidationPrice = "liquidation_price"
+        case leverage
+        case marginType = "margin_type"
+    }
+}
+
+public enum FlexibleID: Codable, Equatable {
+    case string(String)
+    case int(Int)
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.singleValueContainer()
+        if let int = try? container.decode(Int.self) {
+            self = .int(int)
+        } else {
+            self = .string(try container.decode(String.self))
+        }
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.singleValueContainer()
+        switch self {
+        case .string(let value): try container.encode(value)
+        case .int(let value): try container.encode(value)
+        }
     }
 }
 

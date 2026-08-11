@@ -14,6 +14,7 @@ class BotState(StrEnum):
     STOPPED = "STOPPED"
     RUNNING = "RUNNING"
     PAUSED = "PAUSED"
+    SAFE_MODE = "SAFE_MODE"
 
 
 class Side(StrEnum):
@@ -276,3 +277,69 @@ class BotSettings(BaseModel):
     maker_fee_rate: float = 0.0002
     slippage_bps: float = 2.0
     funding_rate_per_8h: float = 0.0001
+
+
+class ExchangeConnectionState(StrEnum):
+    DISCONNECTED = "DISCONNECTED"
+    CONNECTED = "CONNECTED"
+    STALE = "STALE"
+    SAFE_MODE = "SAFE_MODE"
+
+
+class ExchangeBalance(BaseModel):
+    asset: str = "USDT"
+    balance: float = 0.0
+    available: float = 0.0
+    margin_balance: float = 0.0
+    unrealized_pnl: float = 0.0
+
+
+class ExchangeOrder(BaseModel):
+    symbol: str
+    order_id: int | str
+    client_order_id: str
+    side: str
+    order_type: str
+    status: str
+    price: float = 0.0
+    quantity: float = 0.0
+    executed_quantity: float = 0.0
+    reduce_only: bool = False
+    stop_price: float | None = None
+    raw: dict[str, object] = Field(default_factory=dict)
+
+
+class ExchangePosition(BaseModel):
+    symbol: str
+    side: str
+    quantity: float
+    entry_price: float
+    mark_price: float = 0.0
+    unrealized_pnl: float = 0.0
+    liquidation_price: float | None = None
+    leverage: int | None = None
+    margin_type: str | None = None
+    raw: dict[str, object] = Field(default_factory=dict)
+
+
+class ExchangeSnapshot(BaseModel):
+    mode: TradingMode = TradingMode.PAPER
+    connection: ExchangeConnectionState = ExchangeConnectionState.DISCONNECTED
+    safe_mode: bool = False
+    safe_mode_reason: str | None = None
+    balance: ExchangeBalance = Field(default_factory=ExchangeBalance)
+    orders: list[ExchangeOrder] = Field(default_factory=list)
+    positions: list[ExchangePosition] = Field(default_factory=list)
+    last_reconciled_at: datetime | None = None
+    last_user_stream_at: datetime | None = None
+
+
+class ExchangeExecutionResult(BaseModel):
+    accepted: bool
+    status: str
+    client_order_id: str
+    order: dict[str, object]
+    fills: list[dict[str, object]] = Field(default_factory=list)
+    positions: list[dict[str, object]] = Field(default_factory=list)
+    trades: list[dict[str, object]] = Field(default_factory=list)
+    critical_alert: str | None = None

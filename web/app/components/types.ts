@@ -3,8 +3,11 @@ export type WsState = "LIVE" | "STALE" | "OFFLINE";
 export type StatusPayload = {
   mode: "PAPER" | "DEMO" | "LIVE";
   live_enabled: boolean;
-  bot_state: "STOPPED" | "RUNNING" | "PAUSED";
+  bot_state: "STOPPED" | "RUNNING" | "PAUSED" | "SAFE_MODE";
   emergency_stop: boolean;
+  safe_mode: boolean;
+  safe_mode_reason: string | null;
+  exchange: ExchangeSnapshot;
   risk: {
     max_leverage: number;
     risk_per_trade: number;
@@ -13,6 +16,46 @@ export type StatusPayload = {
     max_open_positions: number;
     minimum_risk_reward: number;
   };
+};
+
+export type ExchangeSnapshot = {
+  mode: "PAPER" | "DEMO" | "LIVE";
+  connection: "DISCONNECTED" | "CONNECTED" | "STALE" | "SAFE_MODE";
+  safe_mode: boolean;
+  safe_mode_reason: string | null;
+  balance: {
+    asset: string;
+    balance: number;
+    available: number;
+    margin_balance: number;
+    unrealized_pnl: number;
+  };
+  orders: Array<{
+    symbol: string;
+    order_id: number | string;
+    client_order_id: string;
+    side: string;
+    order_type: string;
+    status: string;
+    price: number;
+    quantity: number;
+    executed_quantity: number;
+    reduce_only: boolean;
+    stop_price: number | null;
+  }>;
+  positions: Array<{
+    symbol: string;
+    side: string;
+    quantity: number;
+    entry_price: number;
+    mark_price: number;
+    unrealized_pnl: number;
+    liquidation_price: number | null;
+    leverage: number | null;
+    margin_type: string | null;
+  }>;
+  last_reconciled_at: string | null;
+  last_user_stream_at: string | null;
 };
 
 export type Market = {

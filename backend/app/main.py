@@ -14,4 +14,4 @@ async def startup() -> None:
 
 @app.get("/health")
 async def health() -> dict[str, str]:
-    return {"status": "ok", "mode": state.settings.trading_mode}
+    return {"status": "ok", "mode": state.trading_mode}

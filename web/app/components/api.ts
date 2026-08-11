@@ -7,6 +7,7 @@ import type {
   ScannerResult,
   StatusPayload,
   Trade,
+  ExchangeSnapshot,
 } from "./types";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL || "";
@@ -36,11 +37,14 @@ export const api = {
   trades: () => request<{ items: Trade[] }>("/api/trades"),
   logs: () => request<{ items: LogItem[] }>("/api/logs"),
   performance: () => request<Performance>("/api/performance"),
+  exchange: () => request<ExchangeSnapshot>("/api/exchange"),
   settings: () => request<BotSettings>("/api/settings"),
   updateSettings: (settings: BotSettings) =>
     request<BotSettings>("/api/settings", { method: "PUT", body: JSON.stringify(settings) }),
   bot: (action: "start" | "pause" | "stop") =>
     request<{ bot_state: StatusPayload["bot_state"] }>(`/api/bot/${action}`, { method: "POST" }),
+  mode: (mode: "PAPER" | "DEMO") =>
+    request<{ accepted: boolean; mode?: string; reason?: string }>(`/api/mode/${mode}`, { method: "POST" }),
 };
 
 export function wsUrl(channel: string): string {

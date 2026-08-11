@@ -21,7 +21,7 @@ import { usePathname } from "next/navigation";
 import { useEffect, useMemo, useRef, useState } from "react";
 
 import { api, wsUrl } from "./api";
-import type { BotSettings, LogItem, Market, Performance, Position, ScannerResult, StatusPayload, Trade, WsState } from "./types";
+import type { BotSettings, ExchangeSnapshot, LogItem, Market, Performance, Position, ScannerResult, StatusPayload, Trade, WsState } from "./types";
 
 type PageKey =
   | "dashboard"
@@ -58,6 +58,7 @@ export function DashboardApp({ page }: { page: PageKey }) {
   const [logs, setLogs] = useState<LogItem[]>([]);
   const [performance, setPerformance] = useState<Performance | null>(null);
   const [settings, setSettings] = useState<BotSettings | null>(null);
+  const [exchange, setExchange] = useState<ExchangeSnapshot | null>(null);
   const [wsState, setWsState] = useState<WsState>("OFFLINE");
   const [lastLiveAt, setLastLiveAt] = useState<number>(0);
   const lastLiveAtRef = useRef(0);
@@ -65,7 +66,7 @@ export function DashboardApp({ page }: { page: PageKey }) {
 
   async function refresh() {
     try {
-      const [nextStatus, nextMarkets, nextScanner, nextPositions, nextTrades, nextPerformance, nextSettings, nextLogs] =
+      const [nextStatus, nextMarkets, nextScanner, nextPositions, nextTrades, nextPerformance, nextExchange, nextSettings, nextLogs] =
         await Promise.all([
           api.status(),
           api.markets(),
@@ -73,6 +74,7 @@ export function DashboardApp({ page }: { page: PageKey }) {
           api.positions(),
           api.trades(),
           api.performance(),
+          api.exchange(),
           api.settings(),
           api.logs(),
         ]);
@@ -82,6 +84,7 @@ export function DashboardApp({ page }: { page: PageKey }) {
       setPositions(nextPositions.items);
       setTrades(nextTrades.items);
       setPerformance(nextPerformance);
+      setExchange(nextExchange);
       setSettings(nextSettings);
       setLogs(nextLogs.items);
       setError(null);
@@ -177,10 +180,12 @@ export function DashboardApp({ page }: { page: PageKey }) {
             <h2 className="text-2xl font-bold">{currentPage.label}</h2>
           </div>
           <div className="flex flex-wrap items-center gap-2">
+            <ModeSelector current={status?.mode ?? "PAPER"} onDone={refresh} />
             <BotControls onDone={refresh} />
             <Pill label="Chế độ" value={status?.mode ?? "PAPER"} tone="neutral" />
             <Pill label="LIVE" value={status?.live_enabled ? "ON" : "OFF"} tone={status?.live_enabled ? "danger" : "safe"} />
-            <Pill label="Bot" value={viBotState(status?.bot_state)} tone="neutral" />
+            <Pill label="Bot" value={viBotState(status?.bot_state)} tone={status?.safe_mode ? "danger" : "neutral"} />
+            <Pill label="Exchange" value={viExchangeConnection(exchange?.connection ?? status?.exchange.connection)} tone={(exchange?.connection ?? status?.exchange.connection) === "CONNECTED" ? "safe" : "danger"} />
             <StatusBadge value={wsState} />
             {lastLiveAt > 0 && <span className="text-xs font-bold text-slate-500">{new Date(lastLiveAt).toLocaleTimeString("vi-VN")}</span>}
             <button className="rounded-md border border-slate-300 px-3 py-2 text-sm font-bold" onClick={() => void refresh()} type="button">
@@ -191,7 +196,7 @@ export function DashboardApp({ page }: { page: PageKey }) {
 
         <div className="p-5">
           {error && <div className="mb-4 rounded-md border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">{error}</div>}
-          {page === "dashboard" && <Dashboard performance={performance} positions={positions} status={status} />}
+          {page === "dashboard" && <Dashboard exchange={exchange ?? status?.exchange ?? null} performance={performance} positions={positions} status={status} />}
           {page === "markets" && <Markets markets={markets} />}
           {page === "scanner" && <Scanner scanner={scanner} />}
           {page === "positions" && <Positions markets={markets} positions={positions} />}
@@ -207,7 +212,7 @@ export function DashboardApp({ page }: { page: PageKey }) {
   );
 }
 
-function Dashboard({ performance, positions, status }: { performance: Performance | null; positions: Position[]; status: StatusPayload | null }) {
+function Dashboard({ exchange, performance, positions, status }: { exchange: ExchangeSnapshot | null; performance: Performance | null; positions: Position[]; status: StatusPayload | null }) {
   const equitySeries = useMemo(() => buildEquitySeries(performance), [performance]);
   return (
     <div className="grid gap-4">
@@ -220,6 +225,10 @@ function Dashboard({ performance, positions, status }: { performance: Performanc
         <Metric label="Hệ số lợi nhuận" value={profitFactor(performance)} />
         <Metric label="Vị thế mở" value={String(performance?.open_positions ?? positions.length)} />
         <Metric label="Rủi ro đã dùng" value={percent(((performance?.open_positions ?? 0) / (status?.risk.max_open_positions ?? 4)) * 100)} />
+        <Metric label="Balance DEMO" value={money(exchange?.balance.balance)} />
+        <Metric label="Available DEMO" value={money(exchange?.balance.available)} />
+        <Metric label="Margin DEMO" value={money(exchange?.balance.margin_balance)} />
+        <Metric label="Kết nối exchange" value={viExchangeConnection(exchange?.connection)} tone={exchange?.connection === "CONNECTED" ? "good" : "bad"} />
       </div>
       <section className="rounded-lg border border-slate-200 bg-white p-4">
         <div className="mb-3 flex items-center justify-between">
@@ -228,7 +237,51 @@ function Dashboard({ performance, positions, status }: { performance: Performanc
         </div>
         <EquityChart values={equitySeries} />
       </section>
+      <div className="grid gap-4 xl:grid-cols-2">
+        <ExchangeOrders orders={exchange?.orders ?? []} />
+        <ExchangePositions positions={exchange?.positions ?? []} />
+      </div>
     </div>
+  );
+}
+
+function ExchangeOrders({ orders }: { orders: ExchangeSnapshot["orders"] }) {
+  return (
+    <DataPanel title="Order DEMO trên Binance">
+      <Table
+        columns={["Mã", "Hướng", "Loại", "Trạng thái", "Giá", "SL/TP", "Khối lượng", "Reduce-only"]}
+        rows={orders.map((order) => [
+          order.symbol,
+          viSide(order.side),
+          viOrderType(order.order_type),
+          order.status,
+          money(order.price),
+          money(order.stop_price),
+          number(order.quantity),
+          order.reduce_only ? "Có" : "Không",
+        ])}
+      />
+    </DataPanel>
+  );
+}
+
+function ExchangePositions({ positions }: { positions: ExchangeSnapshot["positions"] }) {
+  return (
+    <DataPanel title="Vị thế DEMO trên Binance">
+      <Table
+        columns={["Mã", "Hướng", "Khối lượng", "Giá vào", "Mark", "PNL", "Giá thanh lý", "Đòn bẩy"]}
+        rows={positions.map((position) => [
+          position.symbol,
+          viSide(position.side),
+          number(position.quantity),
+          money(position.entry_price),
+          money(position.mark_price),
+          money(position.unrealized_pnl),
+          money(position.liquidation_price),
+          position.leverage ? `${position.leverage}x` : "-",
+        ])}
+      />
+    </DataPanel>
   );
 }
 
@@ -460,6 +513,31 @@ function BotControls({ onDone }: { onDone: () => Promise<void> }) {
   );
 }
 
+function ModeSelector({ current, onDone }: { current: "PAPER" | "DEMO" | "LIVE"; onDone: () => Promise<void> }) {
+  const [busy, setBusy] = useState(false);
+  async function change(mode: "PAPER" | "DEMO") {
+    setBusy(true);
+    await api.mode(mode);
+    await onDone();
+    setBusy(false);
+  }
+  return (
+    <div className="flex rounded-md border border-slate-300 bg-white p-1">
+      {(["PAPER", "DEMO"] as const).map((mode) => (
+        <button
+          className={`rounded px-3 py-1 text-xs font-black ${current === mode ? "bg-slate-950 text-white" : "text-slate-600 hover:bg-slate-100"}`}
+          disabled={busy}
+          key={mode}
+          onClick={() => void change(mode)}
+          type="button"
+        >
+          {mode}
+        </button>
+      ))}
+    </div>
+  );
+}
+
 function DataPanel({ children, controls, title }: { children: React.ReactNode; controls?: React.ReactNode; title: string }) {
   return (
     <section className="rounded-lg border border-slate-200 bg-white">
@@ -598,6 +676,7 @@ function viAction(value: ScannerResult["action"]) {
 function viBotState(value: StatusPayload["bot_state"] | undefined) {
   if (value === "RUNNING") return "Đang chạy";
   if (value === "PAUSED") return "Tạm dừng";
+  if (value === "SAFE_MODE") return "SAFE_MODE";
   if (value === "STOPPED") return "Đã dừng";
   return "Đã dừng";
 }
@@ -614,8 +693,26 @@ function viRegime(value: string) {
   return labels[value] ?? value;
 }
 
-function viSide(value: Position["side"] | Trade["side"]) {
+function viSide(value: string) {
   return value === "LONG" ? "Long" : "Short";
+}
+
+function viExchangeConnection(value: ExchangeSnapshot["connection"] | undefined) {
+  if (value === "CONNECTED") return "Đã kết nối";
+  if (value === "STALE") return "Chậm";
+  if (value === "SAFE_MODE") return "SAFE_MODE";
+  return "Chưa kết nối";
+}
+
+function viOrderType(value: string) {
+  const labels: Record<string, string> = {
+    MARKET: "Market",
+    LIMIT: "Limit",
+    STOP_MARKET: "Stop market",
+    TAKE_PROFIT_MARKET: "Take profit",
+    TRAILING_STOP_MARKET: "Trailing stop",
+  };
+  return labels[value] ?? value;
 }
 
 function viSortLabel(value: string) {

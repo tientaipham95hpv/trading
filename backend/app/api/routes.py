@@ -5,6 +5,7 @@ from fastapi import APIRouter, HTTPException, Query, WebSocket, WebSocketDisconn
 
 from app.domain.models import BotSettings, BotState, OrderPlan, SignalAction, Timeframe, TradingMode
 from app.services.app_state import state
+from app.services.exchange import ExchangeCredentialsError, ExchangeError
 from app.services.execution import DuplicateOrderError
 
 router = APIRouter(prefix="/api")
@@ -13,10 +14,13 @@ router = APIRouter(prefix="/api")
 @router.get("/status")
 async def status() -> dict[str, object]:
     return {
-        "mode": state.settings.trading_mode,
+        "mode": state.trading_mode,
         "live_enabled": state.settings.live_trading_enabled,
         "bot_state": state.bot_state,
         "emergency_stop": state.emergency_stop.active,
+        "safe_mode": state.safe_mode,
+        "safe_mode_reason": state.safe_mode_reason,
+        "exchange": state.demo_exchange.snapshot_cache.model_dump(mode="json"),
         "risk": {
             "max_leverage": state.settings.max_leverage,
             "risk_per_trade": state.settings.risk_per_trade,
@@ -85,10 +89,10 @@ async def paper_from_signal(symbol: str) -> dict[str, object]:
     if not decision.accepted or decision.quantity is None:
         return {"accepted": False, "reason": decision.reason}
     plan = OrderPlan(
-        client_order_id=f"paper-{signal.symbol}-{uuid4()}",
+        client_order_id=f"{state.trading_mode.value.lower()}-{signal.symbol}-{uuid4()}",
         symbol=signal.symbol,
         side=signal.side,
-        quantity=decision.quantity,
+            quantity=state.position_sizer.apply(decision),
         entry_price=signal.entry_price,
         stop_loss=signal.stop_loss,
         leverage=signal.leverage,
@@ -96,12 +100,16 @@ async def paper_from_signal(symbol: str) -> dict[str, object]:
         take_profits=signal.take_profits,
         risk_fraction=signal.risk_fraction,
     )
-    return await _submit_paper_order(plan)
+    try:
+        state.order_validator.validate(plan)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return await _submit_order(plan)
 
 
 @router.post("/orders/paper")
 async def submit_paper_order(plan: OrderPlan) -> dict[str, object]:
-    return await _submit_paper_order(plan)
+    return await _submit_order(plan)
 
 
 @router.get("/positions")
@@ -168,30 +176,84 @@ async def update_settings(settings: BotSettings) -> BotSettings:
 
 @router.post("/bot/start")
 async def bot_start() -> dict[str, object]:
+    if state.safe_mode:
+        return {"bot_state": state.bot_state, "accepted": False, "reason": state.safe_mode_reason}
     state.bot_state = BotState.RUNNING
-    await state.storage.log("Bot PAPER đã start")
+    await state.storage.log("Bot đã start", {"mode": state.trading_mode.value})
     return {"bot_state": state.bot_state}
 
 
 @router.post("/bot/pause")
 async def bot_pause() -> dict[str, object]:
     state.bot_state = BotState.PAUSED
-    await state.storage.log("Bot PAPER đã pause")
+    await state.storage.log("Bot đã pause", {"mode": state.trading_mode.value})
     return {"bot_state": state.bot_state}
 
 
 @router.post("/bot/stop")
 async def bot_stop() -> dict[str, object]:
     state.bot_state = BotState.STOPPED
-    await state.storage.log("Bot PAPER đã stop")
+    await state.storage.log("Bot đã stop", {"mode": state.trading_mode.value})
     return {"bot_state": state.bot_state}
 
 
 @router.post("/mode/{mode}")
 async def set_mode(mode: TradingMode) -> dict[str, object]:
+    if mode == TradingMode.DEMO and state.safe_mode:
+        return {"accepted": False, "reason": state.safe_mode_reason}
     if mode == TradingMode.LIVE and not state.settings.live_trading_enabled:
         return {"accepted": False, "reason": "Chế độ LIVE đang bị tắt trong cấu hình"}
+    if mode == TradingMode.LIVE:
+        return {"accepted": False, "reason": "Phase 4 chưa bật LIVE"}
+    state.trading_mode = mode
+    await state.storage.log("Đổi trading mode", {"mode": mode.value})
     return {"accepted": True, "mode": mode.value}
+
+
+@router.get("/exchange")
+async def exchange_snapshot() -> dict[str, object]:
+    if state.trading_mode == TradingMode.PAPER:
+        return state.demo_exchange.snapshot_cache.model_dump(mode="json")
+    try:
+        return (await state.demo_exchange.snapshot()).model_dump(mode="json")
+    except ExchangeCredentialsError as exc:
+        return state.demo_exchange.snapshot_cache.model_copy(
+            update={"safe_mode_reason": str(exc)}
+        ).model_dump(mode="json")
+    except ExchangeError as exc:
+        await state.storage.log("Exchange DEMO disconnected", {"error": str(exc)}, level="WARNING")
+        return state.demo_exchange.snapshot_cache.model_copy(
+            update={"connection": "STALE", "safe_mode_reason": str(exc)}
+        ).model_dump(mode="json")
+
+
+@router.post("/exchange/reconcile")
+async def exchange_reconcile() -> dict[str, object]:
+    try:
+        snapshot = await state.demo_exchange.reconcile(
+            [position.model_dump(mode="json") for position in state.execution.open_positions()]
+        )
+    except ExchangeCredentialsError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except ExchangeError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    if snapshot.safe_mode:
+        state.enter_safe_mode(snapshot.safe_mode_reason or "Exchange mismatch")
+        await state.storage.log(
+            "SAFE_MODE do reconcile mismatch", snapshot.model_dump(mode="json"), level="CRITICAL"
+        )
+    return snapshot.model_dump(mode="json")
+
+
+@router.post("/exchange/user-stream")
+async def exchange_user_stream() -> dict[str, object]:
+    try:
+        url = await state.demo_exchange.open_user_stream()
+    except ExchangeCredentialsError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except ExchangeError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    return {"stream_url": url}
 
 
 @router.post("/emergency-stop")
@@ -221,7 +283,32 @@ async def websocket_channel(websocket: WebSocket, channel: str) -> None:
         return
 
 
-async def _submit_paper_order(plan: OrderPlan) -> dict[str, object]:
+async def _submit_order(plan: OrderPlan) -> dict[str, object]:
+    try:
+        state.order_validator.validate(plan)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if state.safe_mode:
+        return {"accepted": False, "reason": state.safe_mode_reason or "SAFE_MODE đang bật"}
+    if state.trading_mode == TradingMode.DEMO:
+        try:
+            result = await state.demo_exchange.submit_order_plan(plan)
+        except ExchangeCredentialsError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except ExchangeError as exc:
+            raise HTTPException(status_code=502, detail=str(exc)) from exc
+        await state.storage.save_order_bundle(
+            order=result.order,
+            fills=result.fills,
+            positions=result.positions,
+            trades=result.trades,
+            performance=state.execution.performance().model_dump(mode="json"),
+        )
+        if result.critical_alert:
+            state.enter_safe_mode(result.critical_alert)
+            await state.storage.log(result.critical_alert, result.model_dump(mode="json"), level="CRITICAL")
+        return result.model_dump(mode="json")
+
     try:
         before_fills = len(state.execution.fills)
         before_trades = len(state.execution.trades)
@@ -257,6 +344,8 @@ async def _channel_payload(channel: str) -> dict[str, object]:
         return {"channel": channel, "data": state.execution.performance().model_dump(mode="json")}
     if channel == "system":
         return {"channel": channel, "data": await status()}
+    if channel == "exchange":
+        return {"channel": channel, "data": await exchange_snapshot()}
     await asyncio.sleep(0)
     return {"channel": channel, "error": "Unknown channel"}
 

@@ -62,6 +62,10 @@ private struct HomeView: View {
                     MetricTile(title: "Sụt giảm vốn", value: percent(drawdown(model.performance)), tint: .red)
                     MetricTile(title: "Rủi ro mỗi lệnh", value: percent((model.status?.risk.riskPerTrade ?? 0) * 100), tint: .orange)
                     MetricTile(title: "Vị thế mở", value: "\(model.performance?.openPositions ?? model.positions.count)", tint: .purple)
+                    MetricTile(title: "Balance DEMO", value: money(model.exchange?.balance.balance), tint: .primary)
+                    MetricTile(title: "Available DEMO", value: money(model.exchange?.balance.available), tint: .green)
+                    MetricTile(title: "Margin DEMO", value: money(model.exchange?.balance.marginBalance), tint: .orange)
+                    MetricTile(title: "Kết nối exchange", value: viExchangeConnection(model.exchange?.connection), tint: model.exchange?.connection == "CONNECTED" ? .green : .red)
                 }
                 .padding()
 
@@ -79,8 +83,10 @@ private struct HomeView: View {
 
                 SectionBlock(title: "Sức khỏe hệ thống") {
                     InfoRow(label: "Realtime", value: model.realtimeState.rawValue)
+                    InfoRow(label: "Exchange", value: viExchangeConnection(model.exchange?.connection))
                     InfoRow(label: "Lần cập nhật", value: model.lastRealtimeAt.map(shortTime) ?? "-")
                     InfoRow(label: "Dừng khẩn cấp", value: model.status?.emergencyStop == true ? "Đang bật" : "Không")
+                    InfoRow(label: "SAFE_MODE", value: model.status?.safeMode == true ? "Đang bật" : "Không")
                     InfoRow(label: "Vị thế tối đa", value: "\(model.status?.risk.maxOpenPositions ?? 0)")
                 }
                 .padding()
@@ -314,6 +320,20 @@ private struct MoreView: View {
     var body: some View {
         NavigationStack {
             List {
+                Section("Chế độ giao dịch") {
+                    Picker("Chế độ", selection: Binding(
+                        get: { model.status?.mode ?? "PAPER" },
+                        set: { mode in Task { await model.setMode(mode) } }
+                    )) {
+                        Text("PAPER").tag("PAPER")
+                        Text("DEMO").tag("DEMO")
+                    }
+                    .pickerStyle(.segmented)
+                    InfoRow(label: "LIVE", value: model.status?.liveEnabled == true ? "Bật" : "Tắt")
+                    if let reason = model.status?.safeModeReason {
+                        Text(reason).foregroundStyle(.red)
+                    }
+                }
                 Section("Điều khiển bot") {
                     HStack {
                         ForEach(BotAction.allCases) { action in
@@ -351,6 +371,47 @@ private struct MoreView: View {
                     InfoRow(label: "Spread tối đa", value: "\(number(model.settings?.maxSpreadBps)) bps")
                     InfoRow(label: "Tuổi niêm yết tối thiểu", value: "\(model.settings?.minListingAgeDays ?? 0) ngày")
                     InfoRow(label: "Điểm vào lệnh tối thiểu", value: "\(model.settings?.minScoreToTrade ?? 0)")
+                }
+                Section("Order DEMO trên Binance") {
+                    if model.exchange?.orders.isEmpty != false {
+                        EmptyContent("Chưa có order DEMO từ Binance.")
+                    } else {
+                        ForEach(model.exchange?.orders ?? []) { order in
+                            VStack(alignment: .leading, spacing: 6) {
+                                HStack {
+                                    Text(order.symbol).font(.headline)
+                                    Spacer()
+                                    Text(order.status)
+                                }
+                                Text("\(viSide(order.side)) \(viOrderType(order.orderType)) - \(number(order.quantity))")
+                                    .font(.subheadline)
+                                    .foregroundStyle(.secondary)
+                                Text("SL/TP \(money(order.stopPrice)) - reduce-only \(order.reduceOnly ? "Có" : "Không")")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+                    }
+                }
+                Section("Vị thế DEMO trên Binance") {
+                    if model.exchange?.positions.isEmpty != false {
+                        EmptyContent("Chưa có vị thế DEMO từ Binance.")
+                    } else {
+                        ForEach(model.exchange?.positions ?? []) { position in
+                            VStack(alignment: .leading, spacing: 6) {
+                                HStack {
+                                    Text(position.symbol).font(.headline)
+                                    Spacer()
+                                    Text(viSide(position.side))
+                                }
+                                Text("Entry \(money(position.entryPrice)) - Mark \(money(position.markPrice))")
+                                    .font(.subheadline)
+                                Text("PNL \(money(position.unrealizedPnl)) - Thanh lý \(money(position.liquidationPrice)) - \(position.leverage ?? 0)x")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+                    }
                 }
             }
             .navigationTitle("Thêm")
@@ -581,6 +642,26 @@ private func viRegime(_ value: String) -> String {
 
 private func viSide(_ value: String) -> String {
     value == "LONG" ? "Long" : "Short"
+}
+
+private func viExchangeConnection(_ value: String?) -> String {
+    switch value {
+    case "CONNECTED": return "Đã kết nối"
+    case "STALE": return "Chậm"
+    case "SAFE_MODE": return "SAFE_MODE"
+    default: return "Chưa kết nối"
+    }
+}
+
+private func viOrderType(_ value: String) -> String {
+    switch value {
+    case "MARKET": return "Market"
+    case "LIMIT": return "Limit"
+    case "STOP_MARKET": return "Stop market"
+    case "TAKE_PROFIT_MARKET": return "Take profit"
+    case "TRAILING_STOP_MARKET": return "Trailing stop"
+    default: return value
+    }
 }
 
 private func viNotificationStatus(_ value: UNAuthorizationStatus) -> String {

@@ -13,6 +13,19 @@ import Testing
       "live_enabled": false,
       "bot_state": "PAUSED",
       "emergency_stop": false,
+      "safe_mode": false,
+      "safe_mode_reason": null,
+      "exchange": {
+        "mode": "PAPER",
+        "connection": "DISCONNECTED",
+        "safe_mode": false,
+        "safe_mode_reason": null,
+        "balance": { "asset": "USDT", "balance": 0, "available": 0, "margin_balance": 0, "unrealized_pnl": 0 },
+        "orders": [],
+        "positions": [],
+        "last_reconciled_at": null,
+        "last_user_stream_at": null
+      },
       "risk": {
         "max_leverage": 5,
         "risk_per_trade": 0.005,
@@ -29,6 +42,7 @@ import Testing
     #expect(status.mode == "PAPER")
     #expect(status.liveEnabled == false)
     #expect(status.botState == "PAUSED")
+    #expect(status.exchange.connection == "DISCONNECTED")
     #expect(status.risk.maxOpenPositions == 4)
 }
 

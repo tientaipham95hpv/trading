@@ -9,6 +9,7 @@ public final class TradingViewModel: ObservableObject {
     @Published public private(set) var positions: [ViThe] = []
     @Published public private(set) var trades: [LenhDaChot] = []
     @Published public private(set) var performance: HieuSuat?
+    @Published public private(set) var exchange: ExchangeSnapshot?
     @Published public private(set) var settings: CaiDatBot?
     @Published public private(set) var realtimeState: KetNoiRealtime = .offline
     @Published public private(set) var lastRealtimeAt: Date?
@@ -77,6 +78,7 @@ public final class TradingViewModel: ObservableObject {
             async let nextPositions = api.positions()
             async let nextTrades = api.trades()
             async let nextPerformance = api.performance()
+            async let nextExchange = api.exchange()
             async let nextSettings = api.settings()
 
             status = try await nextStatus
@@ -85,6 +87,7 @@ public final class TradingViewModel: ObservableObject {
             positions = try await nextPositions
             trades = try await nextTrades
             performance = try await nextPerformance
+            exchange = try await nextExchange
             settings = try await nextSettings
             errorMessage = nil
         } catch {
@@ -112,6 +115,19 @@ public final class TradingViewModel: ObservableObject {
             let response = try await api.controlBot(action)
             status = try await api.status()
             errorMessage = "Bot đã chuyển sang \(viBotState(response.botState))."
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+
+    public func setMode(_ mode: String) async {
+        do {
+            let response = try await api.setMode(mode)
+            if response.accepted {
+                await refreshAll()
+            } else {
+                errorMessage = response.reason ?? "Không đổi được chế độ"
+            }
         } catch {
             errorMessage = error.localizedDescription
         }

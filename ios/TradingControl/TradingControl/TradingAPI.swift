@@ -49,12 +49,21 @@ public actor TradingAPI {
         try await get("/api/performance")
     }
 
+    public func exchange() async throws -> ExchangeSnapshot {
+        try await get("/api/exchange")
+    }
+
     public func settings() async throws -> CaiDatBot {
         try await get("/api/settings")
     }
 
     public func updateSettings(_ settings: CaiDatBot) async throws -> CaiDatBot {
         try await send("/api/settings", method: "PUT", body: settings)
+    }
+
+    @discardableResult
+    public func setMode(_ mode: String) async throws -> ModeResponse {
+        try await post("/api/mode/\(mode)")
     }
 
     @discardableResult
@@ -128,6 +137,12 @@ public enum BotAction: String, CaseIterable, Identifiable {
         case .stop: return "Dừng"
         }
     }
+}
+
+public struct ModeResponse: Codable {
+    public let accepted: Bool
+    public let mode: String?
+    public let reason: String?
 }
 
 public enum TradingAPIError: Error, LocalizedError {
