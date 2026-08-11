@@ -1,0 +1,68 @@
+import Foundation
+import Testing
+@testable import TradingControl
+
+@Test func packageLoads() async throws {
+    _ = TradingControlView()
+}
+
+@Test func trangThaiBotDecodesSnakeCaseBackendPayload() async throws {
+    let data = """
+    {
+      "mode": "PAPER",
+      "live_enabled": false,
+      "bot_state": "PAUSED",
+      "emergency_stop": false,
+      "risk": {
+        "max_leverage": 5,
+        "risk_per_trade": 0.005,
+        "max_risk_per_trade": 0.01,
+        "max_daily_loss": 0.04,
+        "max_open_positions": 4,
+        "minimum_risk_reward": 1.8
+      }
+    }
+    """.data(using: .utf8)!
+
+    let status = try JSONDecoder().decode(TrangThaiBot.self, from: data)
+
+    #expect(status.mode == "PAPER")
+    #expect(status.liveEnabled == false)
+    #expect(status.botState == "PAUSED")
+    #expect(status.risk.maxOpenPositions == 4)
+}
+
+@Test func scannerRealtimeEnvelopeDecodesItems() async throws {
+    let data = """
+    {
+      "channel": "scanner",
+      "items": [
+        {
+          "symbol": "BTCUSDT",
+          "timeframe": "15m",
+          "regime": "TRENDING_UP",
+          "long_score": 82,
+          "short_score": 20,
+          "action": "LONG",
+          "strategy": "Trend Pullback",
+          "price": 65000,
+          "price_change_percent": 1.2,
+          "quote_volume": 1000000000,
+          "funding_rate": 0.0001,
+          "stop_loss": 64000,
+          "take_profits": [66000, 67000],
+          "risk_reward": 2.1,
+          "indicators": { "atr": 250, "rsi": 58, "adx": 24, "ema20": 64900, "ema50": 64500, "ema200": 62000, "macd_histogram": 12, "vwap": 64800 },
+          "reasons": ["trend"],
+          "scanned_at": "2026-08-11T05:00:00Z"
+        }
+      ]
+    }
+    """.data(using: .utf8)!
+
+    let envelope = try JSONDecoder().decode(GoiRealtime<TinHieuQuet>.self, from: data)
+
+    #expect(envelope.channel == "scanner")
+    #expect(envelope.items?.first?.symbol == "BTCUSDT")
+    #expect(envelope.items?.first?.longScore == 82)
+}

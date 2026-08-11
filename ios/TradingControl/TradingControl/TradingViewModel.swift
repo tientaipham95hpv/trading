@@ -1,0 +1,126 @@
+import Combine
+import Foundation
+
+@MainActor
+public final class TradingViewModel: ObservableObject {
+    @Published public private(set) var status: TrangThaiBot?
+    @Published public private(set) var markets: [ThiTruong] = []
+    @Published public private(set) var scanner: [TinHieuQuet] = []
+    @Published public private(set) var positions: [ViThe] = []
+    @Published public private(set) var trades: [LenhDaChot] = []
+    @Published public private(set) var performance: HieuSuat?
+    @Published public private(set) var settings: CaiDatBot?
+    @Published public private(set) var realtimeState: KetNoiRealtime = .offline
+    @Published public private(set) var lastRealtimeAt: Date?
+    @Published public var errorMessage: String?
+    @Published public var tokenDraft: String = ""
+
+    private let api: TradingAPI
+    private let authStore: SecureAuthStore
+    private let biometricGate: BiometricGate
+    private let systemRealtime: RealtimeClient
+    private let scannerRealtime: RealtimeClient
+    private var refreshTask: Task<Void, Never>?
+
+    public init(
+        api: TradingAPI = .shared,
+        authStore: SecureAuthStore = .shared,
+        biometricGate: BiometricGate = BiometricGate()
+    ) {
+        self.api = api
+        self.authStore = authStore
+        self.biometricGate = biometricGate
+        self.systemRealtime = RealtimeClient(api: api)
+        self.scannerRealtime = RealtimeClient(api: api)
+        self.tokenDraft = authStore.loadToken() ?? ""
+    }
+
+    deinit {
+        refreshTask?.cancel()
+        systemRealtime.close()
+        scannerRealtime.close()
+    }
+
+    public func start() {
+        refreshTask?.cancel()
+        refreshTask = Task { [weak self] in
+            guard let self else { return }
+            await refreshAll()
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: 30_000_000_000)
+                await refreshAll()
+            }
+        }
+        systemRealtime.connectSystem { [weak self] nextStatus in
+            await MainActor.run {
+                self?.status = nextStatus
+                self?.lastRealtimeAt = Date()
+            }
+        } onState: { [weak self] state in
+            await MainActor.run { self?.setRealtime(state) }
+        }
+        scannerRealtime.connectScanner { [weak self] nextScanner in
+            await MainActor.run {
+                self?.scanner = nextScanner
+                self?.lastRealtimeAt = Date()
+            }
+        } onState: { [weak self] state in
+            await MainActor.run { self?.setRealtime(state) }
+        }
+    }
+
+    public func refreshAll() async {
+        do {
+            async let nextStatus = api.status()
+            async let nextMarkets = api.markets()
+            async let nextScanner = api.scanner()
+            async let nextPositions = api.positions()
+            async let nextTrades = api.trades()
+            async let nextPerformance = api.performance()
+            async let nextSettings = api.settings()
+
+            status = try await nextStatus
+            markets = try await nextMarkets
+            scanner = try await nextScanner
+            positions = try await nextPositions
+            trades = try await nextTrades
+            performance = try await nextPerformance
+            settings = try await nextSettings
+            errorMessage = nil
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+
+    public func saveToken() {
+        do {
+            if tokenDraft.isEmpty {
+                try authStore.clearToken()
+            } else {
+                try authStore.saveToken(tokenDraft)
+            }
+            errorMessage = nil
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+
+    public func controlBot(_ action: BotAction) async {
+        do {
+            let allowed = try await biometricGate.authorizeSensitiveAction(reason: "Xác thực Face ID để \(action.title.lowercased()) bot PAPER.")
+            guard allowed else { return }
+            let response = try await api.controlBot(action)
+            status = try await api.status()
+            errorMessage = "Bot đã chuyển sang \(viBotState(response.botState))."
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+
+    private func setRealtime(_ state: KetNoiRealtime) {
+        realtimeState = state
+        if state == .live {
+            lastRealtimeAt = Date()
+        }
+    }
+}

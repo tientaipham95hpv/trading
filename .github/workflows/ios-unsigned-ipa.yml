@@ -1,0 +1,64 @@
+name: Build iOS unsigned IPA
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+jobs:
+  build-ios:
+    name: Build unsigned IPA
+    runs-on: macos-15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Select Xcode
+        run: |
+          if [ -d /Applications/Xcode_16.4.app ]; then
+            sudo xcode-select -s /Applications/Xcode_16.4.app/Contents/Developer
+          elif [ -d /Applications/Xcode_16.3.app ]; then
+            sudo xcode-select -s /Applications/Xcode_16.3.app/Contents/Developer
+          else
+            sudo xcode-select -s /Applications/Xcode.app/Contents/Developer
+          fi
+          xcodebuild -version
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Generate Xcode project
+        working-directory: ios/TradingControlApp
+        run: xcodegen generate
+
+      - name: Build unsigned app
+        working-directory: ios/TradingControlApp
+        run: |
+          set -euo pipefail
+          DERIVED_DATA="$PWD/DerivedData"
+          xcodebuild \
+            -project TradingControlApp.xcodeproj \
+            -scheme TradingControlApp \
+            -configuration Release \
+            -sdk iphoneos \
+            -destination 'generic/platform=iOS' \
+            -derivedDataPath "$DERIVED_DATA" \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            build
+
+          APP_PATH="$DERIVED_DATA/Build/Products/Release-iphoneos/TradingControlApp.app"
+          test -d "$APP_PATH"
+          rm -rf Payload TradingControlApp-unsigned.ipa
+          mkdir -p Payload
+          cp -R "$APP_PATH" Payload/
+          /usr/bin/zip -qry TradingControlApp-unsigned.ipa Payload
+
+      - name: Upload unsigned IPA
+        uses: actions/upload-artifact@v4
+        with:
+          name: TradingControlApp-unsigned-ipa
+          path: ios/TradingControlApp/TradingControlApp-unsigned.ipa
+          if-no-files-found: error

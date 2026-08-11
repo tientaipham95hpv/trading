@@ -1,0 +1,30 @@
+name: TradingControlApp
+options:
+  bundleIdPrefix: live.cineviet
+  deploymentTarget:
+    iOS: "17.0"
+packages:
+  TradingControl:
+    path: ../TradingControl
+targets:
+  TradingControlApp:
+    type: application
+    platform: iOS
+    deploymentTarget: "17.0"
+    sources:
+      - TradingControlApp
+    dependencies:
+      - package: TradingControl
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: live.cineviet.tradingcontrol
+        PRODUCT_NAME: TradingControlApp
+        INFOPLIST_FILE: TradingControlApp/Info.plist
+        CODE_SIGN_STYLE: Manual
+        DEVELOPMENT_TEAM: ""
+        SWIFT_VERSION: "5.10"
+      configs:
+        Debug:
+          SWIFT_OPTIMIZATION_LEVEL: "-Onone"
+        Release:
+          SWIFT_OPTIMIZATION_LEVEL: "-O"
