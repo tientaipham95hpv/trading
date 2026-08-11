@@ -86,7 +86,7 @@ private struct HomeView: View {
                 .padding()
             }
             .navigationTitle("Trang chủ")
-            .toolbar { RefreshButton(model: model) }
+            .toolbar { RefreshToolbarItem(model: model) }
         }
     }
 }
@@ -138,7 +138,7 @@ private struct MarketsView: View {
                         }
                     }
                 }
-                ToolbarItem(placement: .topBarTrailing) { RefreshButton(model: model) }
+                ToolbarItem(placement: .topBarTrailing) { RefreshButtonView(model: model) }
             }
             .overlay { if rows.isEmpty { EmptyContent("Chưa có dữ liệu thị trường thật từ backend.") } }
         }
@@ -173,7 +173,7 @@ private struct ScannerView: View {
                         Text("Không vào lệnh").tag("NO_TRADE")
                     }
                 }
-                ToolbarItem(placement: .topBarTrailing) { RefreshButton(model: model) }
+                ToolbarItem(placement: .topBarTrailing) { RefreshButtonView(model: model) }
             }
             .overlay { if rows.isEmpty { EmptyContent("Chưa có tín hiệu realtime từ backend.") } }
         }
@@ -207,7 +207,7 @@ private struct PositionsView: View {
                 }
             }
             .navigationTitle("Vị thế")
-            .toolbar { RefreshButton(model: model) }
+            .toolbar { RefreshToolbarItem(model: model) }
             .overlay { if model.positions.isEmpty { EmptyContent("Chưa có vị thế PAPER đang mở.") } }
         }
     }
@@ -354,7 +354,7 @@ private struct MoreView: View {
                 }
             }
             .navigationTitle("Thêm")
-            .toolbar { RefreshButton(model: model) }
+            .toolbar { RefreshToolbarItem(model: model) }
         }
     }
 
@@ -466,16 +466,24 @@ private struct EmptyContent: View {
     }
 }
 
-private struct RefreshButton: ToolbarContent {
+private struct RefreshToolbarItem: ToolbarContent {
     @ObservedObject var model: TradingViewModel
 
     var body: some ToolbarContent {
         ToolbarItem(placement: .topBarTrailing) {
-            Button {
-                Task { await model.refreshAll() }
-            } label: {
-                Label("Làm mới", systemImage: "arrow.clockwise")
-            }
+            RefreshButtonView(model: model)
+        }
+    }
+}
+
+private struct RefreshButtonView: View {
+    @ObservedObject var model: TradingViewModel
+
+    var body: some View {
+        Button {
+            Task { await model.refreshAll() }
+        } label: {
+            Label("Làm mới", systemImage: "arrow.clockwise")
         }
     }
 }
