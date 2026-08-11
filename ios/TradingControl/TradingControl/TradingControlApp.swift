@@ -377,7 +377,7 @@ private struct ScannerRow: View {
                 Spacer()
                 Text(viAction(item.action))
                     .fontWeight(.semibold)
-                    .foregroundStyle(item.action == "NO_TRADE" ? .secondary : item.action == "LONG" ? .green : .red)
+                    .foregroundStyle(scannerActionColor(item.action))
             }
             HStack {
                 Text("Giá \(money(item.price))")
@@ -591,6 +591,14 @@ private func viNotificationStatus(_ value: UNAuthorizationStatus) -> String {
     case .notDetermined: return "Chưa hỏi"
     case .provisional: return "Tạm cho phép"
     @unknown default: return "Không rõ"
+    }
+}
+
+private func scannerActionColor(_ value: String) -> Color {
+    switch value {
+    case "LONG": return .green
+    case "SHORT": return .red
+    default: return .secondary
     }
 }
 
