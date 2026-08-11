@@ -1,8 +1,11 @@
 from app.core.settings import Settings
 from app.domain.models import BotSettings, BotState, EmergencyStopState, TradingMode
+from app.services.ai_evaluator import AiEvaluator
+from app.services.backtest import BacktestService
 from app.services.binance_client import BinanceMarketDataClient
 from app.services.exchange import BinanceFuturesAdapter
 from app.services.execution import ExecutionService
+from app.services.notifications import NotificationService
 from app.services.order_pipeline import OrderValidator, PositionSizer
 from app.services.risk_engine import RiskEngine
 from app.services.scanner import FuturesScanner
@@ -20,6 +23,19 @@ def bot_settings_from_env(settings: Settings) -> BotSettings:
         maker_fee_rate=settings.maker_fee_rate,
         slippage_bps=settings.slippage_bps,
         funding_rate_per_8h=settings.funding_rate_per_8h,
+        max_leverage=settings.max_leverage,
+        risk_per_trade=settings.risk_per_trade,
+        max_risk_per_trade=settings.max_risk_per_trade,
+        max_daily_loss=settings.max_daily_loss,
+        max_weekly_drawdown=settings.max_weekly_drawdown,
+        max_open_positions=settings.max_open_positions,
+        max_portfolio_exposure=settings.max_portfolio_exposure,
+        max_correlated_positions=settings.max_correlated_positions,
+        max_loss_streak=settings.max_loss_streak,
+        loss_streak_cooldown_minutes=settings.loss_streak_cooldown_minutes,
+        extreme_volatility_atr_fraction=settings.extreme_volatility_atr_fraction,
+        stale_data_seconds=settings.stale_data_seconds,
+        minimum_risk_reward=settings.minimum_risk_reward,
     )
 
 
@@ -34,6 +50,9 @@ class AppState:
         self.market_client = BinanceMarketDataClient(settings.binance_base_url)
         self.scanner = FuturesScanner(self.market_client, bot_settings)
         self.execution = ExecutionService(bot_settings)
+        self.ai = AiEvaluator(enabled=settings.ai_evaluator_enabled)
+        self.backtest = BacktestService()
+        self.notifications = NotificationService()
         self.position_sizer = PositionSizer()
         self.order_validator = OrderValidator()
         self.demo_exchange = BinanceFuturesAdapter(
@@ -41,13 +60,27 @@ class AppState:
             api_secret=settings.binance_demo_api_secret or settings.binance_api_secret,
             base_url=settings.binance_demo_base_url,
             stream_url=settings.binance_demo_stream_url,
+            mode=TradingMode.DEMO,
+        )
+        self.live_exchange = BinanceFuturesAdapter(
+            api_key=settings.binance_api_key,
+            api_secret=settings.binance_api_secret,
+            base_url=settings.binance_base_url,
+            stream_url="wss://fstream.binance.com",
+            mode=TradingMode.LIVE,
         )
         self.risk = RiskEngine(
             max_leverage=settings.max_leverage,
             risk_per_trade=settings.risk_per_trade,
             max_risk_per_trade=settings.max_risk_per_trade,
             max_daily_loss=settings.max_daily_loss,
+            max_weekly_drawdown=settings.max_weekly_drawdown,
             max_open_positions=settings.max_open_positions,
+            max_portfolio_exposure=settings.max_portfolio_exposure,
+            max_correlated_positions=settings.max_correlated_positions,
+            max_loss_streak=settings.max_loss_streak,
+            extreme_volatility_atr_fraction=settings.extreme_volatility_atr_fraction,
+            stale_data_seconds=settings.stale_data_seconds,
             minimum_risk_reward=settings.minimum_risk_reward,
         )
         self.storage = Storage(settings.database_url)

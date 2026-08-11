@@ -1,9 +1,19 @@
 import asyncio
+from datetime import UTC, datetime
 from uuid import uuid4
 
 from fastapi import APIRouter, HTTPException, Query, WebSocket, WebSocketDisconnect
 
-from app.domain.models import BotSettings, BotState, OrderPlan, SignalAction, Timeframe, TradingMode
+from app.domain.models import (
+    BotSettings,
+    BotState,
+    LiveReadiness,
+    NotificationEvent,
+    OrderPlan,
+    SignalAction,
+    Timeframe,
+    TradingMode,
+)
 from app.services.app_state import state
 from app.services.exchange import ExchangeCredentialsError, ExchangeError
 from app.services.execution import DuplicateOrderError
@@ -20,15 +30,20 @@ async def status() -> dict[str, object]:
         "emergency_stop": state.emergency_stop.active,
         "safe_mode": state.safe_mode,
         "safe_mode_reason": state.safe_mode_reason,
-        "exchange": state.demo_exchange.snapshot_cache.model_dump(mode="json"),
+        "exchange": (state.live_exchange if state.trading_mode == TradingMode.LIVE else state.demo_exchange).snapshot_cache.model_dump(mode="json"),
         "risk": {
-            "max_leverage": state.settings.max_leverage,
-            "risk_per_trade": state.settings.risk_per_trade,
-            "max_risk_per_trade": state.settings.max_risk_per_trade,
-            "max_daily_loss": state.settings.max_daily_loss,
-            "max_open_positions": state.settings.max_open_positions,
-            "minimum_risk_reward": state.settings.minimum_risk_reward,
+            "max_leverage": state.bot_settings.max_leverage,
+            "risk_per_trade": state.bot_settings.risk_per_trade,
+            "max_risk_per_trade": state.bot_settings.max_risk_per_trade,
+            "max_daily_loss": state.bot_settings.max_daily_loss,
+            "max_weekly_drawdown": state.bot_settings.max_weekly_drawdown,
+            "max_open_positions": state.bot_settings.max_open_positions,
+            "max_portfolio_exposure": state.bot_settings.max_portfolio_exposure,
+            "max_correlated_positions": state.bot_settings.max_correlated_positions,
+            "max_loss_streak": state.bot_settings.max_loss_streak,
+            "minimum_risk_reward": state.bot_settings.minimum_risk_reward,
         },
+        "live_readiness": _live_readiness().model_dump(mode="json"),
     }
 
 
@@ -79,20 +94,38 @@ async def paper_from_signal(symbol: str) -> dict[str, object]:
     signal = state.scanner.signal_from_result(result)
     if signal is None:
         raise HTTPException(status_code=400, detail="Signal không hợp lệ")
+    signal = await state.ai.score(signal)
+    if signal.metadata.get("ai_action") == "NO_TRADE":
+        return {"accepted": False, "reason": "AI trả NO_TRADE hoặc timeout"}
     decision = state.risk.evaluate(
         signal,
         open_positions=len(state.execution.open_positions()),
         daily_loss_fraction=_daily_loss_fraction(),
         emergency_stop=state.emergency_stop,
         account_equity=state.execution.performance().equity,
+        weekly_drawdown_fraction=_weekly_drawdown_fraction(),
+        portfolio_exposure_fraction=_portfolio_exposure_fraction(),
+        correlated_positions=_correlated_positions(signal.symbol),
+        loss_streak=_loss_streak(),
+        market_regime=result.regime,
+        atr_fraction=(result.indicators.atr / result.price) if result.indicators.atr else None,
+        data_age_seconds=max(0.0, (datetime.now(UTC) - result.scanned_at).total_seconds()),
+        safe_mode=state.safe_mode,
     )
     if not decision.accepted or decision.quantity is None:
+        notification = state.notifications.build(
+            NotificationEvent.RISK_LIMIT,
+            title="Risk limit",
+            body=decision.reason or "Risk rejected",
+            data={"symbol": signal.symbol},
+        )
+        await state.storage.log("APNs-ready notification", notification.model_dump(mode="json"), level="WARNING")
         return {"accepted": False, "reason": decision.reason}
     plan = OrderPlan(
         client_order_id=f"{state.trading_mode.value.lower()}-{signal.symbol}-{uuid4()}",
         symbol=signal.symbol,
         side=signal.side,
-            quantity=state.position_sizer.apply(decision),
+        quantity=state.position_sizer.apply(decision),
         entry_price=signal.entry_price,
         stop_loss=signal.stop_loss,
         leverage=signal.leverage,
@@ -133,6 +166,15 @@ async def mark_position(symbol: str, price: float) -> dict[str, object]:
             trades=[item.model_dump(mode="json") for item in trades],
             performance=state.execution.performance({symbol.upper(): price}).model_dump(mode="json"),
         )
+        for trade in trades:
+            event = NotificationEvent.TP if trade.reason == "TP" else NotificationEvent.SL if trade.reason == "SL" else NotificationEvent.POSITION_CLOSE
+            notification = state.notifications.build(
+                event,
+                title=event.value,
+                body=f"{trade.symbol} {trade.reason} {trade.net_pnl:.2f}",
+                data={"symbol": trade.symbol, "reason": trade.reason},
+            )
+            await state.storage.log("APNs-ready notification", notification.model_dump(mode="json"), level="INFO")
     return {
         "closed_trades": [item.model_dump(mode="json") for item in trades],
         "positions": [item.model_dump(mode="json") for item in state.execution.positions],
@@ -155,6 +197,12 @@ async def performance() -> dict[str, object]:
     return state.execution.performance().model_dump(mode="json")
 
 
+@router.get("/backtest")
+async def backtest() -> dict[str, object]:
+    metrics = state.backtest.metrics(state.execution.trades)
+    return metrics.model_dump(mode="json")
+
+
 @router.get("/risk")
 async def risk() -> dict[str, object]:
     return (await status())["risk"]  # type: ignore[index]
@@ -170,6 +218,18 @@ async def update_settings(settings: BotSettings) -> BotSettings:
     state.bot_settings = settings
     state.scanner.settings = settings
     state.execution.settings = settings
+    state.risk.max_leverage = settings.max_leverage
+    state.risk.risk_per_trade = settings.risk_per_trade
+    state.risk.max_risk_per_trade = settings.max_risk_per_trade
+    state.risk.max_daily_loss = settings.max_daily_loss
+    state.risk.max_weekly_drawdown = settings.max_weekly_drawdown
+    state.risk.max_open_positions = settings.max_open_positions
+    state.risk.max_portfolio_exposure = settings.max_portfolio_exposure
+    state.risk.max_correlated_positions = settings.max_correlated_positions
+    state.risk.max_loss_streak = settings.max_loss_streak
+    state.risk.extreme_volatility_atr_fraction = settings.extreme_volatility_atr_fraction
+    state.risk.stale_data_seconds = settings.stale_data_seconds
+    state.risk.minimum_risk_reward = settings.minimum_risk_reward
     await state.storage.log("Cập nhật bot settings", settings.model_dump(mode="json"))
     return settings
 
@@ -204,7 +264,9 @@ async def set_mode(mode: TradingMode) -> dict[str, object]:
     if mode == TradingMode.LIVE and not state.settings.live_trading_enabled:
         return {"accepted": False, "reason": "Chế độ LIVE đang bị tắt trong cấu hình"}
     if mode == TradingMode.LIVE:
-        return {"accepted": False, "reason": "Phase 4 chưa bật LIVE"}
+        readiness = _live_readiness()
+        if not readiness.allowed:
+            return {"accepted": False, "reason": "; ".join(readiness.blockers)}
     state.trading_mode = mode
     await state.storage.log("Đổi trading mode", {"mode": mode.value})
     return {"accepted": True, "mode": mode.value}
@@ -214,23 +276,32 @@ async def set_mode(mode: TradingMode) -> dict[str, object]:
 async def exchange_snapshot() -> dict[str, object]:
     if state.trading_mode == TradingMode.PAPER:
         return state.demo_exchange.snapshot_cache.model_dump(mode="json")
+    adapter = state.live_exchange if state.trading_mode == TradingMode.LIVE else state.demo_exchange
     try:
-        return (await state.demo_exchange.snapshot()).model_dump(mode="json")
+        return (await adapter.snapshot()).model_dump(mode="json")
     except ExchangeCredentialsError as exc:
-        return state.demo_exchange.snapshot_cache.model_copy(
+        return adapter.snapshot_cache.model_copy(
             update={"safe_mode_reason": str(exc)}
         ).model_dump(mode="json")
     except ExchangeError as exc:
         await state.storage.log("Exchange DEMO disconnected", {"error": str(exc)}, level="WARNING")
-        return state.demo_exchange.snapshot_cache.model_copy(
+        notification = state.notifications.build(
+            NotificationEvent.API_DISCONNECT,
+            title="API disconnect",
+            body=str(exc),
+            data={"mode": state.trading_mode.value},
+        )
+        await state.storage.log("APNs-ready notification", notification.model_dump(mode="json"), level="WARNING")
+        return adapter.snapshot_cache.model_copy(
             update={"connection": "STALE", "safe_mode_reason": str(exc)}
         ).model_dump(mode="json")
 
 
 @router.post("/exchange/reconcile")
 async def exchange_reconcile() -> dict[str, object]:
+    adapter = state.live_exchange if state.trading_mode == TradingMode.LIVE else state.demo_exchange
     try:
-        snapshot = await state.demo_exchange.reconcile(
+        snapshot = await adapter.reconcile(
             [position.model_dump(mode="json") for position in state.execution.open_positions()]
         )
     except ExchangeCredentialsError as exc:
@@ -247,8 +318,9 @@ async def exchange_reconcile() -> dict[str, object]:
 
 @router.post("/exchange/user-stream")
 async def exchange_user_stream() -> dict[str, object]:
+    adapter = state.live_exchange if state.trading_mode == TradingMode.LIVE else state.demo_exchange
     try:
-        url = await state.demo_exchange.open_user_stream()
+        url = await adapter.open_user_stream()
     except ExchangeCredentialsError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except ExchangeError as exc:
@@ -256,11 +328,56 @@ async def exchange_user_stream() -> dict[str, object]:
     return {"stream_url": url}
 
 
+@router.get("/live/readiness")
+async def live_readiness() -> dict[str, object]:
+    return _live_readiness().model_dump(mode="json")
+
+
+@router.post("/controls/pause-new-trades")
+async def pause_new_trades() -> dict[str, object]:
+    state.bot_state = BotState.PAUSED
+    await state.storage.log("Pause New Trades", {"mode": state.trading_mode.value}, level="WARNING")
+    return {"accepted": True, "bot_state": state.bot_state}
+
+
+@router.post("/controls/cancel-orders")
+async def cancel_orders(symbol: str | None = None) -> dict[str, object]:
+    adapter = state.live_exchange if state.trading_mode == TradingMode.LIVE else state.demo_exchange
+    if state.trading_mode == TradingMode.PAPER:
+        orders = state.execution.cancel_open_orders()
+        return {"accepted": True, "orders": [order.model_dump(mode="json") for order in orders]}
+    orders = await adapter.cancel_all_orders(symbol.upper() if symbol else None)
+    await state.storage.log("Cancel Orders", {"symbol": symbol, "mode": state.trading_mode.value}, level="WARNING")
+    return {"accepted": True, "orders": [order.model_dump(mode="json") for order in orders]}
+
+
+@router.post("/controls/close-all")
+async def close_all() -> dict[str, object]:
+    adapter = state.live_exchange if state.trading_mode == TradingMode.LIVE else state.demo_exchange
+    if state.trading_mode == TradingMode.PAPER:
+        trades = state.execution.close_all_positions()
+        return {
+            "accepted": True,
+            "trades": [trade.model_dump(mode="json") for trade in trades],
+            "positions": [item.model_dump(mode="json") for item in state.execution.positions],
+        }
+    orders = await adapter.close_all_positions()
+    await state.storage.log("Close All", {"mode": state.trading_mode.value}, level="CRITICAL")
+    return {"accepted": True, "orders": [order.model_dump(mode="json") for order in orders]}
+
+
 @router.post("/emergency-stop")
 async def activate_emergency_stop(reason: str = "manual") -> dict[str, object]:
     state.emergency_stop.active = True
     state.emergency_stop.reason = reason
     await state.storage.log("Dừng khẩn cấp đã bật", {"reason": reason}, level="WARNING")
+    notification = state.notifications.build(
+        NotificationEvent.EMERGENCY_STOP,
+        title="Emergency Stop",
+        body=reason,
+        data={"mode": state.trading_mode.value},
+    )
+    await state.storage.log("APNs-ready notification", notification.model_dump(mode="json"), level="CRITICAL")
     return state.emergency_stop.model_dump()
 
 
@@ -290,23 +407,44 @@ async def _submit_order(plan: OrderPlan) -> dict[str, object]:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     if state.safe_mode:
         return {"accepted": False, "reason": state.safe_mode_reason or "SAFE_MODE đang bật"}
-    if state.trading_mode == TradingMode.DEMO:
+    if state.trading_mode == TradingMode.LIVE:
+        readiness = _live_readiness()
+        if not readiness.allowed:
+            return {"accepted": False, "reason": "; ".join(readiness.blockers)}
+    if state.trading_mode in {TradingMode.DEMO, TradingMode.LIVE}:
+        adapter = state.live_exchange if state.trading_mode == TradingMode.LIVE else state.demo_exchange
         try:
-            result = await state.demo_exchange.submit_order_plan(plan)
+            result = await adapter.submit_order_plan(plan)
         except ExchangeCredentialsError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         except ExchangeError as exc:
             raise HTTPException(status_code=502, detail=str(exc)) from exc
-        await state.storage.save_order_bundle(
-            order=result.order,
-            fills=result.fills,
-            positions=result.positions,
-            trades=result.trades,
-            performance=state.execution.performance().model_dump(mode="json"),
-        )
+        if "DUPLICATE_ACK" not in result.status:
+            await state.storage.save_order_bundle(
+                order=result.order,
+                fills=result.fills,
+                positions=result.positions,
+                trades=result.trades,
+                performance=state.execution.performance().model_dump(mode="json"),
+            )
         if result.critical_alert:
             state.enter_safe_mode(result.critical_alert)
             await state.storage.log(result.critical_alert, result.model_dump(mode="json"), level="CRITICAL")
+            notification = state.notifications.build(
+                NotificationEvent.SAFE_MODE,
+                title="SAFE_MODE",
+                body=result.critical_alert,
+                data={"client_order_id": result.client_order_id},
+            )
+            await state.storage.log("APNs-ready notification", notification.model_dump(mode="json"), level="CRITICAL")
+        elif result.accepted:
+            notification = state.notifications.build(
+                NotificationEvent.POSITION_OPEN,
+                title="Position open",
+                body=f"{plan.symbol} {plan.side.value}",
+                data={"client_order_id": plan.client_order_id, "mode": state.trading_mode.value},
+            )
+            await state.storage.log("APNs-ready notification", notification.model_dump(mode="json"), level="INFO")
         return result.model_dump(mode="json")
 
     try:
@@ -324,6 +462,13 @@ async def _submit_order(plan: OrderPlan) -> dict[str, object]:
         trades=new_trades,
         performance=state.execution.performance().model_dump(mode="json"),
     )
+    notification = state.notifications.build(
+        NotificationEvent.POSITION_OPEN,
+        title="Position open",
+        body=f"{plan.symbol} {plan.side.value}",
+        data={"client_order_id": plan.client_order_id, "mode": state.trading_mode.value},
+    )
+    await state.storage.log("APNs-ready notification", notification.model_dump(mode="json"), level="INFO")
     return result
 
 
@@ -355,3 +500,53 @@ def _daily_loss_fraction() -> float:
     if realized >= 0:
         return 0.0
     return abs(realized) / state.bot_settings.paper_initial_balance
+
+
+def _weekly_drawdown_fraction() -> float:
+    performance = state.execution.performance()
+    if state.bot_settings.paper_initial_balance <= 0:
+        return 0.0
+    return performance.max_drawdown / state.bot_settings.paper_initial_balance
+
+
+def _portfolio_exposure_fraction() -> float:
+    equity = max(state.execution.performance().equity, 1.0)
+    exposure = sum(position.remaining_quantity * position.entry_price for position in state.execution.open_positions())
+    return exposure / equity
+
+
+def _correlated_positions(symbol: str) -> int:
+    base = symbol.replace("USDT", "")
+    bucket = "BTC_ETH" if base in {"BTC", "ETH"} else base[:3]
+    return sum(1 for position in state.execution.open_positions() if position.symbol.replace("USDT", "")[:3] == bucket[:3])
+
+
+def _loss_streak() -> int:
+    streak = 0
+    for trade in reversed(state.execution.trades):
+        if trade.net_pnl < 0:
+            streak += 1
+        else:
+            break
+    return streak
+
+
+def _live_readiness() -> LiveReadiness:
+    blockers: list[str] = []
+    checks = {
+        "all_tests_pass": state.settings.live_preflight_all_tests_pass,
+        "demo_stable": state.settings.live_preflight_demo_stable,
+        "sl_protection_pass": state.settings.live_preflight_sl_protection_pass,
+        "reconnect_pass": state.settings.live_preflight_reconnect_pass,
+        "reconciliation_pass": state.settings.live_preflight_reconciliation_pass,
+        "duplicate_order_tests_pass": state.settings.live_preflight_duplicate_order_tests_pass,
+    }
+    if not state.settings.live_trading_enabled:
+        blockers.append("LIVE mặc định OFF, cần bật thủ công bằng cấu hình")
+    for key, value in checks.items():
+        if not value:
+            blockers.append(key)
+    if state.safe_mode:
+        blockers.append(state.safe_mode_reason or "SAFE_MODE")
+    allowed = state.settings.live_trading_enabled and not blockers
+    return LiveReadiness(live_enabled=state.settings.live_trading_enabled, allowed=allowed, blockers=blockers, **checks)

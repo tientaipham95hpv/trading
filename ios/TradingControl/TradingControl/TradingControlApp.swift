@@ -60,6 +60,10 @@ private struct HomeView: View {
                     MetricTile(title: "Vốn hiện tại", value: money(model.performance?.equity), tint: .primary)
                     MetricTile(title: "PNL hôm nay", value: money(model.performance?.realizedPnl), tint: (model.performance?.realizedPnl ?? 0) >= 0 ? .green : .red)
                     MetricTile(title: "Sụt giảm vốn", value: percent(drawdown(model.performance)), tint: .red)
+                    MetricTile(title: "Profit Factor", value: number(model.performance?.profitFactor), tint: .primary)
+                    MetricTile(title: "Sharpe", value: number(model.performance?.sharpe), tint: .primary)
+                    MetricTile(title: "Sortino", value: number(model.performance?.sortino), tint: .primary)
+                    MetricTile(title: "Expectancy", value: money(model.performance?.expectancy), tint: .primary)
                     MetricTile(title: "Rủi ro mỗi lệnh", value: percent((model.status?.risk.riskPerTrade ?? 0) * 100), tint: .orange)
                     MetricTile(title: "Vị thế mở", value: "\(model.performance?.openPositions ?? model.positions.count)", tint: .purple)
                     MetricTile(title: "Balance DEMO", value: money(model.exchange?.balance.balance), tint: .primary)
@@ -88,6 +92,8 @@ private struct HomeView: View {
                     InfoRow(label: "Dừng khẩn cấp", value: model.status?.emergencyStop == true ? "Đang bật" : "Không")
                     InfoRow(label: "SAFE_MODE", value: model.status?.safeMode == true ? "Đang bật" : "Không")
                     InfoRow(label: "Vị thế tối đa", value: "\(model.status?.risk.maxOpenPositions ?? 0)")
+                    InfoRow(label: "LIVE readiness", value: model.status?.liveReadiness.allowed == true ? "PASS" : "BLOCK")
+                    InfoRow(label: "Blockers", value: model.status?.liveReadiness.blockers.joined(separator: " / ") ?? "-")
                 }
                 .padding()
             }
@@ -327,6 +333,7 @@ private struct MoreView: View {
                     )) {
                         Text("PAPER").tag("PAPER")
                         Text("DEMO").tag("DEMO")
+                        Text("LIVE").tag("LIVE")
                     }
                     .pickerStyle(.segmented)
                     InfoRow(label: "LIVE", value: model.status?.liveEnabled == true ? "Bật" : "Tắt")
@@ -344,6 +351,25 @@ private struct MoreView: View {
                             .tint(tint(for: action))
                         }
                     }
+                }
+                Section("LIVE Controls") {
+                    ForEach(TradingControlAction.allCases) { action in
+                        Button(action.title) {
+                            Task { await model.tradingControl(action) }
+                        }
+                        .buttonStyle(.bordered)
+                    }
+                    Button("Emergency Stop", role: .destructive) {
+                        Task { await model.emergencyStop() }
+                    }
+                }
+                Section("LIVE readiness") {
+                    InfoRow(label: "All tests", value: model.status?.liveReadiness.allTestsPass == true ? "PASS" : "BLOCK")
+                    InfoRow(label: "Demo stable", value: model.status?.liveReadiness.demoStable == true ? "PASS" : "BLOCK")
+                    InfoRow(label: "SL protection", value: model.status?.liveReadiness.slProtectionPass == true ? "PASS" : "BLOCK")
+                    InfoRow(label: "Reconnect", value: model.status?.liveReadiness.reconnectPass == true ? "PASS" : "BLOCK")
+                    InfoRow(label: "Reconciliation", value: model.status?.liveReadiness.reconciliationPass == true ? "PASS" : "BLOCK")
+                    InfoRow(label: "Duplicate order", value: model.status?.liveReadiness.duplicateOrderTestsPass == true ? "PASS" : "BLOCK")
                 }
                 Section("Xác thực backend") {
                     SecureField("Auth token", text: $model.tokenDraft)

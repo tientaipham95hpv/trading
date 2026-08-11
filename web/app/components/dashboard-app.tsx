@@ -12,9 +12,12 @@ import {
   Search,
   Settings,
   ShieldAlert,
+  ShieldX,
   Square,
+  Trash2,
   TrendingUp,
   WalletCards,
+  XCircle,
 } from "lucide-react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
@@ -180,7 +183,7 @@ export function DashboardApp({ page }: { page: PageKey }) {
             <h2 className="text-2xl font-bold">{currentPage.label}</h2>
           </div>
           <div className="flex flex-wrap items-center gap-2">
-            <ModeSelector current={status?.mode ?? "PAPER"} onDone={refresh} />
+            <ModeSelector current={status?.mode ?? "PAPER"} liveAllowed={status?.live_readiness.allowed ?? false} onDone={refresh} />
             <BotControls onDone={refresh} />
             <Pill label="Chế độ" value={status?.mode ?? "PAPER"} tone="neutral" />
             <Pill label="LIVE" value={status?.live_enabled ? "ON" : "OFF"} tone={status?.live_enabled ? "danger" : "safe"} />
@@ -223,6 +226,9 @@ function Dashboard({ exchange, performance, positions, status }: { exchange: Exc
         <Metric label="Tỷ lệ thắng" value={percent((performance?.win_rate ?? 0) * 100)} />
         <Metric label="Sụt giảm vốn" value={percent(drawdown(performance))} tone="bad" />
         <Metric label="Hệ số lợi nhuận" value={profitFactor(performance)} />
+        <Metric label="Sharpe" value={number(performance?.sharpe)} />
+        <Metric label="Sortino" value={number(performance?.sortino)} />
+        <Metric label="Expectancy" value={money(performance?.expectancy)} />
         <Metric label="Vị thế mở" value={String(performance?.open_positions ?? positions.length)} />
         <Metric label="Rủi ro đã dùng" value={percent(((performance?.open_positions ?? 0) / (status?.risk.max_open_positions ?? 4)) * 100)} />
         <Metric label="Balance DEMO" value={money(exchange?.balance.balance)} />
@@ -241,7 +247,32 @@ function Dashboard({ exchange, performance, positions, status }: { exchange: Exc
         <ExchangeOrders orders={exchange?.orders ?? []} />
         <ExchangePositions positions={exchange?.positions ?? []} />
       </div>
+      <LiveReadinessPanel status={status} />
     </div>
+  );
+}
+
+function LiveReadinessPanel({ status }: { status: StatusPayload | null }) {
+  const readiness = status?.live_readiness;
+  const checks = readiness
+    ? [
+        ["All tests", readiness.all_tests_pass],
+        ["Demo stable", readiness.demo_stable],
+        ["SL protection", readiness.sl_protection_pass],
+        ["Reconnect", readiness.reconnect_pass],
+        ["Reconciliation", readiness.reconciliation_pass],
+        ["Duplicate order", readiness.duplicate_order_tests_pass],
+      ]
+    : [];
+  return (
+    <DataPanel title="LIVE readiness">
+      <div className="grid gap-3 md:grid-cols-3">
+        {checks.map(([label, ok]) => (
+          <Pill key={String(label)} label={String(label)} value={ok ? "PASS" : "BLOCK"} tone={ok ? "safe" : "danger"} />
+        ))}
+      </div>
+      {readiness?.blockers.length ? <p className="mt-3 text-sm font-semibold text-red-700">{readiness.blockers.join(" / ")}</p> : null}
+    </DataPanel>
   );
 }
 
@@ -428,6 +459,12 @@ function Analytics({ performance, trades }: { performance: Performance | null; t
       <Metric label="PNL ròng" value={money(performance?.realized_pnl)} />
       <Metric label="Phí" value={money(performance?.fees_paid)} />
       <Metric label="Phí funding" value={money(performance?.funding_paid)} />
+      <Metric label="Profit Factor" value={profitFactor(performance)} />
+      <Metric label="DD" value={money(performance?.max_drawdown)} />
+      <Metric label="Sharpe" value={number(performance?.sharpe)} />
+      <Metric label="Sortino" value={number(performance?.sortino)} />
+      <Metric label="Expectancy" value={money(performance?.expectancy)} />
+      <Metric label="Winrate" value={percent((performance?.win_rate ?? 0) * 100)} />
       <section className="rounded-lg border border-slate-200 bg-white p-4 md:col-span-3">
         <h3 className="mb-3 font-bold">Phân bổ kết quả lệnh</h3>
         <Table columns={["Kết quả", "Số lượng"]} rows={[["Thắng", String(trades.filter((item) => item.net_pnl > 0).length)], ["Thua", String(trades.filter((item) => item.net_pnl <= 0).length)]]} />
@@ -443,8 +480,12 @@ function Risk({ status }: { status: StatusPayload | null }) {
       <Metric label="Rủi ro mỗi lệnh" value={percent((risk?.risk_per_trade ?? 0) * 100)} />
       <Metric label="Rủi ro tối đa mỗi lệnh" value={percent((risk?.max_risk_per_trade ?? 0) * 100)} />
       <Metric label="Lỗ tối đa mỗi ngày" value={percent((risk?.max_daily_loss ?? 0) * 100)} />
+      <Metric label="Weekly DD" value={percent((risk?.max_weekly_drawdown ?? 0) * 100)} />
       <Metric label="Vị thế tối đa" value={String(risk?.max_open_positions ?? "-")} />
       <Metric label="Đòn bẩy tối đa" value={`${risk?.max_leverage ?? "-"}x`} />
+      <Metric label="Exposure tối đa" value={percent((risk?.max_portfolio_exposure ?? 0) * 100)} />
+      <Metric label="Correlation tối đa" value={String(risk?.max_correlated_positions ?? "-")} />
+      <Metric label="Loss streak" value={String(risk?.max_loss_streak ?? "-")} />
       <Metric label="RR tối thiểu" value={number(risk?.minimum_risk_reward)} />
     </div>
   );
@@ -483,6 +524,12 @@ function SettingsPage({ settings, onSaved }: { settings: BotSettings; onSaved: (
         <NumberField label="Điểm vào lệnh tối thiểu" value={draft.min_score_to_trade} onChange={(value) => setDraft({ ...draft, min_score_to_trade: value })} />
         <NumberField label="Phí taker" value={draft.taker_fee_rate} step={0.0001} onChange={(value) => setDraft({ ...draft, taker_fee_rate: value })} />
         <NumberField label="Trượt giá bps" value={draft.slippage_bps} onChange={(value) => setDraft({ ...draft, slippage_bps: value })} />
+        <NumberField label="Rủi ro mỗi lệnh" value={draft.risk_per_trade} step={0.0005} onChange={(value) => setDraft({ ...draft, risk_per_trade: value })} />
+        <NumberField label="Rủi ro tối đa mỗi lệnh" value={draft.max_risk_per_trade} step={0.001} onChange={(value) => setDraft({ ...draft, max_risk_per_trade: value })} />
+        <NumberField label="Daily loss" value={draft.max_daily_loss} step={0.001} onChange={(value) => setDraft({ ...draft, max_daily_loss: value })} />
+        <NumberField label="Weekly DD" value={draft.max_weekly_drawdown} step={0.001} onChange={(value) => setDraft({ ...draft, max_weekly_drawdown: value })} />
+        <NumberField label="Đòn bẩy tối đa" value={draft.max_leverage} onChange={(value) => setDraft({ ...draft, max_leverage: value })} />
+        <NumberField label="Vị thế tối đa" value={draft.max_open_positions} onChange={(value) => setDraft({ ...draft, max_open_positions: value })} />
       </div>
       <div className="mt-4 flex justify-end">
         <button className="rounded-md bg-slate-950 px-4 py-2 text-sm font-bold text-white disabled:opacity-60" disabled={saving} onClick={() => void save()} type="button">
@@ -498,6 +545,14 @@ function BotControls({ onDone }: { onDone: () => Promise<void> }) {
     await api.bot(action);
     await onDone();
   }
+  async function control(action: "pause-new-trades" | "cancel-orders" | "close-all") {
+    await api.control(action);
+    await onDone();
+  }
+  async function emergency() {
+    await api.emergencyStop();
+    await onDone();
+  }
   return (
     <div className="flex rounded-md border border-slate-300 bg-white p-1">
       <button aria-label="Chạy bot" className="grid h-8 w-8 place-items-center rounded text-emerald-700 hover:bg-emerald-50" onClick={() => void act("start")} title="Chạy bot" type="button">
@@ -509,13 +564,25 @@ function BotControls({ onDone }: { onDone: () => Promise<void> }) {
       <button aria-label="Dừng bot" className="grid h-8 w-8 place-items-center rounded text-red-700 hover:bg-red-50" onClick={() => void act("stop")} title="Dừng bot" type="button">
         <Square size={16} />
       </button>
+      <button aria-label="Pause New Trades" className="grid h-8 w-8 place-items-center rounded text-amber-700 hover:bg-amber-50" onClick={() => void control("pause-new-trades")} title="Pause New Trades" type="button">
+        <ShieldX size={16} />
+      </button>
+      <button aria-label="Cancel Orders" className="grid h-8 w-8 place-items-center rounded text-orange-700 hover:bg-orange-50" onClick={() => void control("cancel-orders")} title="Cancel Orders" type="button">
+        <XCircle size={16} />
+      </button>
+      <button aria-label="Close All" className="grid h-8 w-8 place-items-center rounded text-red-700 hover:bg-red-50" onClick={() => void control("close-all")} title="Close All" type="button">
+        <Trash2 size={16} />
+      </button>
+      <button aria-label="Emergency Stop" className="grid h-8 w-8 place-items-center rounded bg-red-700 text-white hover:bg-red-800" onClick={() => void emergency()} title="Emergency Stop" type="button">
+        <ShieldAlert size={16} />
+      </button>
     </div>
   );
 }
 
-function ModeSelector({ current, onDone }: { current: "PAPER" | "DEMO" | "LIVE"; onDone: () => Promise<void> }) {
+function ModeSelector({ current, liveAllowed, onDone }: { current: "PAPER" | "DEMO" | "LIVE"; liveAllowed: boolean; onDone: () => Promise<void> }) {
   const [busy, setBusy] = useState(false);
-  async function change(mode: "PAPER" | "DEMO") {
+  async function change(mode: "PAPER" | "DEMO" | "LIVE") {
     setBusy(true);
     await api.mode(mode);
     await onDone();
@@ -523,10 +590,10 @@ function ModeSelector({ current, onDone }: { current: "PAPER" | "DEMO" | "LIVE";
   }
   return (
     <div className="flex rounded-md border border-slate-300 bg-white p-1">
-      {(["PAPER", "DEMO"] as const).map((mode) => (
+      {(["PAPER", "DEMO", "LIVE"] as const).map((mode) => (
         <button
           className={`rounded px-3 py-1 text-xs font-black ${current === mode ? "bg-slate-950 text-white" : "text-slate-600 hover:bg-slate-100"}`}
-          disabled={busy}
+          disabled={busy || (mode === "LIVE" && !liveAllowed)}
           key={mode}
           onClick={() => void change(mode)}
           type="button"

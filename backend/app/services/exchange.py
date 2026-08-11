@@ -51,6 +51,14 @@ class ExchangeAdapter(ABC):
     async def open_user_stream(self) -> str:
         raise NotImplementedError
 
+    @abstractmethod
+    async def cancel_all_orders(self, symbol: str | None = None) -> list[ExchangeOrder]:
+        raise NotImplementedError
+
+    @abstractmethod
+    async def close_all_positions(self) -> list[ExchangeOrder]:
+        raise NotImplementedError
+
 
 class BinanceFuturesAdapter(ExchangeAdapter):
     def __init__(
@@ -61,15 +69,17 @@ class BinanceFuturesAdapter(ExchangeAdapter):
         base_url: str = "https://demo-fapi.binance.com",
         stream_url: str = "wss://demo-fstream.binance.com",
         recv_window: int = 5000,
+        mode: TradingMode = TradingMode.DEMO,
     ) -> None:
         self.api_key = api_key
         self.api_secret = api_secret
         self.base_url = base_url.rstrip("/")
         self.stream_url = stream_url.rstrip("/")
         self.recv_window = recv_window
+        self.mode = mode
         self._submitted_client_ids: set[str] = set()
         self._listen_key: str | None = None
-        self.snapshot_cache = ExchangeSnapshot(mode=TradingMode.DEMO)
+        self.snapshot_cache = ExchangeSnapshot(mode=mode)
 
     @property
     def configured(self) -> bool:
@@ -82,7 +92,7 @@ class BinanceFuturesAdapter(ExchangeAdapter):
             if existing:
                 return ExchangeExecutionResult(
                     accepted=True,
-                    status="DEMO_DUPLICATE_ACK",
+                    status=f"{self.mode.value}_DUPLICATE_ACK",
                     client_order_id=plan.client_order_id,
                     order=self._normalize_order(existing).model_dump(mode="json"),
                 )
@@ -99,7 +109,7 @@ class BinanceFuturesAdapter(ExchangeAdapter):
             alert = "CRITICAL: Không tạo được SL trên Binance DEMO, đã gửi lệnh đóng vị thế"
             return ExchangeExecutionResult(
                 accepted=False,
-                status="DEMO_SL_FAILED_POSITION_CLOSING",
+                status=f"{self.mode.value}_SL_FAILED_POSITION_CLOSING",
                 client_order_id=plan.client_order_id,
                 order=self._normalize_order(entry).model_dump(mode="json"),
                 critical_alert=alert,
@@ -114,7 +124,7 @@ class BinanceFuturesAdapter(ExchangeAdapter):
 
         return ExchangeExecutionResult(
             accepted=True,
-            status="DEMO_SUBMITTED",
+            status=f"{self.mode.value}_SUBMITTED",
             client_order_id=plan.client_order_id,
             order=self._normalize_order(entry).model_dump(mode="json"),
             positions=[position.model_dump(mode="json") for position in (await self.positions(plan.symbol))],
@@ -125,17 +135,17 @@ class BinanceFuturesAdapter(ExchangeAdapter):
     async def snapshot(self) -> ExchangeSnapshot:
         if not self.configured:
             self.snapshot_cache = ExchangeSnapshot(
-                mode=TradingMode.DEMO,
+                mode=self.mode,
                 connection=ExchangeConnectionState.DISCONNECTED,
                 safe_mode=self.snapshot_cache.safe_mode,
-                safe_mode_reason="Thiếu BINANCE_DEMO_API_KEY/SECRET",
+                safe_mode_reason=self._credentials_message(),
             )
             return self.snapshot_cache
         balance = await self.balance()
         orders = await self.open_orders()
         positions = await self.positions()
         self.snapshot_cache = ExchangeSnapshot(
-            mode=TradingMode.DEMO,
+            mode=self.mode,
             connection=ExchangeConnectionState.CONNECTED,
             safe_mode=self.snapshot_cache.safe_mode,
             safe_mode_reason=self.snapshot_cache.safe_mode_reason,
@@ -167,6 +177,42 @@ class BinanceFuturesAdapter(ExchangeAdapter):
         self._listen_key = listen_key
         self.snapshot_cache.last_user_stream_at = datetime.now(UTC)
         return f"{self.stream_url}/ws/{listen_key}"
+
+    async def cancel_all_orders(self, symbol: str | None = None) -> list[ExchangeOrder]:
+        self._require_credentials()
+        symbols = [symbol] if symbol else sorted({order.symbol for order in await self.open_orders()})
+        canceled: list[ExchangeOrder] = []
+        for item in symbols:
+            payload = await self._signed("DELETE", "/fapi/v1/allOpenOrders", {"symbol": item})
+            canceled.append(
+                ExchangeOrder(
+                    symbol=item,
+                    order_id=payload.get("code", ""),
+                    client_order_id=f"cancel-all-{item}",
+                    side="",
+                    order_type="CANCEL_ALL",
+                    status=str(payload.get("msg", "OK")),
+                )
+            )
+        return canceled
+
+    async def close_all_positions(self) -> list[ExchangeOrder]:
+        orders: list[ExchangeOrder] = []
+        for position in await self.positions():
+            plan = OrderPlan(
+                client_order_id=f"{self.mode.value.lower()}-{position.symbol}-close-all-{int(time.time() * 1000)}",
+                symbol=position.symbol,
+                side=Side.LONG if position.side == "LONG" else Side.SHORT,
+                quantity=position.quantity,
+                entry_price=position.mark_price or position.entry_price,
+                stop_loss=position.entry_price,
+                leverage=min(position.leverage or 1, 5),
+            )
+            await self._close_position_market(plan)
+            existing = await self.query_order(plan.symbol, f"{plan.client_order_id}-critical-close")
+            if existing:
+                orders.append(self._normalize_order(existing))
+        return orders
 
     async def keepalive_user_stream(self) -> None:
         if self._listen_key:
@@ -351,7 +397,12 @@ class BinanceFuturesAdapter(ExchangeAdapter):
 
     def _require_credentials(self) -> None:
         if not self.configured:
-            raise ExchangeCredentialsError("Thiếu BINANCE_DEMO_API_KEY/SECRET")
+            raise ExchangeCredentialsError(self._credentials_message())
+
+    def _credentials_message(self) -> str:
+        if self.mode == TradingMode.LIVE:
+            return "Thiếu BINANCE_API_KEY/SECRET cho LIVE"
+        return "Thiếu BINANCE_DEMO_API_KEY/SECRET"
 
     @staticmethod
     def _normalize_order(item: dict[str, Any]) -> ExchangeOrder:

@@ -71,6 +71,16 @@ public actor TradingAPI {
         try await post("/api/bot/\(action.rawValue)")
     }
 
+    @discardableResult
+    public func tradingControl(_ action: TradingControlAction) async throws -> ControlResponse {
+        try await post("/api/controls/\(action.rawValue)")
+    }
+
+    @discardableResult
+    public func emergencyStop() async throws -> EmergencyStopResponse {
+        try await post("/api/emergency-stop")
+    }
+
     public func websocketURL(channel: String) -> URL {
         var components = URLComponents(url: baseURL, resolvingAgainstBaseURL: false)!
         components.path = "/api/ws/\(channel)"
@@ -137,6 +147,32 @@ public enum BotAction: String, CaseIterable, Identifiable {
         case .stop: return "Dừng"
         }
     }
+}
+
+public enum TradingControlAction: String, CaseIterable, Identifiable {
+    case pauseNewTrades = "pause-new-trades"
+    case cancelOrders = "cancel-orders"
+    case closeAll = "close-all"
+
+    public var id: String { rawValue }
+
+    public var title: String {
+        switch self {
+        case .pauseNewTrades: return "Pause New Trades"
+        case .cancelOrders: return "Cancel Orders"
+        case .closeAll: return "Close All"
+        }
+    }
+}
+
+public struct ControlResponse: Codable {
+    public let accepted: Bool
+    public let reason: String?
+}
+
+public struct EmergencyStopResponse: Codable {
+    public let active: Bool
+    public let reason: String?
 }
 
 public struct ModeResponse: Codable {

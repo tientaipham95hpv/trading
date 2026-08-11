@@ -1,4 +1,5 @@
 from datetime import UTC, datetime
+from statistics import mean, pstdev
 from uuid import uuid4
 
 from app.domain.models import (
@@ -112,6 +113,21 @@ class ExecutionService:
             if position.status == PositionStatus.OPEN and (symbol is None or position.symbol == symbol)
         ]
 
+    def cancel_open_orders(self) -> list[PaperOrder]:
+        self.orders = [
+            order.model_copy(update={"status": OrderStatus.CANCELED})
+            if order.status in {OrderStatus.NEW, OrderStatus.PARTIALLY_FILLED}
+            else order
+            for order in self.orders
+        ]
+        return self.orders
+
+    def close_all_positions(self) -> list[TradeRecord]:
+        closed: list[TradeRecord] = []
+        for position in list(self.open_positions()):
+            closed.append(self._close_position(position, position.entry_price, "CLOSE_ALL"))
+        return closed
+
     def performance(self, marks: dict[str, float] | None = None) -> PerformanceSnapshot:
         marks = marks or {}
         unrealized = 0.0
@@ -120,9 +136,23 @@ class ExecutionService:
             unrealized += self._gross_pnl(position.side, position.entry_price, mark, position.remaining_quantity)
         total_trades = len(self.trades)
         wins = sum(1 for trade in self.trades if trade.net_pnl > 0)
+        gross_profit = sum(trade.net_pnl for trade in self.trades if trade.net_pnl > 0)
+        gross_loss = abs(sum(trade.net_pnl for trade in self.trades if trade.net_pnl <= 0))
         realized = sum(trade.net_pnl for trade in self.trades)
         fees = sum(fill.fee for fill in self.fills)
         funding = sum(position.funding_paid for position in self.positions)
+        returns = [trade.net_pnl for trade in self.trades]
+        avg_return = mean(returns) if returns else 0.0
+        volatility = pstdev(returns) if len(returns) > 1 else 0.0
+        downside = [value for value in returns if value < 0]
+        downside_vol = pstdev(downside) if len(downside) > 1 else 0.0
+        equity = self.settings.paper_initial_balance
+        peak = equity
+        max_drawdown = 0.0
+        for trade in self.trades:
+            equity += trade.net_pnl
+            peak = max(peak, equity)
+            max_drawdown = max(max_drawdown, peak - equity)
         return PerformanceSnapshot(
             balance=self.balance,
             equity=self.balance + unrealized,
@@ -133,6 +163,11 @@ class ExecutionService:
             win_rate=(wins / total_trades) if total_trades else 0.0,
             total_trades=total_trades,
             open_positions=len(self.open_positions()),
+            profit_factor=(gross_profit / gross_loss) if gross_loss > 0 else (999.0 if gross_profit > 0 else 0.0),
+            max_drawdown=max_drawdown,
+            sharpe=(avg_return / volatility) if volatility > 0 else 0.0,
+            sortino=(avg_return / downside_vol) if downside_vol > 0 else 0.0,
+            expectancy=avg_return,
         )
 
     def _partial_take_profit(self, position: PaperPosition, price: float) -> TradeRecord:

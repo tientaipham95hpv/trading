@@ -110,7 +110,7 @@ public final class TradingViewModel: ObservableObject {
 
     public func controlBot(_ action: BotAction) async {
         do {
-            let allowed = try await biometricGate.authorizeSensitiveAction(reason: "Xác thực Face ID để \(action.title.lowercased()) bot PAPER.")
+            let allowed = try await biometricGate.authorizeSensitiveAction(reason: "Xác thực Face ID để \(action.title.lowercased()) bot.")
             guard allowed else { return }
             let response = try await api.controlBot(action)
             status = try await api.status()
@@ -128,6 +128,30 @@ public final class TradingViewModel: ObservableObject {
             } else {
                 errorMessage = response.reason ?? "Không đổi được chế độ"
             }
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+
+    public func tradingControl(_ action: TradingControlAction) async {
+        do {
+            let allowed = try await biometricGate.authorizeSensitiveAction(reason: "Xác thực Face ID để \(action.title).")
+            guard allowed else { return }
+            let response = try await api.tradingControl(action)
+            await refreshAll()
+            errorMessage = response.accepted ? "\(action.title) đã gửi." : (response.reason ?? "Không thực hiện được")
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+
+    public func emergencyStop() async {
+        do {
+            let allowed = try await biometricGate.authorizeSensitiveAction(reason: "Xác thực Face ID để Emergency Stop.")
+            guard allowed else { return }
+            _ = try await api.emergencyStop()
+            await refreshAll()
+            errorMessage = "Emergency Stop đã bật."
         } catch {
             errorMessage = error.localizedDescription
         }

@@ -1,4 +1,4 @@
-from app.domain.models import OrderPlan, RiskDecision
+from app.domain.models import MarginType, OrderPlan, RiskDecision
 
 
 class PositionSizer:
@@ -20,5 +20,11 @@ class OrderValidator:
             raise ValueError("Entry price không hợp lệ")
         if plan.leverage <= 0:
             raise ValueError("Leverage không hợp lệ")
+        if plan.leverage > 5:
+            raise ValueError("Đòn bẩy tối đa là 5x")
+        if plan.margin_type != MarginType.ISOLATED:
+            raise ValueError("Chỉ cho phép isolated margin")
+        if plan.risk_fraction > 0.01:
+            raise ValueError("Rủi ro mỗi lệnh tối đa là 1%")
         if not plan.take_profits:
             raise ValueError("Bắt buộc có TP")

@@ -15,6 +15,7 @@ public struct TrangThaiBot: Codable, Equatable {
     public let safeModeReason: String?
     public let exchange: ExchangeSnapshot
     public let risk: RuiRo
+    public let liveReadiness: LiveReadiness
 
     enum CodingKeys: String, CodingKey {
         case mode
@@ -25,6 +26,31 @@ public struct TrangThaiBot: Codable, Equatable {
         case safeModeReason = "safe_mode_reason"
         case exchange
         case risk
+        case liveReadiness = "live_readiness"
+    }
+}
+
+public struct LiveReadiness: Codable, Equatable {
+    public let liveEnabled: Bool
+    public let allTestsPass: Bool
+    public let demoStable: Bool
+    public let slProtectionPass: Bool
+    public let reconnectPass: Bool
+    public let reconciliationPass: Bool
+    public let duplicateOrderTestsPass: Bool
+    public let allowed: Bool
+    public let blockers: [String]
+
+    enum CodingKeys: String, CodingKey {
+        case liveEnabled = "live_enabled"
+        case allTestsPass = "all_tests_pass"
+        case demoStable = "demo_stable"
+        case slProtectionPass = "sl_protection_pass"
+        case reconnectPass = "reconnect_pass"
+        case reconciliationPass = "reconciliation_pass"
+        case duplicateOrderTestsPass = "duplicate_order_tests_pass"
+        case allowed
+        case blockers
     }
 }
 
@@ -149,7 +175,11 @@ public struct RuiRo: Codable, Equatable {
     public let riskPerTrade: Double
     public let maxRiskPerTrade: Double
     public let maxDailyLoss: Double
+    public let maxWeeklyDrawdown: Double
     public let maxOpenPositions: Int
+    public let maxPortfolioExposure: Double
+    public let maxCorrelatedPositions: Int
+    public let maxLossStreak: Int
     public let minimumRiskReward: Double
 
     enum CodingKeys: String, CodingKey {
@@ -157,7 +187,11 @@ public struct RuiRo: Codable, Equatable {
         case riskPerTrade = "risk_per_trade"
         case maxRiskPerTrade = "max_risk_per_trade"
         case maxDailyLoss = "max_daily_loss"
+        case maxWeeklyDrawdown = "max_weekly_drawdown"
         case maxOpenPositions = "max_open_positions"
+        case maxPortfolioExposure = "max_portfolio_exposure"
+        case maxCorrelatedPositions = "max_correlated_positions"
+        case maxLossStreak = "max_loss_streak"
         case minimumRiskReward = "minimum_risk_reward"
     }
 }
@@ -332,6 +366,11 @@ public struct HieuSuat: Codable, Equatable {
     public let winRate: Double
     public let totalTrades: Int
     public let openPositions: Int
+    public let profitFactor: Double
+    public let maxDrawdown: Double
+    public let sharpe: Double
+    public let sortino: Double
+    public let expectancy: Double
 
     enum CodingKeys: String, CodingKey {
         case balance
@@ -343,6 +382,11 @@ public struct HieuSuat: Codable, Equatable {
         case winRate = "win_rate"
         case totalTrades = "total_trades"
         case openPositions = "open_positions"
+        case profitFactor = "profit_factor"
+        case maxDrawdown = "max_drawdown"
+        case sharpe
+        case sortino
+        case expectancy
     }
 }
 
@@ -359,6 +403,19 @@ public struct CaiDatBot: Codable, Equatable {
     public var makerFeeRate: Double
     public var slippageBps: Double
     public var fundingRatePer8h: Double
+    public var maxLeverage: Int
+    public var riskPerTrade: Double
+    public var maxRiskPerTrade: Double
+    public var maxDailyLoss: Double
+    public var maxWeeklyDrawdown: Double
+    public var maxOpenPositions: Int
+    public var maxPortfolioExposure: Double
+    public var maxCorrelatedPositions: Int
+    public var maxLossStreak: Int
+    public var lossStreakCooldownMinutes: Int
+    public var extremeVolatilityAtrFraction: Double
+    public var staleDataSeconds: Int
+    public var minimumRiskReward: Double
 
     enum CodingKeys: String, CodingKey {
         case whitelist
@@ -373,6 +430,19 @@ public struct CaiDatBot: Codable, Equatable {
         case makerFeeRate = "maker_fee_rate"
         case slippageBps = "slippage_bps"
         case fundingRatePer8h = "funding_rate_per_8h"
+        case maxLeverage = "max_leverage"
+        case riskPerTrade = "risk_per_trade"
+        case maxRiskPerTrade = "max_risk_per_trade"
+        case maxDailyLoss = "max_daily_loss"
+        case maxWeeklyDrawdown = "max_weekly_drawdown"
+        case maxOpenPositions = "max_open_positions"
+        case maxPortfolioExposure = "max_portfolio_exposure"
+        case maxCorrelatedPositions = "max_correlated_positions"
+        case maxLossStreak = "max_loss_streak"
+        case lossStreakCooldownMinutes = "loss_streak_cooldown_minutes"
+        case extremeVolatilityAtrFraction = "extreme_volatility_atr_fraction"
+        case staleDataSeconds = "stale_data_seconds"
+        case minimumRiskReward = "minimum_risk_reward"
     }
 }
 

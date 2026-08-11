@@ -60,6 +60,17 @@ class SignalAction(StrEnum):
     NO_TRADE = "NO_TRADE"
 
 
+class NotificationEvent(StrEnum):
+    POSITION_OPEN = "POSITION_OPEN"
+    POSITION_CLOSE = "POSITION_CLOSE"
+    TP = "TP"
+    SL = "SL"
+    RISK_LIMIT = "RISK_LIMIT"
+    API_DISCONNECT = "API_DISCONNECT"
+    SAFE_MODE = "SAFE_MODE"
+    EMERGENCY_STOP = "EMERGENCY_STOP"
+
+
 class Timeframe(StrEnum):
     M1 = "1m"
     M5 = "5m"
@@ -149,6 +160,26 @@ class StrategySignal(BaseModel):
     metadata: dict[str, str] = Field(default_factory=dict)
 
 
+class AiDecision(BaseModel):
+    action: SignalAction
+    confidence: float = Field(ge=0, le=1)
+    strategy: str
+    reasons: list[str] = Field(default_factory=list)
+    risk_flags: list[str] = Field(default_factory=list)
+
+
+class GuardSnapshot(BaseModel):
+    portfolio_exposure: float = 0.0
+    correlation_risk: bool = False
+    daily_circuit_breaker: bool = False
+    weekly_drawdown: float = 0.0
+    loss_streak: int = 0
+    loss_streak_cooldown: bool = False
+    extreme_volatility: bool = False
+    stale_data: bool = False
+    reasons: list[str] = Field(default_factory=list)
+
+
 class RiskDecision(BaseModel):
     accepted: bool
     reason: str | None = None
@@ -158,6 +189,7 @@ class RiskDecision(BaseModel):
     margin_required: float | None = None
     risk_amount: float | None = None
     risk_reward: float | None = None
+    guard: GuardSnapshot = Field(default_factory=GuardSnapshot)
 
 
 class EmergencyStopState(BaseModel):
@@ -254,6 +286,11 @@ class PerformanceSnapshot(BaseModel):
     win_rate: float
     total_trades: int
     open_positions: int
+    profit_factor: float = 0.0
+    max_drawdown: float = 0.0
+    sharpe: float = 0.0
+    sortino: float = 0.0
+    expectancy: float = 0.0
 
 
 class BotSettings(BaseModel):
@@ -277,6 +314,19 @@ class BotSettings(BaseModel):
     maker_fee_rate: float = 0.0002
     slippage_bps: float = 2.0
     funding_rate_per_8h: float = 0.0001
+    max_leverage: int = Field(default=5, ge=1, le=5)
+    risk_per_trade: float = Field(default=0.005, gt=0, le=0.005)
+    max_risk_per_trade: float = Field(default=0.01, gt=0, le=0.01)
+    max_daily_loss: float = Field(default=0.04, gt=0, le=0.04)
+    max_weekly_drawdown: float = Field(default=0.08, gt=0, le=0.08)
+    max_open_positions: int = Field(default=4, ge=1, le=4)
+    max_portfolio_exposure: float = Field(default=1.0, gt=0, le=1.0)
+    max_correlated_positions: int = Field(default=2, ge=1, le=2)
+    max_loss_streak: int = Field(default=3, ge=1, le=3)
+    loss_streak_cooldown_minutes: int = Field(default=60, ge=1, le=1440)
+    extreme_volatility_atr_fraction: float = Field(default=0.06, gt=0, le=0.06)
+    stale_data_seconds: int = Field(default=180, ge=10, le=180)
+    minimum_risk_reward: float = Field(default=1.8, ge=1.8)
 
 
 class ExchangeConnectionState(StrEnum):
@@ -343,3 +393,41 @@ class ExchangeExecutionResult(BaseModel):
     positions: list[dict[str, object]] = Field(default_factory=list)
     trades: list[dict[str, object]] = Field(default_factory=list)
     critical_alert: str | None = None
+
+
+class LiveReadiness(BaseModel):
+    live_enabled: bool = False
+    all_tests_pass: bool = False
+    demo_stable: bool = False
+    sl_protection_pass: bool = False
+    reconnect_pass: bool = False
+    reconciliation_pass: bool = False
+    duplicate_order_tests_pass: bool = False
+    allowed: bool = False
+    blockers: list[str] = Field(default_factory=list)
+
+
+class BacktestMetrics(BaseModel):
+    pnl: float = 0.0
+    profit_factor: float = 0.0
+    drawdown: float = 0.0
+    sharpe: float = 0.0
+    sortino: float = 0.0
+    expectancy: float = 0.0
+    winrate: float = 0.0
+    trades: int = 0
+    fees: float = 0.0
+    slippage: float = 0.0
+    funding: float = 0.0
+    walk_forward_windows: int = 0
+    out_of_sample_trades: int = 0
+    no_lookahead_bias: bool = True
+
+
+class NotificationPayload(BaseModel):
+    event: NotificationEvent
+    title: str
+    body: str
+    data: dict[str, str] = Field(default_factory=dict)
+    apns_ready: bool = True
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))

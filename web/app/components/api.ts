@@ -43,8 +43,12 @@ export const api = {
     request<BotSettings>("/api/settings", { method: "PUT", body: JSON.stringify(settings) }),
   bot: (action: "start" | "pause" | "stop") =>
     request<{ bot_state: StatusPayload["bot_state"] }>(`/api/bot/${action}`, { method: "POST" }),
-  mode: (mode: "PAPER" | "DEMO") =>
+  mode: (mode: "PAPER" | "DEMO" | "LIVE") =>
     request<{ accepted: boolean; mode?: string; reason?: string }>(`/api/mode/${mode}`, { method: "POST" }),
+  control: (action: "pause-new-trades" | "cancel-orders" | "close-all") =>
+    request<{ accepted: boolean; reason?: string }>(`/api/controls/${action}`, { method: "POST" }),
+  emergencyStop: () =>
+    request<{ active: boolean; reason: string | null }>("/api/emergency-stop", { method: "POST" }),
 };
 
 export function wsUrl(channel: string): string {

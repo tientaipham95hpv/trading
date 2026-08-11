@@ -13,8 +13,23 @@ export type StatusPayload = {
     risk_per_trade: number;
     max_risk_per_trade: number;
     max_daily_loss: number;
+    max_weekly_drawdown: number;
     max_open_positions: number;
+    max_portfolio_exposure: number;
+    max_correlated_positions: number;
+    max_loss_streak: number;
     minimum_risk_reward: number;
+  };
+  live_readiness: {
+    live_enabled: boolean;
+    all_tests_pass: boolean;
+    demo_stable: boolean;
+    sl_protection_pass: boolean;
+    reconnect_pass: boolean;
+    reconciliation_pass: boolean;
+    duplicate_order_tests_pass: boolean;
+    allowed: boolean;
+    blockers: string[];
   };
 };
 
@@ -145,6 +160,11 @@ export type Performance = {
   win_rate: number;
   total_trades: number;
   open_positions: number;
+  profit_factor: number;
+  max_drawdown: number;
+  sharpe: number;
+  sortino: number;
+  expectancy: number;
 };
 
 export type BotSettings = {
@@ -160,6 +180,19 @@ export type BotSettings = {
   maker_fee_rate: number;
   slippage_bps: number;
   funding_rate_per_8h: number;
+  max_leverage: number;
+  risk_per_trade: number;
+  max_risk_per_trade: number;
+  max_daily_loss: number;
+  max_weekly_drawdown: number;
+  max_open_positions: number;
+  max_portfolio_exposure: number;
+  max_correlated_positions: number;
+  max_loss_streak: number;
+  loss_streak_cooldown_minutes: number;
+  extreme_volatility_atr_fraction: number;
+  stale_data_seconds: number;
+  minimum_risk_reward: number;
 };
 
 export type LogItem = {
