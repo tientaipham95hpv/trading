@@ -53,8 +53,11 @@ private struct HomeView: View {
     var body: some View {
         NavigationStack {
             ScrollView {
-                ModeControlPanel(model: model)
+                SystemStateBanner(model: model)
                     .padding([.horizontal, .top])
+
+                ModeControlPanel(model: model)
+                    .padding(.horizontal)
 
                 LazyVGrid(columns: [GridItem(.adaptive(minimum: 156), spacing: 12)], spacing: 12) {
                     MetricTile(title: "Trạng thái bot", value: viBotState(model.status?.botState), tint: .blue)
@@ -79,7 +82,7 @@ private struct HomeView: View {
                 SectionBlock(title: "Cơ hội nổi bật") {
                     let opportunities = model.scanner.filter { $0.action != "NO_TRADE" }.prefix(5)
                     if opportunities.isEmpty {
-                        EmptyContent("Chưa có tín hiệu đủ điểm từ backend.")
+                        EmptyContent("Chưa có tín hiệu đủ điểm ở bộ lọc hiện tại.")
                     } else {
                         ForEach(Array(opportunities)) { item in
                             ScannerRow(item: item)
@@ -89,6 +92,7 @@ private struct HomeView: View {
                 .padding(.horizontal)
 
                 SectionBlock(title: "Sức khỏe hệ thống") {
+                    InfoRow(label: "Đang đồng bộ", value: model.isRefreshing ? "Có" : "Không")
                     InfoRow(label: "Realtime", value: model.realtimeState.rawValue)
                     InfoRow(label: "Exchange", value: viExchangeConnection(model.exchange?.connection))
                     InfoRow(label: "Lần cập nhật", value: model.lastRealtimeAt.map(shortTime) ?? "-")
@@ -108,6 +112,7 @@ private struct HomeView: View {
 
 private struct ModeControlPanel: View {
     @ObservedObject var model: TradingViewModel
+    private var liveAllowed: Bool { model.status?.liveReadiness.allowed == true }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
@@ -121,14 +126,22 @@ private struct ModeControlPanel: View {
             }
             Picker("Chế độ", selection: Binding(
                 get: { model.status?.mode ?? "PAPER" },
-                set: { mode in Task { await model.setMode(mode) } }
+                set: { mode in
+                    guard mode != "LIVE" || liveAllowed else { return }
+                    Task { await model.setMode(mode) }
+                }
             )) {
                 Text("PAPER").tag("PAPER")
                 Text("DEMO").tag("DEMO")
                 Text("LIVE").tag("LIVE")
             }
             .pickerStyle(.segmented)
-            HStack {
+            if !liveAllowed {
+                Label("LIVE đang khóa bởi preflight", systemImage: "lock.shield")
+                    .font(.caption.bold())
+                    .foregroundStyle(.secondary)
+            }
+            HStack(spacing: 10) {
                 Button {
                     Task { await model.controlBot(.start) }
                 } label: {
@@ -136,6 +149,7 @@ private struct ModeControlPanel: View {
                 }
                 .buttonStyle(.borderedProminent)
                 .tint(.green)
+                .disabled(model.isRefreshing)
 
                 Button {
                     Task { await model.controlBot(.pause) }
@@ -143,6 +157,7 @@ private struct ModeControlPanel: View {
                     Label("Pause", systemImage: "pause.fill")
                 }
                 .buttonStyle(.bordered)
+                .disabled(model.isRefreshing)
 
                 Button(role: .destructive) {
                     Task { await model.emergencyStop() }
@@ -150,11 +165,52 @@ private struct ModeControlPanel: View {
                     Label("Emergency", systemImage: "hand.raised.fill")
                 }
                 .buttonStyle(.bordered)
+                .disabled(model.isRefreshing)
             }
             .font(.subheadline.bold())
         }
         .padding()
         .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 8))
+    }
+}
+
+private struct SystemStateBanner: View {
+    @ObservedObject var model: TradingViewModel
+
+    private var isHealthy: Bool {
+        model.status?.botState == "RUNNING" && model.exchange?.connection == "CONNECTED" && model.status?.safeMode != true
+    }
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 12) {
+            Image(systemName: isHealthy ? "checkmark.seal.fill" : "exclamationmark.triangle.fill")
+                .foregroundStyle(isHealthy ? .green : .orange)
+                .font(.title3)
+            VStack(alignment: .leading, spacing: 4) {
+                Text(isHealthy ? "Bot đang online" : "Cần kiểm tra trạng thái")
+                    .font(.headline)
+                Text(summary)
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(3)
+            }
+            Spacer()
+            if model.isRefreshing {
+                ProgressView()
+            }
+        }
+        .padding()
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 8))
+        .overlay(RoundedRectangle(cornerRadius: 8).stroke(.quaternary))
+    }
+
+    private var summary: String {
+        let orders = model.exchange?.orders.count ?? 0
+        let positions = model.exchange?.positions.count ?? 0
+        if orders > 0 || positions > 0 {
+            return "Có \(orders) order và \(positions) vị thế trên \(model.status?.mode ?? "mode hiện tại")."
+        }
+        return "Backend chạy, exchange \(viExchangeConnection(model.exchange?.connection)), hiện chưa có lệnh/vị thế mở."
     }
 }
 

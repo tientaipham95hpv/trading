@@ -13,6 +13,7 @@ public final class TradingViewModel: ObservableObject {
     @Published public private(set) var settings: CaiDatBot?
     @Published public private(set) var realtimeState: KetNoiRealtime = .offline
     @Published public private(set) var lastRealtimeAt: Date?
+    @Published public private(set) var isRefreshing = false
     @Published public var errorMessage: String?
     @Published public var tokenDraft: String = ""
 
@@ -71,6 +72,8 @@ public final class TradingViewModel: ObservableObject {
     }
 
     public func refreshAll() async {
+        isRefreshing = true
+        defer { isRefreshing = false }
         do {
             async let nextStatus = api.status()
             async let nextMarkets = api.markets()

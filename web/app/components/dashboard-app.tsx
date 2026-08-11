@@ -11,6 +11,7 @@ import {
   Pause,
   Play,
   Radio,
+  RefreshCw,
   Search,
   Settings,
   ShieldAlert,
@@ -69,8 +70,11 @@ export function DashboardApp({ page }: { page: PageKey }) {
   const [lastLiveAt, setLastLiveAt] = useState<number>(0);
   const lastLiveAtRef = useRef(0);
   const [error, setError] = useState<string | null>(null);
+  const [isRefreshing, setIsRefreshing] = useState(false);
+  const [hasLoaded, setHasLoaded] = useState(false);
 
   async function refresh() {
+    setIsRefreshing(true);
     try {
       const [nextStatus, nextMarkets, nextScanner, nextPositions, nextTrades, nextPerformance, nextExchange, nextSettings, nextLogs] =
         await Promise.all([
@@ -96,6 +100,9 @@ export function DashboardApp({ page }: { page: PageKey }) {
       setError(null);
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "Không tải được dữ liệu");
+    } finally {
+      setHasLoaded(true);
+      setIsRefreshing(false);
     }
   }
 
@@ -150,23 +157,23 @@ export function DashboardApp({ page }: { page: PageKey }) {
   const currentPage = nav.find((item) => item.key === page) ?? nav[0];
 
   return (
-    <main className="grid min-h-screen grid-cols-1 bg-[#f3f5f2] text-slate-900 lg:grid-cols-[264px_1fr]">
-      <aside className="border-r border-slate-200 bg-[#101820] text-white">
-        <div className="flex items-center justify-between border-b border-white/10 px-5 py-5 lg:block">
+    <main className="grid min-h-screen grid-cols-1 bg-[#eef3f6] text-slate-900 lg:grid-cols-[264px_1fr]">
+      <aside className="border-r border-slate-200 bg-[#0f1720] text-white lg:sticky lg:top-0 lg:h-screen">
+        <div className="flex items-center justify-between border-b border-white/10 px-5 py-4 lg:block lg:py-5">
           <div>
             <p className="text-xs font-bold uppercase text-cyan-300">USD-M Futures</p>
             <h1 className="mt-1 text-xl font-bold">Trading Cockpit</h1>
           </div>
           <StatusBadge value={wsState} />
         </div>
-        <nav className="grid grid-cols-2 gap-1 p-3 lg:grid-cols-1">
+        <nav className="grid max-h-[42vh] grid-cols-2 gap-1 overflow-y-auto p-3 lg:max-h-none lg:grid-cols-1">
           {nav.map((item) => {
             const Icon = item.icon;
             const active = item.href === pathname || (item.href !== "/" && pathname.startsWith(item.href));
             return (
               <Link
-                className={`flex min-h-10 items-center gap-3 rounded-md px-3 text-sm font-semibold ${
-                  active ? "bg-cyan-500 text-slate-950" : "text-slate-300 hover:bg-white/10 hover:text-white"
+                className={`flex min-h-10 items-center gap-3 rounded-md px-3 text-sm font-semibold transition ${
+                  active ? "bg-cyan-400 text-slate-950 shadow-sm" : "text-slate-300 hover:bg-white/10 hover:text-white"
                 }`}
                 href={item.href}
                 key={item.key}
@@ -180,28 +187,29 @@ export function DashboardApp({ page }: { page: PageKey }) {
       </aside>
 
       <section className="min-w-0">
-        <header className="flex flex-col gap-4 border-b border-slate-200 bg-white px-5 py-4 xl:flex-row xl:items-center xl:justify-between">
-          <div>
+        <header className="sticky top-0 z-10 flex flex-col gap-4 border-b border-slate-200 bg-white/95 px-4 py-4 shadow-sm backdrop-blur md:px-5 xl:flex-row xl:items-center xl:justify-between">
+          <div className="min-w-0">
             <p className="text-xs font-bold uppercase text-slate-500">Control Surface</p>
             <h2 className="text-2xl font-bold">{currentPage.label}</h2>
+            <StatusLine exchange={exchange ?? status?.exchange ?? null} isRefreshing={isRefreshing} lastLiveAt={lastLiveAt} status={status} wsState={wsState} />
           </div>
-          <div className="flex flex-wrap items-center gap-2">
+          <div className="flex flex-wrap items-center gap-2 xl:justify-end">
             <ModeSelector current={status?.mode ?? "PAPER"} liveAllowed={status?.live_readiness.allowed ?? false} onDone={refresh} />
             <BotControls onDone={refresh} />
             <Pill label="Chế độ" value={status?.mode ?? "PAPER"} tone="neutral" />
             <Pill label="LIVE" value={status?.live_enabled ? "ON" : "OFF"} tone={status?.live_enabled ? "danger" : "safe"} />
             <Pill label="Bot" value={viBotState(status?.bot_state)} tone={status?.safe_mode ? "danger" : "neutral"} />
             <Pill label="Exchange" value={viExchangeConnection(exchange?.connection ?? status?.exchange.connection)} tone={(exchange?.connection ?? status?.exchange.connection) === "CONNECTED" ? "safe" : "danger"} />
-            <StatusBadge value={wsState} />
-            {lastLiveAt > 0 && <span className="text-xs font-bold text-slate-500">{new Date(lastLiveAt).toLocaleTimeString("vi-VN")}</span>}
-            <button className="rounded-md border border-slate-300 px-3 py-2 text-sm font-bold" onClick={() => void refresh()} type="button">
-              Làm mới
+            <button className="inline-flex min-h-9 items-center gap-2 rounded-md border border-slate-300 bg-white px-3 py-2 text-sm font-bold text-slate-800 transition hover:bg-slate-50 disabled:opacity-60" disabled={isRefreshing} onClick={() => void refresh()} type="button">
+              <RefreshCw className={isRefreshing ? "animate-spin" : ""} size={16} />
+              {isRefreshing ? "Đang tải" : "Làm mới"}
             </button>
           </div>
         </header>
 
-        <div className="p-5">
+        <div className="p-4 md:p-5">
           {error && <div className="mb-4 rounded-md border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">{error}</div>}
+          {!hasLoaded && <LoadingGrid />}
           {page === "dashboard" && <Dashboard exchange={exchange ?? status?.exchange ?? null} onDone={refresh} performance={performance} positions={positions} status={status} />}
           {page === "markets" && <Markets markets={markets} />}
           {page === "scanner" && <Scanner scanner={scanner} />}
@@ -222,6 +230,7 @@ function Dashboard({ exchange, onDone, performance, positions, status }: { excha
   const equitySeries = useMemo(() => buildEquitySeries(performance), [performance]);
   return (
     <div className="grid gap-4">
+      <ActivitySummary exchange={exchange} status={status} />
       <CommandCenter exchange={exchange} onDone={onDone} status={status} />
       <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
         <Metric label="Vốn hiện tại" value={money(performance?.equity)} />
@@ -258,15 +267,20 @@ function Dashboard({ exchange, onDone, performance, positions, status }: { excha
 
 function CommandCenter({ exchange, onDone, status }: { exchange: ExchangeSnapshot | null; onDone: () => Promise<void>; status: StatusPayload | null }) {
   return (
-    <section className="grid gap-4 rounded-lg border border-slate-200 bg-white p-4 xl:grid-cols-[1.2fr_1fr]">
+    <section className="grid gap-4 rounded-lg border border-slate-200 bg-white p-4 shadow-sm xl:grid-cols-[1.2fr_1fr]">
       <div className="grid gap-3 sm:grid-cols-3">
         <ModeCard label="Trading mode" value={status?.mode ?? "PAPER"} tone={status?.mode === "LIVE" ? "danger" : status?.mode === "DEMO" ? "warning" : "safe"} />
         <ModeCard label="Exchange" value={viExchangeConnection(exchange?.connection)} tone={exchange?.connection === "CONNECTED" ? "safe" : "danger"} />
         <ModeCard label="LIVE gate" value={status?.live_readiness.allowed ? "READY" : "LOCKED"} tone={status?.live_readiness.allowed ? "warning" : "safe"} />
       </div>
-      <div className="flex flex-wrap items-center justify-start gap-2 xl:justify-end">
+      <div className="flex flex-col justify-center gap-3 xl:items-end">
+        <p className="max-w-xl text-sm font-semibold text-slate-600 xl:text-right">
+          {status?.mode === "LIVE" ? "LIVE đang dùng tiền thật. Kiểm tra lệnh và rủi ro trước mọi thao tác." : "Đang ở môi trường an toàn. Có thể kiểm tra kết nối, signal và lệnh demo tại đây."}
+        </p>
+        <div className="flex flex-wrap items-center justify-start gap-2 xl:justify-end">
         <ModeSelector current={status?.mode ?? "PAPER"} liveAllowed={status?.live_readiness.allowed ?? false} onDone={onDone} />
         <BotControls onDone={onDone} />
+        </div>
       </div>
     </section>
   );
@@ -275,13 +289,41 @@ function CommandCenter({ exchange, onDone, status }: { exchange: ExchangeSnapsho
 function ModeCard({ label, tone, value }: { label: string; value: string; tone: "safe" | "warning" | "danger" }) {
   const iconColor = tone === "safe" ? "text-emerald-700" : tone === "warning" ? "text-amber-700" : "text-red-700";
   return (
-    <div className="rounded-md border border-slate-200 bg-slate-50 p-4">
+    <div className="rounded-md border border-slate-200 bg-slate-50 p-4 transition hover:border-slate-300">
       <div className={`mb-3 flex h-9 w-9 items-center justify-center rounded-md bg-white ${iconColor}`}>
         {tone === "danger" ? <ShieldAlert size={18} /> : tone === "warning" ? <Radio size={18} /> : <LockKeyhole size={18} />}
       </div>
       <p className="text-xs font-bold uppercase text-slate-500">{label}</p>
-      <strong className="mt-1 block text-2xl">{value}</strong>
+      <strong className="mt-1 block break-words text-2xl leading-tight">{value}</strong>
     </div>
+  );
+}
+
+function ActivitySummary({ exchange, status }: { exchange: ExchangeSnapshot | null; status: StatusPayload | null }) {
+  const isRunning = status?.bot_state === "RUNNING";
+  const connected = exchange?.connection === "CONNECTED";
+  const hasOrders = Boolean(exchange?.orders.length);
+  const hasPositions = Boolean(exchange?.positions.length);
+  const title = isRunning && connected ? "Bot đang online" : status?.safe_mode ? "Bot đang SAFE_MODE" : "Bot chưa sẵn sàng";
+  const detail = hasOrders || hasPositions
+    ? `Đang có ${exchange?.orders.length ?? 0} order và ${exchange?.positions.length ?? 0} vị thế trên ${exchange?.mode ?? status?.mode ?? "mode hiện tại"}.`
+    : "Backend đang chạy và kết nối exchange, nhưng hiện chưa có lệnh/vị thế mở.";
+  const tone = status?.safe_mode || status?.emergency_stop ? "border-red-200 bg-red-50 text-red-800" : isRunning && connected ? "border-emerald-200 bg-emerald-50 text-emerald-800" : "border-amber-200 bg-amber-50 text-amber-800";
+
+  return (
+    <section className={`rounded-lg border px-4 py-3 shadow-sm ${tone}`}>
+      <div className="flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
+        <div>
+          <h3 className="font-bold">{title}</h3>
+          <p className="mt-1 text-sm font-semibold opacity-80">{detail}</p>
+        </div>
+        <div className="flex flex-wrap gap-2">
+          <Pill label="Mode" value={status?.mode ?? "-"} tone={status?.mode === "LIVE" ? "danger" : "safe"} />
+          <Pill label="Bot" value={viBotState(status?.bot_state)} tone={isRunning ? "safe" : "neutral"} />
+          <Pill label="Exchange" value={viExchangeConnection(exchange?.connection)} tone={connected ? "safe" : "danger"} />
+        </div>
+      </div>
+    </section>
   );
 }
 
@@ -615,41 +657,106 @@ function SettingsPage({ settings, onSaved }: { settings: BotSettings; onSaved: (
 }
 
 function BotControls({ onDone }: { onDone: () => Promise<void> }) {
+  const [busy, setBusy] = useState<string | null>(null);
   async function act(action: "start" | "pause" | "stop") {
-    await api.bot(action);
-    await onDone();
+    setBusy(action);
+    try {
+      await api.bot(action);
+      await onDone();
+    } finally {
+      setBusy(null);
+    }
   }
   async function control(action: "pause-new-trades" | "cancel-orders" | "close-all") {
-    await api.control(action);
-    await onDone();
+    if (action !== "pause-new-trades" && !window.confirm(action === "close-all" ? "Đóng toàn bộ vị thế đang mở?" : "Hủy toàn bộ order đang chờ?")) return;
+    setBusy(action);
+    try {
+      await api.control(action);
+      await onDone();
+    } finally {
+      setBusy(null);
+    }
   }
   async function emergency() {
-    await api.emergencyStop();
-    await onDone();
+    if (!window.confirm("Bật Emergency Stop và khóa bot ngay?")) return;
+    setBusy("emergency");
+    try {
+      await api.emergencyStop();
+      await onDone();
+    } finally {
+      setBusy(null);
+    }
   }
+  const disabled = busy !== null;
   return (
-    <div className="flex rounded-md border border-slate-300 bg-white p-1">
-      <button aria-label="Chạy bot" className="grid h-8 w-8 place-items-center rounded text-emerald-700 hover:bg-emerald-50" onClick={() => void act("start")} title="Chạy bot" type="button">
-        <Play size={16} />
-      </button>
-      <button aria-label="Tạm dừng bot" className="grid h-8 w-8 place-items-center rounded text-amber-700 hover:bg-amber-50" onClick={() => void act("pause")} title="Tạm dừng bot" type="button">
-        <Pause size={16} />
-      </button>
-      <button aria-label="Dừng bot" className="grid h-8 w-8 place-items-center rounded text-red-700 hover:bg-red-50" onClick={() => void act("stop")} title="Dừng bot" type="button">
-        <Square size={16} />
-      </button>
-      <button aria-label="Pause New Trades" className="grid h-8 w-8 place-items-center rounded text-amber-700 hover:bg-amber-50" onClick={() => void control("pause-new-trades")} title="Pause New Trades" type="button">
-        <ShieldX size={16} />
-      </button>
-      <button aria-label="Cancel Orders" className="grid h-8 w-8 place-items-center rounded text-orange-700 hover:bg-orange-50" onClick={() => void control("cancel-orders")} title="Cancel Orders" type="button">
-        <XCircle size={16} />
-      </button>
-      <button aria-label="Close All" className="grid h-8 w-8 place-items-center rounded text-red-700 hover:bg-red-50" onClick={() => void control("close-all")} title="Close All" type="button">
-        <Trash2 size={16} />
-      </button>
-      <button aria-label="Emergency Stop" className="grid h-8 w-8 place-items-center rounded bg-red-700 text-white hover:bg-red-800" onClick={() => void emergency()} title="Emergency Stop" type="button">
-        <ShieldAlert size={16} />
-      </button>
+    <div className="flex flex-wrap gap-2">
+      <div className="flex rounded-md border border-slate-300 bg-white p-1 shadow-sm">
+        <ActionIcon busy={busy === "start"} disabled={disabled} label="Chạy bot" onClick={() => void act("start")} tone="safe">
+          <Play size={16} />
+        </ActionIcon>
+        <ActionIcon busy={busy === "pause"} disabled={disabled} label="Tạm dừng bot" onClick={() => void act("pause")} tone="warning">
+          <Pause size={16} />
+        </ActionIcon>
+        <ActionIcon busy={busy === "stop"} disabled={disabled} label="Dừng bot" onClick={() => void act("stop")} tone="danger">
+          <Square size={16} />
+        </ActionIcon>
+      </div>
+      <div className="flex rounded-md border border-red-200 bg-white p-1 shadow-sm">
+        <ActionIcon busy={busy === "pause-new-trades"} disabled={disabled} label="Tạm dừng lệnh mới" onClick={() => void control("pause-new-trades")} tone="warning">
+          <ShieldX size={16} />
+        </ActionIcon>
+        <ActionIcon busy={busy === "cancel-orders"} disabled={disabled} label="Hủy order" onClick={() => void control("cancel-orders")} tone="orange">
+          <XCircle size={16} />
+        </ActionIcon>
+        <ActionIcon busy={busy === "close-all"} disabled={disabled} label="Đóng toàn bộ vị thế" onClick={() => void control("close-all")} tone="danger">
+          <Trash2 size={16} />
+        </ActionIcon>
+        <ActionIcon busy={busy === "emergency"} disabled={disabled} label="Emergency Stop" onClick={() => void emergency()} tone="solidDanger">
+          <ShieldAlert size={16} />
+        </ActionIcon>
+      </div>
+    </div>
+  );
+}
+
+function ActionIcon({ busy, children, disabled, label, onClick, tone }: { busy: boolean; children: React.ReactNode; disabled: boolean; label: string; onClick: () => void; tone: "safe" | "warning" | "orange" | "danger" | "solidDanger" }) {
+  const toneClass: Record<"safe" | "warning" | "orange" | "danger" | "solidDanger", string> = {
+    safe: "text-emerald-700 hover:bg-emerald-50",
+    warning: "text-amber-700 hover:bg-amber-50",
+    orange: "text-orange-700 hover:bg-orange-50",
+    danger: "text-red-700 hover:bg-red-50",
+    solidDanger: "bg-red-700 text-white hover:bg-red-800",
+  };
+  return (
+    <button aria-label={label} className={`grid h-9 w-9 place-items-center rounded transition disabled:cursor-not-allowed disabled:opacity-50 ${toneClass[tone]}`} disabled={disabled} onClick={onClick} title={label} type="button">
+      {busy ? <RefreshCw className="animate-spin" size={16} /> : children}
+    </button>
+  );
+}
+
+function StatusLine({ exchange, isRefreshing, lastLiveAt, status, wsState }: { exchange: ExchangeSnapshot | null; isRefreshing: boolean; lastLiveAt: number; status: StatusPayload | null; wsState: WsState }) {
+  const parts = [
+    status ? `Mode ${status.mode}` : "Đang tải trạng thái",
+    `Realtime ${wsState}`,
+    exchange ? `Exchange ${viExchangeConnection(exchange.connection)}` : "Exchange -",
+    lastLiveAt > 0 ? `Cập nhật ${new Date(lastLiveAt).toLocaleTimeString("vi-VN")}` : null,
+  ].filter(Boolean);
+  return (
+    <p className="mt-1 max-w-3xl truncate text-sm font-semibold text-slate-500" title={parts.join(" • ")}>
+      {isRefreshing ? "Đang đồng bộ dữ liệu..." : parts.join(" • ")}
+    </p>
+  );
+}
+
+function LoadingGrid() {
+  return (
+    <div className="mb-4 grid gap-4 md:grid-cols-2 xl:grid-cols-4" aria-label="Đang tải dữ liệu">
+      {Array.from({ length: 4 }).map((_, index) => (
+        <div className="h-24 animate-pulse rounded-lg border border-slate-200 bg-white p-4 shadow-sm" key={index}>
+          <div className="h-3 w-24 rounded bg-slate-200" />
+          <div className="mt-4 h-7 w-32 rounded bg-slate-200" />
+        </div>
+      ))}
     </div>
   );
 }
@@ -657,19 +764,24 @@ function BotControls({ onDone }: { onDone: () => Promise<void> }) {
 function ModeSelector({ current, liveAllowed, onDone }: { current: "PAPER" | "DEMO" | "LIVE"; liveAllowed: boolean; onDone: () => Promise<void> }) {
   const [busy, setBusy] = useState(false);
   async function change(mode: "PAPER" | "DEMO" | "LIVE") {
+    if (mode === current) return;
     setBusy(true);
-    await api.mode(mode);
-    await onDone();
-    setBusy(false);
+    try {
+      await api.mode(mode);
+      await onDone();
+    } finally {
+      setBusy(false);
+    }
   }
   return (
-    <div className="flex rounded-md border border-slate-300 bg-white p-1">
+    <div className="flex rounded-md border border-slate-300 bg-white p-1 shadow-sm">
       {(["PAPER", "DEMO", "LIVE"] as const).map((mode) => (
         <button
-          className={`rounded px-3 py-1 text-xs font-black ${current === mode ? "bg-slate-950 text-white" : "text-slate-600 hover:bg-slate-100"}`}
+          className={`min-h-8 rounded px-3 py-1 text-xs font-black transition ${current === mode ? "bg-slate-950 text-white" : "text-slate-600 hover:bg-slate-100 disabled:text-slate-300 disabled:hover:bg-transparent"}`}
           disabled={busy || (mode === "LIVE" && !liveAllowed)}
           key={mode}
           onClick={() => void change(mode)}
+          title={mode === "LIVE" && !liveAllowed ? "LIVE đang bị khóa bởi preflight" : `Đổi sang ${mode}`}
           type="button"
         >
           {mode}
@@ -681,9 +793,9 @@ function ModeSelector({ current, liveAllowed, onDone }: { current: "PAPER" | "DE
 
 function DataPanel({ children, controls, title }: { children: React.ReactNode; controls?: React.ReactNode; title: string }) {
   return (
-    <section className="rounded-lg border border-slate-200 bg-white">
+    <section className="rounded-lg border border-slate-200 bg-white shadow-sm">
       <div className="flex flex-col gap-3 border-b border-slate-200 p-4 xl:flex-row xl:items-center xl:justify-between">
-        <h3 className="font-bold">{title}</h3>
+        <h3 className="text-base font-bold">{title}</h3>
         {controls}
       </div>
       <div className="overflow-x-auto p-4">{children}</div>
@@ -693,12 +805,12 @@ function DataPanel({ children, controls, title }: { children: React.ReactNode; c
 
 function Table({ columns, rows }: { columns: string[]; rows: string[][] }) {
   if (!rows.length) {
-    return <EmptyState message="Chưa có dữ liệu thật từ backend." title="Trống" />;
+    return <EmptyState message="Không có dòng nào ở trạng thái hiện tại." title="Trống" />;
   }
   return (
     <table className="w-full min-w-[880px] border-collapse text-sm">
       <thead>
-        <tr className="border-b border-slate-200 text-left text-xs uppercase text-slate-500">
+        <tr className="border-b border-slate-200 bg-white text-left text-xs uppercase text-slate-500">
           {columns.map((column) => (
             <th className="px-3 py-3 font-bold" key={column}>{column}</th>
           ))}
@@ -706,7 +818,7 @@ function Table({ columns, rows }: { columns: string[]; rows: string[][] }) {
       </thead>
       <tbody>
         {rows.map((row, rowIndex) => (
-          <tr className="border-b border-slate-100 last:border-0" key={`${row[0]}-${rowIndex}`}>
+          <tr className="border-b border-slate-100 transition hover:bg-slate-50 last:border-0" key={`${row[0]}-${rowIndex}`}>
             {row.map((cell, cellIndex) => (
               <td className="whitespace-nowrap px-3 py-3" key={`${cell}-${cellIndex}`}>{cell}</td>
             ))}
@@ -721,7 +833,7 @@ function TableControls<T extends string>({ query, setQuery, sort, setSort, sortO
   return (
     <div className="flex flex-wrap gap-2">
       <SearchBox query={query} setQuery={setQuery} />
-      <label className="inline-flex items-center gap-2 rounded-md border border-slate-300 bg-white px-3 py-2 text-sm">
+      <label className="inline-flex min-h-10 items-center gap-2 rounded-md border border-slate-300 bg-white px-3 py-2 text-sm shadow-sm focus-within:border-cyan-500">
         <ListFilter size={16} />
         <span className="text-slate-500">Sắp xếp</span>
         <select className="bg-transparent outline-none" onChange={(event) => setSort(event.target.value as T)} value={sort}>
@@ -734,7 +846,7 @@ function TableControls<T extends string>({ query, setQuery, sort, setSort, sortO
 
 function SearchBox({ query, setQuery }: { query: string; setQuery: (value: string) => void }) {
   return (
-    <label className="inline-flex items-center gap-2 rounded-md border border-slate-300 bg-white px-3 py-2 text-sm">
+    <label className="inline-flex min-h-10 items-center gap-2 rounded-md border border-slate-300 bg-white px-3 py-2 text-sm shadow-sm focus-within:border-cyan-500">
       <Search size={16} />
       <input className="w-36 bg-transparent outline-none" onChange={(event) => setQuery(event.target.value)} placeholder="Tìm mã" value={query} />
     </label>
@@ -744,9 +856,9 @@ function SearchBox({ query, setQuery }: { query: string; setQuery: (value: strin
 function Metric({ label, value, tone = "neutral" }: { label: string; value: string; tone?: "neutral" | "good" | "bad" }) {
   const color = tone === "good" ? "text-emerald-700" : tone === "bad" ? "text-red-700" : "text-slate-950";
   return (
-    <section className="rounded-lg border border-slate-200 bg-white p-4">
+    <section className="rounded-lg border border-slate-200 bg-white p-4 shadow-sm transition hover:border-slate-300">
       <p className="text-xs font-bold uppercase text-slate-500">{label}</p>
-      <strong className={`mt-2 block text-2xl ${color}`}>{value}</strong>
+      <strong className={`mt-2 block break-words text-2xl leading-tight ${color}`}>{value}</strong>
     </section>
   );
 }
@@ -755,7 +867,7 @@ function NumberField({ label, onChange, step = 1, value }: { label: string; onCh
   return (
     <label className="grid gap-2 text-sm font-bold text-slate-600">
       {label}
-      <input className="rounded-md border border-slate-300 px-3 py-2 font-normal text-slate-950" onChange={(event) => onChange(Number(event.target.value))} step={step} type="number" value={value} />
+      <input className="rounded-md border border-slate-300 px-3 py-2 font-normal text-slate-950 shadow-sm outline-none focus:border-cyan-500" onChange={(event) => onChange(Number(event.target.value))} step={step} type="number" value={value} />
     </label>
   );
 }
@@ -792,7 +904,7 @@ function EquityChart({ values }: { values: number[] }) {
 }
 
 function EmptyState({ message, title }: { title: string; message: string }) {
-  return <div className="rounded-md border border-dashed border-slate-300 p-8 text-center"><h3 className="font-bold">{title}</h3><p className="mt-2 text-sm text-slate-500">{message}</p></div>;
+  return <div className="rounded-md border border-dashed border-slate-300 bg-slate-50 p-8 text-center"><h3 className="font-bold">{title}</h3><p className="mt-2 text-sm text-slate-500">{message}</p></div>;
 }
 
 function buildEquitySeries(performance: Performance | null) {
