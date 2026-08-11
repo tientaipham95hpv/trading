@@ -15,6 +15,7 @@ targets:
       - TradingControlApp
     dependencies:
       - package: TradingControl
+        product: TradingControl
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: live.cineviet.tradingcontrol
