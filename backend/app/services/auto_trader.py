@@ -116,6 +116,7 @@ class AutoTrader:
                 )
                 return await self._skip("BLOCKED", reason)
 
+            self._mark_exchange_reconciled(adapter, snapshot)
             open_position_count = len(snapshot.positions)
             active_symbols = self._busy_exchange_symbols(snapshot)
             portfolio_exposure_fraction = self._exchange_portfolio_exposure_fraction(snapshot)
@@ -346,6 +347,11 @@ class AutoTrader:
             if not protects:
                 unprotected.append(position.symbol)
         return sorted(set(unprotected))
+
+    @staticmethod
+    def _mark_exchange_reconciled(adapter: Any, snapshot: Any) -> None:
+        snapshot.last_reconciled_at = datetime.now(UTC)
+        adapter.snapshot_cache = snapshot
 
     def _live_allowed(self) -> bool:
         return self.state.live_trading_enabled and all(self.state.live_preflight.values())
