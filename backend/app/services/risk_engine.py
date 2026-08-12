@@ -16,11 +16,14 @@ class RiskEngine:
         *,
         max_leverage: int = 5,
         risk_per_trade: float = 0.005,
-        max_risk_per_trade: float = 0.01,
+        max_risk_per_trade: float = 0.0075,
+        max_total_open_risk: float = 0.03,
+        max_margin_per_trade: float = 0.10,
+        max_total_margin: float = 0.30,
         max_daily_loss: float = 0.04,
         max_weekly_drawdown: float = 0.08,
         max_open_positions: int = 4,
-        max_portfolio_exposure: float = 1.0,
+        max_portfolio_exposure: float = 0.30,
         max_correlated_positions: int = 2,
         max_loss_streak: int = 3,
         extreme_volatility_atr_fraction: float = 0.06,
@@ -30,6 +33,9 @@ class RiskEngine:
         self.max_leverage = max_leverage
         self.risk_per_trade = risk_per_trade
         self.max_risk_per_trade = max_risk_per_trade
+        self.max_total_open_risk = max_total_open_risk
+        self.max_margin_per_trade = max_margin_per_trade
+        self.max_total_margin = max_total_margin
         self.max_daily_loss = max_daily_loss
         self.max_weekly_drawdown = max_weekly_drawdown
         self.max_open_positions = max_open_positions
@@ -56,6 +62,8 @@ class RiskEngine:
         atr_fraction: float | None = None,
         data_age_seconds: float = 0.0,
         safe_mode: bool = False,
+        current_open_risk_fraction: float = 0.0,
+        current_margin_fraction: float = 0.0,
     ) -> RiskDecision:
         guard = self.guard_snapshot(
             daily_loss_fraction=daily_loss_fraction,
@@ -77,9 +85,13 @@ class RiskEngine:
         if signal.leverage > self.max_leverage:
             return RiskDecision(accepted=False, reason="Đòn bẩy vượt giới hạn tối đa", guard=guard)
         if signal.risk_fraction > self.max_risk_per_trade:
-            return RiskDecision(accepted=False, reason="Rủi ro mỗi lệnh vượt mức 1%", guard=guard)
-        if signal.risk_fraction > self.risk_per_trade:
-            return RiskDecision(accepted=False, reason="Rủi ro mỗi lệnh vượt mặc định 0.5%", guard=guard)
+            return RiskDecision(accepted=False, reason="Rủi ro mỗi lệnh vượt mức tối đa", guard=guard)
+        remaining_risk_fraction = self.max_total_open_risk - current_open_risk_fraction
+        if remaining_risk_fraction <= 0:
+            return RiskDecision(accepted=False, reason="Tổng rủi ro vị thế mở đã chạm giới hạn", guard=guard)
+        remaining_margin_fraction = self.max_total_margin - current_margin_fraction
+        if remaining_margin_fraction <= 0:
+            return RiskDecision(accepted=False, reason="Tổng margin vị thế mở đã chạm giới hạn", guard=guard)
         if open_positions >= self.max_open_positions:
             return RiskDecision(accepted=False, reason="Đã chạm số vị thế mở tối đa", guard=guard)
         if signal.metadata.get("sizing") in {"martingale", "unlimited_dca"}:
@@ -98,10 +110,18 @@ class RiskEngine:
             return RiskDecision(accepted=False, reason="Khoảng SL không hợp lệ", guard=guard)
         risk_reward = reward / risk_per_unit
         if risk_reward < self.minimum_risk_reward:
-            return RiskDecision(accepted=False, reason="RR nhỏ hơn 1.8", guard=guard)
+            return RiskDecision(accepted=False, reason="RR nhỏ hơn mức tối thiểu", guard=guard)
 
-        risk_amount = account_equity * signal.risk_fraction
-        quantity = risk_amount / risk_per_unit
+        requested_risk_amount = account_equity * signal.risk_fraction
+        available_risk_amount = account_equity * remaining_risk_fraction
+        risk_amount = min(requested_risk_amount, available_risk_amount)
+        risk_based_quantity = risk_amount / risk_per_unit
+        max_margin_amount = account_equity * min(self.max_margin_per_trade, remaining_margin_fraction)
+        margin_based_quantity = (max_margin_amount * signal.leverage) / signal.entry_price
+        quantity = min(risk_based_quantity, margin_based_quantity)
+        if quantity <= 0:
+            return RiskDecision(accepted=False, reason="Không còn room sizing cho lệnh mới", guard=guard)
+        risk_amount = quantity * risk_per_unit
         notional = quantity * signal.entry_price
         margin_required = notional / signal.leverage
         return RiskDecision(

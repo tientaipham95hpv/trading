@@ -828,6 +828,9 @@ function Risk({ onDone, status }: { onDone: () => Promise<void>; status: StatusP
       <div className="grid gap-4 md:grid-cols-3">
         <Metric label="Rủi ro mỗi lệnh" value={percent((risk?.risk_per_trade ?? 0) * 100)} />
         <Metric label="Rủi ro tối đa mỗi lệnh" value={percent((risk?.max_risk_per_trade ?? 0) * 100)} />
+        <Metric label="Tổng rủi ro mở" value={percent((risk?.max_total_open_risk ?? 0) * 100)} />
+        <Metric label="Margin mỗi lệnh" value={percent((risk?.max_margin_per_trade ?? 0) * 100)} />
+        <Metric label="Tổng margin" value={percent((risk?.max_total_margin ?? 0) * 100)} />
         <Metric label="Lỗ tối đa mỗi ngày" value={percent((risk?.max_daily_loss ?? 0) * 100)} />
         <Metric label="Weekly DD" value={percent((risk?.max_weekly_drawdown ?? 0) * 100)} />
         <Metric label="Vị thế tối đa" value={String(risk?.max_open_positions ?? "-")} />
@@ -894,6 +897,9 @@ function SettingsPage({ settings, onSaved }: { settings: BotSettings; onSaved: (
         <NumberField label="Trượt giá bps" value={draft.slippage_bps} onChange={(value) => setDraft({ ...draft, slippage_bps: value })} />
         <NumberField label="Rủi ro mỗi lệnh" value={draft.risk_per_trade} step={0.0005} onChange={(value) => setDraft({ ...draft, risk_per_trade: value })} />
         <NumberField label="Rủi ro tối đa mỗi lệnh" value={draft.max_risk_per_trade} step={0.001} onChange={(value) => setDraft({ ...draft, max_risk_per_trade: value })} />
+        <NumberField label="Tổng rủi ro mở" value={draft.max_total_open_risk} step={0.001} onChange={(value) => setDraft({ ...draft, max_total_open_risk: value })} />
+        <NumberField label="Margin mỗi lệnh" value={draft.max_margin_per_trade} step={0.01} onChange={(value) => setDraft({ ...draft, max_margin_per_trade: value })} />
+        <NumberField label="Tổng margin" value={draft.max_total_margin} step={0.01} onChange={(value) => setDraft({ ...draft, max_total_margin: value })} />
         <NumberField label="Daily loss" value={draft.max_daily_loss} step={0.001} onChange={(value) => setDraft({ ...draft, max_daily_loss: value })} />
         <NumberField label="Weekly DD" value={draft.max_weekly_drawdown} step={0.001} onChange={(value) => setDraft({ ...draft, max_weekly_drawdown: value })} />
         <NumberField label="Đòn bẩy tối đa" value={draft.max_leverage} onChange={(value) => setDraft({ ...draft, max_leverage: value })} />

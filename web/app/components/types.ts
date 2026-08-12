@@ -14,6 +14,9 @@ export type StatusPayload = {
     max_leverage: number;
     risk_per_trade: number;
     max_risk_per_trade: number;
+    max_total_open_risk: number;
+    max_margin_per_trade: number;
+    max_total_margin: number;
     max_daily_loss: number;
     max_weekly_drawdown: number;
     max_open_positions: number;
@@ -214,6 +217,9 @@ export type BotSettings = {
   max_leverage: number;
   risk_per_trade: number;
   max_risk_per_trade: number;
+  max_total_open_risk: number;
+  max_margin_per_trade: number;
+  max_total_margin: number;
   max_daily_loss: number;
   max_weekly_drawdown: number;
   max_open_positions: number;

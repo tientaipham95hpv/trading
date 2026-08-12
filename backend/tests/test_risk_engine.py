@@ -64,7 +64,7 @@ def test_risk_engine_rejects_rr_below_minimum():
     )
 
     assert decision.accepted is False
-    assert decision.reason == "RR nhỏ hơn 1.8"
+    assert decision.reason == "RR nhỏ hơn mức tối thiểu"
 
 
 def test_position_sizing_respects_half_percent_risk():
@@ -79,3 +79,31 @@ def test_position_sizing_respects_half_percent_risk():
     assert decision.accepted is True
     assert decision.risk_amount == 100
     assert decision.quantity == 10
+
+
+def test_position_sizing_respects_margin_cap():
+    decision = RiskEngine(max_margin_per_trade=0.10).evaluate(
+        make_signal(entry_price=100.0, stop_loss=99.0, take_profit=102.0, leverage=5),
+        open_positions=0,
+        daily_loss_fraction=0,
+        emergency_stop=EmergencyStopState(active=False),
+        account_equity=1_000,
+    )
+
+    assert decision.accepted is True
+    assert decision.margin_required == 100
+    assert decision.quantity == 5
+    assert decision.risk_amount == 5
+
+
+def test_position_sizing_rejects_when_total_risk_is_full():
+    decision = RiskEngine(max_total_open_risk=0.03).evaluate(
+        make_signal(),
+        open_positions=2,
+        daily_loss_fraction=0,
+        emergency_stop=EmergencyStopState(active=False),
+        current_open_risk_fraction=0.03,
+    )
+
+    assert decision.accepted is False
+    assert decision.reason == "Tổng rủi ro vị thế mở đã chạm giới hạn"

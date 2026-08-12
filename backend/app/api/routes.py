@@ -37,6 +37,9 @@ async def status() -> dict[str, object]:
             "max_leverage": state.bot_settings.max_leverage,
             "risk_per_trade": state.bot_settings.risk_per_trade,
             "max_risk_per_trade": state.bot_settings.max_risk_per_trade,
+            "max_total_open_risk": state.bot_settings.max_total_open_risk,
+            "max_margin_per_trade": state.bot_settings.max_margin_per_trade,
+            "max_total_margin": state.bot_settings.max_total_margin,
             "max_daily_loss": state.bot_settings.max_daily_loss,
             "max_weekly_drawdown": state.bot_settings.max_weekly_drawdown,
             "max_open_positions": state.bot_settings.max_open_positions,
@@ -265,6 +268,9 @@ async def update_settings(settings: BotSettings) -> BotSettings:
     state.risk.max_leverage = settings.max_leverage
     state.risk.risk_per_trade = settings.risk_per_trade
     state.risk.max_risk_per_trade = settings.max_risk_per_trade
+    state.risk.max_total_open_risk = settings.max_total_open_risk
+    state.risk.max_margin_per_trade = settings.max_margin_per_trade
+    state.risk.max_total_margin = settings.max_total_margin
     state.risk.max_daily_loss = settings.max_daily_loss
     state.risk.max_weekly_drawdown = settings.max_weekly_drawdown
     state.risk.max_open_positions = settings.max_open_positions

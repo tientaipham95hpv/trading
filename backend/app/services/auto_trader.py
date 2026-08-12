@@ -156,6 +156,15 @@ class AutoTrader:
                 self.rejected += 1
                 await self.state.storage.log("Auto-trader AI skip", {"symbol": result.symbol}, level="INFO")
                 continue
+            correlated_positions = self._correlated_positions(signal.symbol, snapshot=snapshot)
+            selected_leverage = self._select_leverage(signal, result)
+            selected_risk_fraction = self._risk_fraction_for_candidate(result, correlated_positions=correlated_positions)
+            signal = signal.model_copy(
+                update={
+                    "leverage": selected_leverage,
+                    "risk_fraction": selected_risk_fraction,
+                }
+            )
 
             decision = self.state.risk.evaluate(
                 signal,
@@ -165,12 +174,18 @@ class AutoTrader:
                 account_equity=account_equity,
                 weekly_drawdown_fraction=self._weekly_drawdown_fraction(),
                 portfolio_exposure_fraction=portfolio_exposure_fraction,
-                correlated_positions=self._correlated_positions(signal.symbol, snapshot=snapshot),
+                correlated_positions=correlated_positions,
                 loss_streak=self._loss_streak(),
                 market_regime=result.regime,
                 atr_fraction=(result.indicators.atr / result.price) if result.indicators.atr else None,
                 data_age_seconds=max(0.0, (datetime.now(UTC) - result.scanned_at).total_seconds()),
                 safe_mode=self.state.safe_mode,
+                current_open_risk_fraction=self._current_open_risk_fraction(open_position_count),
+                current_margin_fraction=(
+                    self._exchange_margin_fraction(snapshot)
+                    if snapshot is not None
+                    else self._paper_margin_fraction()
+                ),
             )
             if not decision.accepted or decision.quantity is None:
                 self.rejected += 1
@@ -188,7 +203,7 @@ class AutoTrader:
                 quantity=self.state.position_sizer.apply(decision),
                 entry_price=signal.entry_price,
                 stop_loss=signal.stop_loss,
-                leverage=self._select_leverage(signal, result),
+                leverage=selected_leverage,
                 order_type=signal.order_type,
                 take_profits=signal.take_profits,
                 risk_fraction=signal.risk_fraction,
@@ -304,6 +319,26 @@ class AutoTrader:
         )
         return exposure / equity
 
+    def _current_open_risk_fraction(self, open_position_count: int) -> float:
+        return open_position_count * self.state.bot_settings.risk_per_trade
+
+    def _paper_margin_fraction(self) -> float:
+        equity = max(self.state.execution.performance().equity, 1.0)
+        leverage = max(self.state.bot_settings.max_leverage, 1)
+        margin = sum(
+            (position.remaining_quantity * position.entry_price) / leverage
+            for position in self.state.execution.open_positions()
+        )
+        return margin / equity
+
+    def _exchange_margin_fraction(self, snapshot: Any) -> float:
+        equity = max(snapshot.balance.margin_balance or snapshot.balance.available, 1.0)
+        margin = sum(
+            (position.quantity * (position.mark_price or position.entry_price)) / max(position.leverage or 1, 1)
+            for position in snapshot.positions
+        )
+        return margin / equity
+
     def _correlated_positions(self, symbol: str, *, snapshot: Any | None = None) -> int:
         base = symbol.replace("USDT", "")
         bucket = "BTC_ETH" if base in {"BTC", "ETH"} else base[:3]
@@ -331,6 +366,18 @@ class AutoTrader:
         else:
             chosen = 5
         return max(5, min(chosen, maximum))
+
+    def _risk_fraction_for_candidate(self, result: Any, *, correlated_positions: int) -> float:
+        score = max(result.long_score, result.short_score)
+        if score >= 90 and (result.risk_reward or 0.0) >= 2.6:
+            risk_fraction = min(0.0075, self.state.bot_settings.max_risk_per_trade)
+        elif score >= 85:
+            risk_fraction = min(0.005, self.state.bot_settings.risk_per_trade)
+        else:
+            risk_fraction = min(0.0035, self.state.bot_settings.risk_per_trade)
+        if correlated_positions > 0:
+            risk_fraction *= 0.5
+        return max(0.001, risk_fraction)
 
     def _candidate_has_enough_confirmation(self, result: Any) -> tuple[bool, str]:
         score = max(result.long_score, result.short_score)
