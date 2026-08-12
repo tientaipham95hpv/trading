@@ -138,6 +138,21 @@ def test_exchange_watchdog_treats_open_orders_as_busy_symbols():
     assert AutoTrader._busy_exchange_symbols(snapshot) == {"BTCUSDT", "UNIUSDT"}
 
 
+def test_auto_trader_rejection_summary_uses_actual_reasons_without_ai_label():
+    summary = AutoTrader._rejection_summary(
+        {
+            "Bỏ qua khung nhiễu 1m/5m": 2,
+            "Tránh vùng biến động cao/panic": 1,
+        }
+    )
+
+    assert summary == (
+        "Có tín hiệu nhưng chưa đủ điều kiện: "
+        "Bỏ qua khung nhiễu 1m/5m (2); Tránh vùng biến động cao/panic (1)"
+    )
+    assert "AI" not in summary
+
+
 def test_exchange_watchdog_detects_position_without_protective_stop():
     snapshot = ExchangeSnapshot(
         mode=TradingMode.DEMO,

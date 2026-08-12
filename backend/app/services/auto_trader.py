@@ -173,12 +173,16 @@ class AutoTrader:
         if not candidates:
             return await self._skip("NO_SIGNAL", "Scanner chưa có tín hiệu đủ điểm")
 
+        rejection_reasons: dict[str, int] = {}
         for result in candidates:
             if result.symbol in active_symbols:
+                reason = "Symbol đang có vị thế hoặc lệnh mở"
+                rejection_reasons[reason] = rejection_reasons.get(reason, 0) + 1
                 continue
             accepted, reason = self._candidate_has_enough_confirmation(result)
             if not accepted:
                 self.rejected += 1
+                rejection_reasons[reason] = rejection_reasons.get(reason, 0) + 1
                 await self.state.storage.log(
                     "Auto-trader weak signal skip",
                     {
@@ -190,6 +194,8 @@ class AutoTrader:
                 )
                 continue
             if snapshot is not None and not await adapter.is_symbol_tradable(result.symbol):
+                reason = "Symbol không thể giao dịch trên exchange"
+                rejection_reasons[reason] = rejection_reasons.get(reason, 0) + 1
                 await self.state.storage.log(
                     "Auto-trader skip non-tradable symbol",
                     {"symbol": result.symbol, "mode": self.state.trading_mode.value},
@@ -198,6 +204,8 @@ class AutoTrader:
                 continue
             signal = self.state.scanner.signal_from_result(result)
             if signal is None:
+                reason = "Không tạo được kế hoạch từ tín hiệu"
+                rejection_reasons[reason] = rejection_reasons.get(reason, 0) + 1
                 continue
             correlated_positions = self._correlated_positions(signal.symbol, snapshot=snapshot)
             selected_leverage = self._select_leverage(signal, result)
@@ -236,6 +244,8 @@ class AutoTrader:
             )
             if not decision.accepted or decision.quantity is None:
                 self.rejected += 1
+                reason = decision.reason or "Risk engine không chấp nhận"
+                rejection_reasons[reason] = rejection_reasons.get(reason, 0) + 1
                 await self.state.storage.log(
                     "Auto-trader risk skip",
                     {"symbol": result.symbol, "reason": decision.reason},
@@ -259,6 +269,8 @@ class AutoTrader:
                 self.state.order_validator.validate(plan)
             except ValueError as exc:
                 self.rejected += 1
+                reason = str(exc)
+                rejection_reasons[reason] = rejection_reasons.get(reason, 0) + 1
                 await self.state.storage.log(
                     "Auto-trader invalid plan",
                     {"symbol": result.symbol, "error": str(exc)},
@@ -268,7 +280,10 @@ class AutoTrader:
 
             return await self._submit(plan)
 
-        return await self._skip("NO_ACCEPTED_SIGNAL", "Có tín hiệu nhưng đều bị AI/risk guard chặn")
+        return await self._skip(
+            "NO_ACCEPTED_SIGNAL",
+            self._rejection_summary(rejection_reasons),
+        )
 
     async def _submit(self, plan: OrderPlan) -> dict[str, object]:
         self.last_status = "SUBMITTING"
@@ -539,6 +554,14 @@ class AutoTrader:
         if breakout and "Volume tăng" in reasons and "ADX xác nhận trend" in reasons:
             return True, "Breakout có volume và ADX"
         return False, "Chưa đủ xác nhận trend/breakout"
+
+    @staticmethod
+    def _rejection_summary(reasons: dict[str, int]) -> str:
+        if not reasons:
+            return "Có tín hiệu nhưng chưa có tín hiệu phù hợp để vào lệnh"
+        ranked = sorted(reasons.items(), key=lambda item: (-item[1], item[0]))
+        details = "; ".join(f"{reason} ({count})" for reason, count in ranked[:3])
+        return f"Có tín hiệu nhưng chưa đủ điều kiện: {details}"
 
     def _loss_streak(self) -> int:
         streak = 0
