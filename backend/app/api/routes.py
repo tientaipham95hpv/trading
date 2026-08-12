@@ -9,6 +9,7 @@ from app.domain.models import (
     BacktestRunRequest,
     BotSettings,
     BotState,
+    ExitAnalyticsResponse,
     LiveConfigUpdate,
     LiveReadiness,
     NotificationEvent,
@@ -22,6 +23,7 @@ from app.domain.models import (
 from app.services.app_state import state
 from app.services.exchange import ExchangeCredentialsError, ExchangeError
 from app.services.execution import DuplicateOrderError
+from app.services.exit_analytics import ExitAnalyticsService, normalize_exchange_closes
 
 router = APIRouter(prefix="/api")
 
@@ -241,6 +243,34 @@ async def trades() -> dict[str, object]:
             rows = [row for row in rows if int(_float(row.get("time"))) >= cutoff_ms]
         return {"items": _exchange_trades_for_app(rows)}
     return {"items": [item.model_dump(mode="json") for item in state.execution.trades]}
+
+
+@router.get("/exit-analytics", response_model=ExitAnalyticsResponse)
+async def exit_analytics() -> ExitAnalyticsResponse:
+    """Phân tích lịch sử thoát lệnh; chỉ đọc, không tác động execution/risk/config."""
+    if state.trading_mode in {TradingMode.DEMO, TradingMode.LIVE}:
+        adapter = _current_adapter()
+        income = _income_since_reset(await adapter.income_history(limit=1000))
+        symbols = sorted({str(row.get("symbol")) for row in income if row.get("symbol")})
+        rows: list[dict[str, object]] = []
+        for symbol in symbols:
+            rows.extend(await adapter.trade_history(symbol, limit=1000))
+        reset_at = state.performance_reset_at_for()
+        if reset_at is not None:
+            cutoff_ms = int(reset_at.timestamp() * 1000)
+            rows = [row for row in rows if int(_float(row.get("time"))) >= cutoff_ms]
+        return ExitAnalyticsService().analyze(normalize_exchange_closes(rows), income)
+
+    paper_rows = [
+        {
+            "symbol": trade.symbol,
+            "realizedPnl": trade.gross_pnl,
+            "reason": trade.reason,
+            "position_side": trade.side.value,
+        }
+        for trade in state.execution.trades
+    ]
+    return ExitAnalyticsService().analyze(paper_rows, [], source="Lịch sử paper execution hiện có")
 
 
 @router.get("/logs")

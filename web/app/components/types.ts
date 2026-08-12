@@ -254,6 +254,43 @@ export type Trade = {
   created_at: string;
 };
 
+export type ExitAnalyticsBreakdown = {
+  key: string;
+  closes: number;
+  realized_pnl: number;
+  commission: number;
+  funding: number;
+  net_realized_pnl: number;
+};
+
+export type ExitAnalyticsAvailability = {
+  available: boolean;
+  coverage: number;
+  reason: string | null;
+};
+
+export type ExitAnalytics = {
+  read_only: boolean;
+  generated_at: string;
+  source: string;
+  summary: {
+    close_fills: number;
+    realized_pnl: number;
+    commission: number;
+    funding: number;
+    net_realized_pnl: number;
+  };
+  by_close_reason: ExitAnalyticsBreakdown[];
+  by_side: ExitAnalyticsBreakdown[];
+  by_symbol: ExitAnalyticsBreakdown[];
+  realized_r: number | null;
+  realized_r_availability: ExitAnalyticsAvailability;
+  mae_availability: ExitAnalyticsAvailability;
+  mfe_availability: ExitAnalyticsAvailability;
+  missed_r_availability: ExitAnalyticsAvailability;
+  notes: string[];
+};
+
 export type Performance = {
   balance: number;
   equity: number;

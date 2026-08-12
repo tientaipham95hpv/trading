@@ -42,6 +42,7 @@ import type {
   Candle,
   DemoStability,
   ExchangeSnapshot,
+  ExitAnalytics,
   LogItem,
   Market,
   Performance,
@@ -89,6 +90,7 @@ export function DashboardApp({ page }: { page: PageKey }) {
   const [trades, setTrades] = useState<Trade[]>([]);
   const [logs, setLogs] = useState<LogItem[]>([]);
   const [performance, setPerformance] = useState<Performance | null>(null);
+  const [exitAnalytics, setExitAnalytics] = useState<ExitAnalytics | null>(null);
   const [settings, setSettings] = useState<BotSettings | null>(null);
   const [exchange, setExchange] = useState<ExchangeSnapshot | null>(null);
   const [wsState, setWsState] = useState<WsState>("OFFLINE");
@@ -109,6 +111,7 @@ export function DashboardApp({ page }: { page: PageKey }) {
         nextPositions,
         nextTrades,
         nextPerformance,
+        nextExitAnalytics,
         nextExchange,
         nextSettings,
         nextLogs,
@@ -121,6 +124,7 @@ export function DashboardApp({ page }: { page: PageKey }) {
         api.positions(),
         api.trades(),
         api.performance(),
+        api.exitAnalytics(),
         api.exchange(),
         api.settings(),
         api.logs(),
@@ -133,6 +137,7 @@ export function DashboardApp({ page }: { page: PageKey }) {
       setPositions(nextPositions.items);
       setTrades(nextTrades.items);
       setPerformance(nextPerformance);
+      setExitAnalytics(nextExitAnalytics);
       setExchange(nextExchange);
       setSettings(nextSettings);
       setLogs(nextLogs.items);
@@ -373,7 +378,11 @@ export function DashboardApp({ page }: { page: PageKey }) {
           {page === "trades" && <Trades trades={trades} />}
           {page === "strategies" && <Strategies scanner={scanner} />}
           {page === "analytics" && (
-            <Analytics performance={performance} trades={trades} />
+            <Analytics
+              exitAnalytics={exitAnalytics}
+              performance={performance}
+              trades={trades}
+            />
           )}
           {page === "risk" && <Risk onDone={refresh} status={status} portfolioRisk={portfolioRisk} />}
           {page === "logs" && <Logs logs={logs} />}
@@ -1505,9 +1514,11 @@ function InfoPair({ label, value }: { label: string; value: string }) {
 }
 
 function Analytics({
+  exitAnalytics,
   performance,
   trades,
 }: {
+  exitAnalytics: ExitAnalytics | null;
   performance: Performance | null;
   trades: Trade[];
 }) {
@@ -1533,6 +1544,7 @@ function Analytics({
       <Metric label="Lệnh thắng" value={String(performance?.winning_trades ?? 0)} />
       <Metric label="Lệnh thua" value={String(performance?.losing_trades ?? 0)} />
       <BacktestPanel />
+      <ExitAnalyticsPanel analytics={exitAnalytics} />
       <section className="rounded-lg border border-white/10 bg-[#0d1724] p-4 md:col-span-3">
         <h3 className="mb-3 font-bold">Phân bổ kết quả lệnh</h3>
         <Table
@@ -1543,6 +1555,78 @@ function Analytics({
           ]}
         />
       </section>
+    </div>
+  );
+}
+
+function ExitAnalyticsPanel({ analytics }: { analytics: ExitAnalytics | null }) {
+  const unavailable = [
+    ["Realized R", analytics?.realized_r_availability],
+    ["MAE", analytics?.mae_availability],
+    ["MFE", analytics?.mfe_availability],
+    ["Missed R", analytics?.missed_r_availability],
+  ] as const;
+
+  return (
+    <section className="rounded-lg border border-cyan-300/20 bg-[#0d1724] p-4 md:col-span-3">
+      <div className="mb-4 flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <h3 className="font-bold">Exit Analytics · chỉ đọc</h3>
+          <p className="mt-1 text-xs text-slate-400">
+            Quan sát lịch sử thoát lệnh, không thay đổi Stop Loss, Take Profit hoặc execution.
+          </p>
+        </div>
+        <Pill label="Chế độ" value={analytics?.read_only ? "READ-ONLY" : "Đang tải"} tone="safe" />
+      </div>
+      <div className="grid gap-3 md:grid-cols-5">
+        <Metric label="Close fills" value={String(analytics?.summary.close_fills ?? 0)} />
+        <Metric label="Realized PnL" value={money(analytics?.summary.realized_pnl)} />
+        <Metric label="Commission" value={money(analytics?.summary.commission)} />
+        <Metric label="Funding" value={money(analytics?.summary.funding)} />
+        <Metric
+          label="Net realized"
+          value={money(analytics?.summary.net_realized_pnl)}
+          tone={(analytics?.summary.net_realized_pnl ?? 0) >= 0 ? "good" : "bad"}
+        />
+      </div>
+      <div className="mt-4 grid gap-4 xl:grid-cols-3">
+        <ExitBreakdown title="Theo nguyên nhân thoát" rows={analytics?.by_close_reason ?? []} />
+        <ExitBreakdown title="Theo phía vị thế" rows={analytics?.by_side ?? []} />
+        <ExitBreakdown title="Theo symbol" rows={analytics?.by_symbol ?? []} />
+      </div>
+      <div className="mt-4 grid gap-2 md:grid-cols-2">
+        {unavailable.map(([label, item]) => (
+          <div className="rounded-md bg-white/[0.04] px-3 py-2 text-sm" key={label}>
+            <strong>{label}: {item?.available ? "Có dữ liệu" : "Chưa đủ dữ liệu"}</strong>
+            <p className="mt-1 text-xs text-slate-400">
+              Coverage {percent((item?.coverage ?? 0) * 100)} · {item?.reason ?? "Đang tải"}
+            </p>
+          </div>
+        ))}
+      </div>
+      {(analytics?.notes ?? []).map((note) => (
+        <p className="mt-2 text-xs text-slate-400" key={note}>• {note}</p>
+      ))}
+    </section>
+  );
+}
+
+function ExitBreakdown({
+  rows,
+  title,
+}: {
+  rows: ExitAnalytics["by_symbol"];
+  title: string;
+}) {
+  return (
+    <div>
+      <h4 className="mb-2 text-sm font-bold text-slate-300">{title}</h4>
+      <Table
+        columns={["Nhóm", "Close fills", "Realized PnL"]}
+        rows={rows.length
+          ? rows.map((row) => [row.key, String(row.closes), money(row.realized_pnl)])
+          : [["Chưa có dữ liệu", "0", money(0)]]}
+      />
     </div>
   );
 }

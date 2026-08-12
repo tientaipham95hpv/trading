@@ -13,6 +13,7 @@ import type {
   StatusPayload,
   Trade,
   ExchangeSnapshot,
+  ExitAnalytics,
 } from "./types";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL || "";
@@ -46,6 +47,7 @@ export const api = {
   trades: () => request<{ items: Trade[] }>("/api/trades"),
   logs: () => request<{ items: LogItem[] }>("/api/logs"),
   performance: () => request<Performance>("/api/performance"),
+  exitAnalytics: () => request<ExitAnalytics>("/api/exit-analytics"),
   exchange: () => request<ExchangeSnapshot>("/api/exchange"),
   settings: () => request<BotSettings>("/api/settings"),
   runBacktest: (payload: object) =>
