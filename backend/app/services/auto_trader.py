@@ -110,6 +110,13 @@ class AutoTrader:
                     "CLEANED_ORPHAN_ORDERS",
                     f"Đã hủy {len(snapshot.orders)} order mồ côi, không có vị thế mở",
                 )
+            stop_actions = await adapter.manage_open_position_stops()
+            if stop_actions:
+                await self.state.storage.log(
+                    "Auto-trader managed protective stops",
+                    {"mode": self.state.trading_mode.value, "actions": stop_actions},
+                    level="WARNING",
+                )
             if open_position_count >= self.state.bot_settings.max_open_positions:
                 return await self._skip(
                     "WAITING_POSITION",

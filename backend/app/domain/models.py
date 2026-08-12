@@ -444,3 +444,8 @@ class NotificationPayload(BaseModel):
     data: dict[str, str] = Field(default_factory=dict)
     apns_ready: bool = True
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+
+
+class PushDeviceRegistration(BaseModel):
+    platform: str = "ios"
+    token: str = Field(min_length=16)

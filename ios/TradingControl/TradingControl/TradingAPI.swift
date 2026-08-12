@@ -30,6 +30,10 @@ public actor TradingAPI {
         return response.items
     }
 
+    public func klines(symbol: String, interval: String = "15m", limit: Int = 180) async throws -> KlineResponse {
+        try await get("/api/klines/\(symbol.uppercased())?interval=\(interval)&limit=\(limit)")
+    }
+
     public func scanner(limit: Int = 40, timeframes: String = "15m") async throws -> [TinHieuQuet] {
         let response: DanhSachPhanHoi<TinHieuQuet> = try await get("/api/scanner?limit=\(limit)&timeframes=\(timeframes)")
         return response.items
@@ -59,6 +63,15 @@ public actor TradingAPI {
 
     public func updateSettings(_ settings: CaiDatBot) async throws -> CaiDatBot {
         try await send("/api/settings", method: "PUT", body: settings)
+    }
+
+    @discardableResult
+    public func registerPushToken(_ token: String, platform: String = "ios") async throws -> PushDeviceRegistrationResponse {
+        try await send(
+            "/api/notifications/devices",
+            method: "POST",
+            body: PushDeviceRegistration(platform: platform, token: token)
+        )
     }
 
     @discardableResult
@@ -215,6 +228,16 @@ public struct PrepareLiveResponse: Codable {
     public let accepted: Bool
     public let reason: String?
     public let readiness: LiveReadiness?
+}
+
+public struct PushDeviceRegistration: Codable {
+    public let platform: String
+    public let token: String
+}
+
+public struct PushDeviceRegistrationResponse: Codable {
+    public let accepted: Bool
+    public let platform: String
 }
 
 public enum TradingAPIError: Error, LocalizedError {

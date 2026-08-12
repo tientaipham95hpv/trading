@@ -12,6 +12,7 @@ from app.domain.models import (
     NotificationEvent,
     OrderPlan,
     PerformanceSnapshot,
+    PushDeviceRegistration,
     SignalAction,
     Timeframe,
     TradingMode,
@@ -218,6 +219,17 @@ async def logs(limit: int = Query(default=100, ge=1, le=500)) -> dict[str, objec
     return {"items": await state.storage.list_payloads("logs", limit)}
 
 
+@router.post("/notifications/devices")
+async def register_push_device(device: PushDeviceRegistration) -> dict[str, object]:
+    masked = f"{device.token[:8]}...{device.token[-6:]}"
+    await state.storage.log(
+        "Registered push notification device",
+        {"platform": device.platform, "token": masked},
+        level="INFO",
+    )
+    return {"accepted": True, "platform": device.platform}
+
+
 @router.get("/performance")
 async def performance() -> dict[str, object]:
     if state.trading_mode in {TradingMode.DEMO, TradingMode.LIVE}:
@@ -381,6 +393,32 @@ async def exchange_user_stream() -> dict[str, object]:
     except ExchangeError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
     return {"stream_url": url}
+
+
+@router.post("/exchange/manage-stops")
+async def exchange_manage_stops() -> dict[str, object]:
+    adapter = state.live_exchange if state.trading_mode == TradingMode.LIVE else state.demo_exchange
+    try:
+        actions = await adapter.manage_open_position_stops()
+    except ExchangeCredentialsError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except ExchangeError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    if actions:
+        await state.storage.log(
+            "Exchange managed protective stops",
+            {"mode": state.trading_mode.value, "actions": actions},
+            level="WARNING",
+        )
+        for action in actions:
+            notification = state.notifications.build(
+                NotificationEvent.TP,
+                title="TP protection",
+                body=f"{action['symbol']} dời SL {action['old_stop']} -> {action['new_stop']}",
+                data={"symbol": str(action["symbol"]), "mode": state.trading_mode.value},
+            )
+            await state.storage.log("APNs-ready notification", notification.model_dump(mode="json"), level="INFO")
+    return {"accepted": True, "actions": actions}
 
 
 @router.get("/live/readiness")
@@ -628,11 +666,19 @@ def _exchange_positions_for_app(snapshot) -> list[dict[str, object]]:
             ),
             0.0,
         )
-        take_profits = [
-            float(order.stop_price)
-            for order in orders
-            if order.stop_price and "TAKE_PROFIT" in order.order_type
-        ]
+        take_profits = sorted(
+            [
+                float(order.stop_price)
+                for order in orders
+                if order.stop_price and "TAKE_PROFIT" in order.order_type
+            ],
+            reverse=position.side == "SHORT",
+        )
+        break_even_active = bool(stop_loss) and abs(float(stop_loss) - position.entry_price) <= 1e-9
+        trailing_stop_active = bool(stop_loss) and (
+            (position.side == "LONG" and float(stop_loss) > position.entry_price + 1e-9)
+            or (position.side == "SHORT" and float(stop_loss) < position.entry_price - 1e-9)
+        )
         rows.append(
             {
                 "id": f"exchange-{position.symbol}-{position.side}",
@@ -649,8 +695,8 @@ def _exchange_positions_for_app(snapshot) -> list[dict[str, object]]:
                 "unrealized_pnl": position.unrealized_pnl,
                 "fees_paid": 0.0,
                 "funding_paid": 0.0,
-                "break_even_active": False,
-                "trailing_stop_active": False,
+                "break_even_active": break_even_active,
+                "trailing_stop_active": trailing_stop_active,
                 "liquidation_price": position.liquidation_price,
                 "leverage": position.leverage,
                 "margin_type": position.margin_type,

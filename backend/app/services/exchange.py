@@ -82,6 +82,7 @@ class BinanceFuturesAdapter(ExchangeAdapter):
         self._listen_key: str | None = None
         self.snapshot_cache = ExchangeSnapshot(mode=mode)
         self._symbol_filters: dict[str, dict[str, Decimal]] = {}
+        self._submitted_plans_by_symbol: dict[str, OrderPlan] = {}
         self._time_offset_ms = 0
         self._last_time_sync_ms = 0
 
@@ -103,6 +104,7 @@ class BinanceFuturesAdapter(ExchangeAdapter):
                 )
             raise ExchangeError(f"Duplicate client order id: {plan.client_order_id}")
         self._submitted_client_ids.add(plan.client_order_id)
+        self._submitted_plans_by_symbol[plan.symbol] = plan
 
         await self.change_margin_type(plan.symbol, plan.margin_type.value)
         await self.change_leverage(plan.symbol, plan.leverage)
@@ -156,7 +158,10 @@ class BinanceFuturesAdapter(ExchangeAdapter):
             accepted=True,
             status=f"{self.mode.value}_SUBMITTED",
             client_order_id=plan.client_order_id,
-            order=self._normalize_order(entry).model_dump(mode="json"),
+            order={
+                **self._normalize_order(entry).model_dump(mode="json"),
+                "submitted_plan": plan.model_dump(mode="json"),
+            },
             positions=[position.model_dump(mode="json") for position in (await self.positions(plan.symbol))],
             fills=[],
             trades=[],
@@ -247,10 +252,85 @@ class BinanceFuturesAdapter(ExchangeAdapter):
                 orders.append(self._normalize_order(existing))
         return orders
 
+    async def manage_open_position_stops(self) -> list[dict[str, object]]:
+        snapshot = await self.snapshot()
+        actions: list[dict[str, object]] = []
+        orders_by_symbol: dict[str, list[ExchangeOrder]] = {}
+        for order in snapshot.orders:
+            orders_by_symbol.setdefault(order.symbol, []).append(order)
+
+        for position in snapshot.positions:
+            orders = orders_by_symbol.get(position.symbol, [])
+            stop_orders = [
+                order
+                for order in orders
+                if order.stop_price
+                and "STOP" in order.order_type
+                and "TAKE_PROFIT" not in order.order_type
+            ]
+            take_profit_orders = [
+                order
+                for order in orders
+                if order.stop_price and "TAKE_PROFIT" in order.order_type
+            ]
+            target = self._managed_stop_target(position, take_profit_orders)
+            if target is None:
+                continue
+            current = self._active_stop_price(position, stop_orders)
+            if not self._stop_improves(position, current, target):
+                continue
+            client_id = _client_order_id(
+                self.mode.value.lower(),
+                position.symbol,
+                "be" if self._remaining_tp_count(take_profit_orders) >= 2 else "lock",
+                int(time.time() * 1000),
+            )
+            plan = OrderPlan(
+                client_order_id=client_id,
+                symbol=position.symbol,
+                side=Side.LONG if position.side == "LONG" else Side.SHORT,
+                quantity=position.quantity,
+                entry_price=position.entry_price,
+                stop_loss=target,
+                leverage=min(position.leverage or 1, 10),
+            )
+            order = await self._place_managed_stop_loss(plan, client_id)
+            if not await self._stop_loss_exists(position.symbol, client_id):
+                raise StopLossProtectionError(f"Không xác nhận được SL mới cho {position.symbol}")
+            for old_stop in stop_orders:
+                if old_stop.client_order_id != client_id:
+                    await self.cancel_algo_order(position.symbol, old_stop.client_order_id, old_stop.order_id)
+            action = {
+                "symbol": position.symbol,
+                "side": position.side,
+                "old_stop": current,
+                "new_stop": target,
+                "remaining_take_profits": self._remaining_tp_count(take_profit_orders),
+                "client_order_id": client_id,
+                "order": self._normalize_algo_order(order).model_dump(mode="json"),
+            }
+            actions.append(action)
+        return actions
+
     async def keepalive_user_stream(self) -> None:
         if self._listen_key:
             await self._request("PUT", "/fapi/v1/listenKey", params={"listenKey": self._listen_key}, signed=False)
             self.snapshot_cache.last_user_stream_at = datetime.now(UTC)
+
+    async def cancel_algo_order(
+        self,
+        symbol: str,
+        client_algo_id: str | None = None,
+        algo_id: int | str | None = None,
+    ) -> dict[str, Any]:
+        params: dict[str, Any] = {"symbol": symbol}
+        if client_algo_id:
+            params["clientAlgoId"] = client_algo_id
+        elif algo_id not in (None, ""):
+            params["algoId"] = algo_id
+        else:
+            raise ExchangeError("Thiếu clientAlgoId/algoId để hủy algo order")
+        return await self._signed("DELETE", "/fapi/v1/algoOrder", params)
 
     async def change_margin_type(self, symbol: str, margin_type: str) -> None:
         try:
@@ -417,6 +497,23 @@ class BinanceFuturesAdapter(ExchangeAdapter):
             },
         )
 
+    async def _place_managed_stop_loss(self, plan: OrderPlan, client_id: str) -> dict[str, Any]:
+        return await self._signed(
+            "POST",
+            "/fapi/v1/algoOrder",
+            {
+                "algoType": "CONDITIONAL",
+                "symbol": plan.symbol,
+                "side": "SELL" if plan.side == Side.LONG else "BUY",
+                "type": "STOP_MARKET",
+                "triggerPrice": _format_number(plan.stop_loss),
+                "quantity": _format_number(plan.quantity),
+                "reduceOnly": "true",
+                "workingType": "CONTRACT_PRICE",
+                "clientAlgoId": client_id,
+            },
+        )
+
     async def _place_take_profit(
         self,
         plan: OrderPlan,
@@ -468,6 +565,61 @@ class BinanceFuturesAdapter(ExchangeAdapter):
     async def _stop_loss_exists(self, symbol: str, client_id: str) -> bool:
         orders = await self.open_orders(symbol)
         return any(order.client_order_id == client_id and order.order_type == "STOP_MARKET" for order in orders)
+
+    def _managed_stop_target(
+        self,
+        position: ExchangePosition,
+        take_profit_orders: list[ExchangeOrder],
+    ) -> float | None:
+        remaining = self._remaining_tp_count(take_profit_orders)
+        if remaining >= 3:
+            return None
+        plan = self._submitted_plans_by_symbol.get(position.symbol)
+        if remaining >= 2:
+            target = position.entry_price
+        elif plan and plan.take_profits:
+            target = plan.take_profits[0]
+        else:
+            next_tp = self._next_take_profit(position, take_profit_orders)
+            if next_tp is None:
+                target = position.entry_price
+            elif position.side == "LONG":
+                target = position.entry_price + abs(next_tp - position.entry_price) * 0.35
+            else:
+                target = position.entry_price - abs(position.entry_price - next_tp) * 0.35
+        filters = self._symbol_filters.get(position.symbol)
+        if filters:
+            target = _round_tick(target, filters["price_tick"])
+        return target
+
+    @staticmethod
+    def _remaining_tp_count(take_profit_orders: list[ExchangeOrder]) -> int:
+        return len([order for order in take_profit_orders if order.stop_price])
+
+    @staticmethod
+    def _active_stop_price(position: ExchangePosition, stop_orders: list[ExchangeOrder]) -> float | None:
+        prices = [order.stop_price for order in stop_orders if order.stop_price]
+        if not prices:
+            return None
+        return max(prices) if position.side == "LONG" else min(prices)
+
+    @staticmethod
+    def _next_take_profit(position: ExchangePosition, take_profit_orders: list[ExchangeOrder]) -> float | None:
+        prices = sorted(order.stop_price for order in take_profit_orders if order.stop_price)
+        if not prices:
+            return None
+        return prices[0] if position.side == "LONG" else prices[-1]
+
+    @staticmethod
+    def _stop_improves(position: ExchangePosition, current_stop: float | None, target: float) -> bool:
+        mark = position.mark_price or position.entry_price
+        if position.side == "LONG":
+            if target >= mark:
+                return False
+            return current_stop is None or target > current_stop + 1e-12
+        if target <= mark:
+            return False
+        return current_stop is None or target < current_stop - 1e-12
 
     async def _signed(self, method: str, path: str, params: dict[str, Any]) -> Any:
         await self._sync_time_if_needed()

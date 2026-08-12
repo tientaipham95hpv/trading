@@ -2,6 +2,8 @@ import SwiftUI
 import UserNotifications
 
 public struct TradingControlApp: App {
+    @UIApplicationDelegateAdaptor(TradingAppDelegate.self) private var appDelegate
+
     public init() {}
 
     public var body: some Scene {
@@ -426,6 +428,18 @@ private extension View {
     func liquidGlass() -> some View {
         modifier(LiquidGlassModifier())
     }
+
+    func tradingGlassList() -> some View {
+        scrollContentBackground(.hidden)
+            .background(LiquidBackground())
+            .toolbarBackground(.hidden, for: .navigationBar)
+            .preferredColorScheme(.dark)
+    }
+
+    func glassListRow() -> some View {
+        listRowBackground(Color.clear)
+            .listRowSeparator(.hidden)
+    }
 }
 
 private struct StatusChip: View {
@@ -473,30 +487,15 @@ private struct MarketsView: View {
     var body: some View {
         NavigationStack {
             List(rows) { item in
-                VStack(alignment: .leading, spacing: 8) {
-                    HStack {
-                        Text(item.symbol).font(.headline)
-                        Spacer()
-                        Text(money(item.lastPrice)).font(.headline)
-                    }
-                    HStack {
-                        Text("24h \(signedPercent(item.priceChangePercent))")
-                        Spacer()
-                        Text("Khối lượng \(compact(item.quoteVolume))")
-                    }
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
-                    HStack {
-                        Text("Chênh lệch \(number(item.spreadBps)) bps")
-                        Spacer()
-                        Text("Funding \(percent(item.fundingRate * 100))")
-                    }
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                NavigationLink {
+                    CoinChartView(symbol: item.symbol)
+                } label: {
+                    MarketRowCard(item: item)
                 }
-                .padding(.vertical, 4)
+                .glassListRow()
             }
             .navigationTitle("Thị trường")
+            .tradingGlassList()
             .searchable(text: $query, prompt: "Tìm mã")
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {
@@ -510,6 +509,147 @@ private struct MarketsView: View {
             }
             .overlay { if rows.isEmpty { EmptyContent("Chưa có dữ liệu thị trường thật từ backend.") } }
         }
+    }
+}
+
+private struct MarketRowCard: View {
+    let item: ThiTruong
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Text(item.symbol).font(.headline)
+                Spacer()
+                Text(money(item.lastPrice)).font(.headline)
+            }
+            HStack {
+                Text("24h \(signedPercent(item.priceChangePercent))")
+                Spacer()
+                Text("Khối lượng \(compact(item.quoteVolume))")
+            }
+            .font(.subheadline)
+            .foregroundStyle(.secondary)
+            HStack {
+                Text("Chênh lệch \(number(item.spreadBps)) bps")
+                Spacer()
+                Text("Funding \(percent(item.fundingRate * 100))")
+            }
+            .font(.caption)
+            .foregroundStyle(.secondary)
+        }
+        .padding()
+        .liquidGlass()
+    }
+}
+
+private struct CoinChartView: View {
+    let symbol: String
+    @State private var candles: [NenGia] = []
+    @State private var interval = "15m"
+    @State private var lastUpdated: Date?
+    @State private var error: String?
+
+    var body: some View {
+        ZStack {
+            LiquidBackground()
+            ScrollView {
+                VStack(alignment: .leading, spacing: 14) {
+                    GlassPanel {
+                        HStack {
+                            VStack(alignment: .leading, spacing: 5) {
+                                Text(symbol)
+                                    .font(.title.bold())
+                                Text("Realtime 5 giây • \(interval)")
+                                    .font(.caption.bold())
+                                    .foregroundStyle(.secondary)
+                            }
+                            Spacer()
+                            Picker("Khung", selection: $interval) {
+                                Text("15m").tag("15m")
+                                Text("1h").tag("1h")
+                                Text("4h").tag("4h")
+                            }
+                            .pickerStyle(.segmented)
+                            .frame(maxWidth: 180)
+                        }
+                    }
+                    GlassPanel {
+                        PriceChart(candles: candles)
+                            .frame(height: 260)
+                        HStack {
+                            InfoPill("Nến \(candles.count)")
+                            InfoPill("Cập nhật \(lastUpdated.map(shortTime) ?? "-")")
+                            if let last = candles.last {
+                                InfoPill("Close \(money(last.close))")
+                            }
+                        }
+                    }
+                    if let error {
+                        GlassPanel {
+                            Label(error, systemImage: "exclamationmark.triangle.fill")
+                                .foregroundStyle(.orange)
+                        }
+                    }
+                }
+                .padding()
+            }
+        }
+        .navigationTitle(symbol)
+        .toolbarBackground(.hidden, for: .navigationBar)
+        .task(id: interval) { await realtimeLoad() }
+    }
+
+    private func realtimeLoad() async {
+        while !Task.isCancelled {
+            await load()
+            try? await Task.sleep(nanoseconds: 5_000_000_000)
+        }
+    }
+
+    private func load() async {
+        do {
+            let response = try await TradingAPI.shared.klines(symbol: symbol, interval: interval, limit: 180)
+            candles = response.items
+            lastUpdated = Date()
+            error = nil
+        } catch {
+            self.error = error.localizedDescription
+        }
+    }
+}
+
+private struct PriceChart: View {
+    let candles: [NenGia]
+
+    var body: some View {
+        Canvas { context, size in
+            guard candles.count > 1 else { return }
+            let closes = candles.map(\.close)
+            guard let minPrice = closes.min(), let maxPrice = closes.max(), maxPrice > minPrice else { return }
+            let points = candles.enumerated().map { index, candle in
+                let x = size.width * CGFloat(index) / CGFloat(max(candles.count - 1, 1))
+                let y = size.height - (CGFloat((candle.close - minPrice) / (maxPrice - minPrice)) * size.height)
+                return CGPoint(x: x, y: y)
+            }
+            var path = Path()
+            path.move(to: points[0])
+            for point in points.dropFirst() {
+                path.addLine(to: point)
+            }
+            let up = (candles.last?.close ?? 0) >= (candles.first?.close ?? 0)
+            context.stroke(path, with: .color(up ? .green : .red), lineWidth: 2.5)
+
+            var fill = path
+            fill.addLine(to: CGPoint(x: size.width, y: size.height))
+            fill.addLine(to: CGPoint(x: 0, y: size.height))
+            fill.closeSubpath()
+            context.fill(fill, with: .linearGradient(
+                Gradient(colors: [(up ? Color.green : Color.red).opacity(0.28), .clear]),
+                startPoint: CGPoint(x: size.width / 2, y: 0),
+                endPoint: CGPoint(x: size.width / 2, y: size.height)
+            ))
+        }
+        .background(.white.opacity(0.04), in: RoundedRectangle(cornerRadius: 8))
     }
 }
 
@@ -528,9 +668,17 @@ private struct ScannerView: View {
     var body: some View {
         NavigationStack {
             List(rows) { item in
-                ScannerRow(item: item)
+                NavigationLink {
+                    CoinChartView(symbol: item.symbol)
+                } label: {
+                    ScannerRow(item: item)
+                        .padding()
+                        .liquidGlass()
+                }
+                .glassListRow()
             }
             .navigationTitle("Bộ quét")
+            .tradingGlassList()
             .searchable(text: $query, prompt: "Tìm mã")
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {
@@ -557,27 +705,61 @@ private struct PositionsView: View {
                 NavigationLink {
                     PositionDetailView(position: item, currentPrice: model.markets.first(where: { $0.symbol == item.symbol })?.lastPrice)
                 } label: {
-                    VStack(alignment: .leading, spacing: 8) {
-                        HStack {
-                            Text(item.symbol).font(.headline)
-                            Spacer()
-                            Text(viSide(item.side)).fontWeight(.semibold)
-                        }
-                        HStack {
-                            Text("Giá vào \(money(item.entryPrice))")
-                            Spacer()
-                            Text("PNL đã chốt \(money(item.realizedPnl))")
-                        }
-                        .font(.subheadline)
-                        .foregroundStyle(.secondary)
-                    }
-                    .padding(.vertical, 4)
+                    PositionRowCard(position: item)
                 }
+                .glassListRow()
             }
             .navigationTitle("Vị thế")
+            .tradingGlassList()
             .toolbar { RefreshToolbarItem(model: model) }
             .overlay { if model.positions.isEmpty { EmptyContent("Chưa có vị thế đang mở.") } }
         }
+    }
+}
+
+private struct PositionRowCard: View {
+    let position: ViThe
+
+    private var mark: Double? { position.markPrice }
+    private var pnl: Double { position.unrealizedPnl ?? 0 }
+    private var pnlPercent: Double? {
+        guard position.entryPrice > 0, position.remainingQuantity > 0 else { return nil }
+        let notional = position.entryPrice * position.remainingQuantity
+        return notional > 0 ? pnl / notional * 100 : nil
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                Text(position.symbol).font(.headline)
+                StatusChip(text: viSide(position.side), color: position.side == "LONG" ? .green : .red)
+                Spacer()
+                VStack(alignment: .trailing, spacing: 2) {
+                    Text(money(pnl))
+                        .font(.headline.weight(.black))
+                        .foregroundStyle(pnl >= 0 ? .green : .red)
+                    Text(percent(pnlPercent))
+                        .font(.caption.bold())
+                        .foregroundStyle(.secondary)
+                }
+            }
+            HStack {
+                Text("Entry \(money(position.entryPrice))")
+                Spacer()
+                Text("Mark \(money(mark))")
+            }
+            .font(.subheadline)
+            .foregroundStyle(.secondary)
+            HStack {
+                Text("SL \(money(position.stopLoss))")
+                Spacer()
+                Text("\(position.leverage ?? 0)x \(position.marginType ?? "")")
+            }
+            .font(.caption)
+            .foregroundStyle(.secondary)
+        }
+        .padding()
+        .liquidGlass()
     }
 }
 
@@ -588,12 +770,19 @@ private struct PositionDetailView: View {
     var body: some View {
         List {
             Section("Tổng quan") {
+                NavigationLink {
+                    CoinChartView(symbol: position.symbol)
+                } label: {
+                    Label("Mở biểu đồ realtime", systemImage: "chart.line.uptrend.xyaxis")
+                }
                 InfoRow(label: "Mã", value: position.symbol)
                 InfoRow(label: "Hướng", value: viSide(position.side))
                 InfoRow(label: "Trạng thái", value: position.status)
                 InfoRow(label: "Giá vào", value: money(position.entryPrice))
-                InfoRow(label: "Giá hiện tại", value: money(currentPrice))
+                InfoRow(label: "Giá hiện tại", value: money(position.markPrice ?? currentPrice))
                 InfoRow(label: "Khối lượng còn lại", value: number(position.remainingQuantity))
+                InfoRow(label: "Đòn bẩy", value: "\(position.leverage ?? 0)x")
+                InfoRow(label: "Thanh lý", value: money(position.liquidationPrice))
             }
             Section("Quản trị rủi ro") {
                 InfoRow(label: "Stop loss", value: money(position.stopLoss))
@@ -602,12 +791,14 @@ private struct PositionDetailView: View {
                 InfoRow(label: "Trailing stop", value: position.trailingStopActive ? "Đang bật" : "Tắt")
             }
             Section("PNL") {
+                InfoRow(label: "PNL đang mở", value: money(position.unrealizedPnl))
                 InfoRow(label: "PNL đã chốt", value: money(position.realizedPnl))
                 InfoRow(label: "Phí đã trả", value: money(position.feesPaid))
                 InfoRow(label: "Funding đã trả", value: money(position.fundingPaid))
             }
         }
         .navigationTitle(position.symbol)
+        .tradingGlassList()
     }
 }
 
@@ -629,30 +820,15 @@ private struct TradesView: View {
     var body: some View {
         NavigationStack {
             List(rows) { trade in
-                VStack(alignment: .leading, spacing: 8) {
-                    HStack {
-                        Text(trade.symbol).font(.headline)
-                        Spacer()
-                        Text(trade.netPnl > 0 ? "Thắng" : "Thua")
-                            .foregroundStyle(trade.netPnl > 0 ? .green : .red)
-                    }
-                    HStack {
-                        Text("\(viSide(trade.side)) \(number(trade.quantity))")
-                        Spacer()
-                        Text("Ròng \(money(trade.netPnl))")
-                    }
-                    .font(.subheadline)
-                    HStack {
-                        Text("Vào \(money(trade.entryPrice))")
-                        Spacer()
-                        Text("Thoát \(money(trade.exitPrice))")
-                    }
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                NavigationLink {
+                    TradeDetailView(trade: trade)
+                } label: {
+                    TradeRowCard(trade: trade)
                 }
-                .padding(.vertical, 4)
+                .glassListRow()
             }
             .navigationTitle("Lịch sử lệnh")
+            .tradingGlassList()
             .searchable(text: $query, prompt: "Tìm mã")
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {
@@ -672,6 +848,67 @@ private struct TradesView: View {
             }
             .overlay { if rows.isEmpty { EmptyContent("Chưa có lịch sử lệnh.") } }
         }
+    }
+}
+
+private struct TradeRowCard: View {
+    let trade: LenhDaChot
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Text(trade.symbol).font(.headline)
+                Spacer()
+                Text(trade.netPnl > 0 ? "Thắng" : "Thua")
+                    .font(.subheadline.bold())
+                    .foregroundStyle(trade.netPnl > 0 ? .green : .red)
+            }
+            HStack {
+                Text("\(viSide(trade.side)) \(number(trade.quantity))")
+                Spacer()
+                Text("Ròng \(money(trade.netPnl))")
+                    .foregroundStyle(trade.netPnl >= 0 ? .green : .red)
+            }
+            .font(.subheadline)
+            HStack {
+                Text("Vào \(money(trade.entryPrice))")
+                Spacer()
+                Text("Thoát \(money(trade.exitPrice))")
+            }
+            .font(.caption)
+            .foregroundStyle(.secondary)
+        }
+        .padding()
+        .liquidGlass()
+    }
+}
+
+private struct TradeDetailView: View {
+    let trade: LenhDaChot
+
+    var body: some View {
+        List {
+            Section("Tổng quan") {
+                InfoRow(label: "Mã", value: trade.symbol)
+                InfoRow(label: "Hướng", value: viSide(trade.side))
+                InfoRow(label: "Lý do đóng", value: trade.reason)
+                InfoRow(label: "Thời gian", value: trade.createdAt)
+            }
+            Section("Giá và khối lượng") {
+                InfoRow(label: "Giá vào", value: money(trade.entryPrice))
+                InfoRow(label: "Giá thoát", value: money(trade.exitPrice))
+                InfoRow(label: "Khối lượng", value: number(trade.quantity))
+            }
+            Section("PNL") {
+                InfoRow(label: "Gross PNL", value: money(trade.grossPnl))
+                InfoRow(label: "Phí", value: money(trade.fee))
+                InfoRow(label: "Slippage", value: money(trade.slippage))
+                InfoRow(label: "Funding", value: money(trade.funding))
+                InfoRow(label: "Net PNL", value: money(trade.netPnl))
+            }
+        }
+        .navigationTitle(trade.symbol)
+        .tradingGlassList()
     }
 }
 
@@ -747,10 +984,17 @@ private struct MoreView: View {
                     Button("Xin quyền thông báo") {
                         Task { await push.requestPermission() }
                     }
+                    Button("Gửi thông báo test trên máy") {
+                        Task { await push.sendLocalTestNotification() }
+                    }
                     if let token = push.deviceToken {
                         Text(token)
                             .font(.footnote.monospaced())
                             .textSelection(.enabled)
+                    } else {
+                        Text("Chưa có APNs device token. Bấm xin quyền thông báo trên iPhone thật, simulator thường không có token push thật.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
                     }
                 }
                 Section("Cấu hình scanner") {
@@ -805,6 +1049,7 @@ private struct MoreView: View {
                 }
             }
             .navigationTitle("Thêm")
+            .tradingGlassList()
             .toolbar { RefreshToolbarItem(model: model) }
         }
     }
@@ -969,7 +1214,17 @@ private enum MarketSort: CaseIterable, Identifiable {
 
 private func money(_ value: Double?) -> String {
     guard let value, value.isFinite else { return "-" }
-    return value.formatted(.currency(code: "USD").precision(.fractionLength(value > 10 ? 2 : 6)))
+    let magnitude = abs(value)
+    if magnitude < 0.000001 {
+        return 0.0.formatted(.currency(code: "USD").precision(.fractionLength(2)))
+    }
+    if magnitude >= 1 {
+        return value.formatted(.currency(code: "USD").precision(.fractionLength(2)))
+    }
+    if magnitude >= 0.01 {
+        return value.formatted(.currency(code: "USD").precision(.fractionLength(4)))
+    }
+    return value.formatted(.currency(code: "USD").precision(.fractionLength(6)))
 }
 
 private func compact(_ value: Double?) -> String {

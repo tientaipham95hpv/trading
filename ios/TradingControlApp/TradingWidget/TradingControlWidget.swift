@@ -33,7 +33,23 @@ private struct TradingWidgetBalance: Decodable {
 }
 
 private struct TradingWidgetOrder: Decodable {}
-private struct TradingWidgetPosition: Decodable {}
+private struct TradingWidgetPosition: Decodable {
+    let symbol: String
+    let side: String
+    let quantity: Double
+    let entryPrice: Double
+    let markPrice: Double
+    let unrealizedPnl: Double
+
+    enum CodingKeys: String, CodingKey {
+        case symbol
+        case side
+        case quantity
+        case entryPrice = "entry_price"
+        case markPrice = "mark_price"
+        case unrealizedPnl = "unrealized_pnl"
+    }
+}
 
 private struct TradingEntry: TimelineEntry {
     let date: Date
@@ -92,6 +108,22 @@ private struct TradingWidgetView: View {
                     metric("Order", "\(status.exchange.orders.count)")
                     metric("Vị thế", "\(status.exchange.positions.count)")
                     metric("PNL", money(status.exchange.balance.unrealizedPnl))
+                }
+                if let first = status.exchange.positions.first {
+                    Divider()
+                    HStack {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(first.symbol).font(.caption.bold())
+                            Text("\(first.side) • \(money(first.entryPrice)) -> \(money(first.markPrice))")
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                                .lineLimit(1)
+                        }
+                        Spacer()
+                        Text(money(first.unrealizedPnl))
+                            .font(.caption.bold())
+                            .foregroundStyle(first.unrealizedPnl >= 0 ? .green : .red)
+                    }
                 }
             }
         }

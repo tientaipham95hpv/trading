@@ -25,10 +25,29 @@ class FakeBinanceAdapter(BinanceFuturesAdapter):
         super().__init__(api_key="key", api_secret="secret")
         self.calls: list[tuple[str, str, dict[str, Any]]] = []
         self.sl_exists = True
+        self.position_risk: list[dict[str, Any]] = []
+        self.open_algo_orders: list[dict[str, Any]] | None = None
 
     async def _signed(self, method: str, path: str, params: dict[str, Any]) -> Any:
         self.calls.append((method, path, params))
+        if path == "/fapi/v1/algoOrder" and method == "DELETE":
+            return {"code": 0, "msg": "OK", "clientAlgoId": params.get("clientAlgoId", "")}
         if path in {"/fapi/v1/order", "/fapi/v1/algoOrder"} and method == "POST":
+            if path == "/fapi/v1/algoOrder" and self.open_algo_orders is not None:
+                self.open_algo_orders.append(
+                    {
+                        "symbol": params["symbol"],
+                        "algoId": len(self.calls),
+                        "clientAlgoId": params.get("clientAlgoId", ""),
+                        "side": params.get("side", ""),
+                        "orderType": params.get("type", ""),
+                        "algoStatus": "NEW",
+                        "quantity": params.get("quantity", "0"),
+                        "actualQty": "0",
+                        "reduceOnly": params.get("reduceOnly") == "true",
+                        "triggerPrice": params.get("triggerPrice", "0"),
+                    }
+                )
             return {
                 "symbol": params["symbol"],
                 "orderId": len(self.calls),
@@ -64,10 +83,12 @@ class FakeBinanceAdapter(BinanceFuturesAdapter):
                 "stopPrice": "0",
             }
         if path == "/fapi/v2/positionRisk":
-            return []
+            return self.position_risk
         if path == "/fapi/v1/openOrders":
             return []
         if path == "/fapi/v1/openAlgoOrders":
+            if self.open_algo_orders is not None:
+                return self.open_algo_orders
             if not self.sl_exists:
                 return []
             return [
@@ -150,3 +171,74 @@ async def test_duplicate_client_order_id_queries_existing_order():
     result = await adapter.submit_order_plan(plan())
 
     assert result.status == "DEMO_DUPLICATE_ACK"
+
+
+async def test_manage_stops_moves_to_break_even_after_tp1_missing():
+    adapter = FakeBinanceAdapter()
+    adapter.position_risk = [
+        {
+            "symbol": "BTCUSDT",
+            "positionAmt": "0.006",
+            "entryPrice": "100",
+            "markPrice": "107",
+            "unRealizedProfit": "0.042",
+            "liquidationPrice": "80",
+            "leverage": "5",
+            "marginType": "isolated",
+        }
+    ]
+    adapter.open_algo_orders = [
+        {
+            "symbol": "BTCUSDT",
+            "algoId": 1,
+            "clientAlgoId": "demo-BTCUSDT-1-sl-0",
+            "side": "SELL",
+            "orderType": "STOP_MARKET",
+            "algoStatus": "NEW",
+            "quantity": "0",
+            "actualQty": "0",
+            "reduceOnly": False,
+            "triggerPrice": "95",
+        },
+        {
+            "symbol": "BTCUSDT",
+            "algoId": 2,
+            "clientAlgoId": "demo-BTCUSDT-1-tp-1",
+            "side": "SELL",
+            "orderType": "TAKE_PROFIT_MARKET",
+            "algoStatus": "NEW",
+            "quantity": "0.003",
+            "actualQty": "0",
+            "reduceOnly": True,
+            "triggerPrice": "110",
+        },
+        {
+            "symbol": "BTCUSDT",
+            "algoId": 3,
+            "clientAlgoId": "demo-BTCUSDT-1-tp-2",
+            "side": "SELL",
+            "orderType": "TAKE_PROFIT_MARKET",
+            "algoStatus": "NEW",
+            "quantity": "0.003",
+            "actualQty": "0",
+            "reduceOnly": True,
+            "triggerPrice": "115",
+        },
+    ]
+
+    actions = await adapter.manage_open_position_stops()
+
+    assert actions[0]["new_stop"] == 100
+    assert any(
+        path == "/fapi/v1/algoOrder"
+        and method == "POST"
+        and params.get("type") == "STOP_MARKET"
+        and params.get("triggerPrice") == "100"
+        for method, path, params in adapter.calls
+    )
+    assert any(
+        path == "/fapi/v1/algoOrder"
+        and method == "DELETE"
+        and params.get("clientAlgoId") == "demo-BTCUSDT-1-sl-0"
+        for method, path, params in adapter.calls
+    )

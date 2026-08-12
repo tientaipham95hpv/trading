@@ -332,13 +332,18 @@ public struct ViThe: Codable, Identifiable, Equatable {
     public let quantity: Double
     public let remainingQuantity: Double
     public let entryPrice: Double
+    public let markPrice: Double?
     public let stopLoss: Double
     public let takeProfits: [Double]
     public let realizedPnl: Double
+    public let unrealizedPnl: Double?
     public let feesPaid: Double
     public let fundingPaid: Double
     public let breakEvenActive: Bool
     public let trailingStopActive: Bool
+    public let liquidationPrice: Double?
+    public let leverage: Int?
+    public let marginType: String?
 
     enum CodingKeys: String, CodingKey {
         case id
@@ -348,14 +353,48 @@ public struct ViThe: Codable, Identifiable, Equatable {
         case quantity
         case remainingQuantity = "remaining_quantity"
         case entryPrice = "entry_price"
+        case markPrice = "mark_price"
         case stopLoss = "stop_loss"
         case takeProfits = "take_profits"
         case realizedPnl = "realized_pnl"
+        case unrealizedPnl = "unrealized_pnl"
         case feesPaid = "fees_paid"
         case fundingPaid = "funding_paid"
         case breakEvenActive = "break_even_active"
         case trailingStopActive = "trailing_stop_active"
+        case liquidationPrice = "liquidation_price"
+        case leverage
+        case marginType = "margin_type"
     }
+}
+
+public struct NenGia: Codable, Identifiable, Equatable {
+    public var id: Int { openTime }
+    public let openTime: Int
+    public let open: Double
+    public let high: Double
+    public let low: Double
+    public let close: Double
+    public let volume: Double
+    public let closeTime: Int
+    public let quoteVolume: Double
+
+    enum CodingKeys: String, CodingKey {
+        case openTime = "open_time"
+        case open
+        case high
+        case low
+        case close
+        case volume
+        case closeTime = "close_time"
+        case quoteVolume = "quote_volume"
+    }
+}
+
+public struct KlineResponse: Codable {
+    public let symbol: String
+    public let interval: String
+    public let items: [NenGia]
 }
 
 public struct LenhDaChot: Codable, Identifiable, Equatable {
