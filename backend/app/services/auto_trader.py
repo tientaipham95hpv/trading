@@ -86,14 +86,20 @@ class AutoTrader:
 
         snapshot = None
         account_equity = self.state.execution.performance().equity
+        active_symbols: set[str] = set()
+        open_position_count = len(self.state.execution.open_positions())
+        portfolio_exposure_fraction = self._portfolio_exposure_fraction()
         if self.state.trading_mode in {TradingMode.DEMO, TradingMode.LIVE}:
             adapter = self.state.live_exchange if self.state.trading_mode == TradingMode.LIVE else self.state.demo_exchange
             try:
                 snapshot = await adapter.snapshot()
-                account_equity = max(snapshot.balance.available, 1.0)
+                account_equity = max(snapshot.balance.margin_balance or snapshot.balance.available, 1.0)
             except (ExchangeCredentialsError, ExchangeError) as exc:
                 self.rejected += 1
                 return await self._skip("BLOCKED", f"Exchange snapshot lỗi: {exc}")
+            open_position_count = len(snapshot.positions)
+            active_symbols = {position.symbol for position in snapshot.positions}
+            portfolio_exposure_fraction = self._exchange_portfolio_exposure_fraction(snapshot)
             if snapshot.orders and not snapshot.positions:
                 symbols = sorted({order.symbol for order in snapshot.orders})
                 for symbol in symbols:
@@ -102,13 +108,15 @@ class AutoTrader:
                     "CLEANED_ORPHAN_ORDERS",
                     f"Đã hủy {len(snapshot.orders)} order mồ côi, không có vị thế mở",
                 )
-            if snapshot.positions:
+            if open_position_count >= self.state.bot_settings.max_open_positions:
                 return await self._skip(
                     "WAITING_POSITION",
-                    f"Đang có {len(snapshot.orders)} order và {len(snapshot.positions)} vị thế trên exchange",
+                    f"Đã đủ {open_position_count}/{self.state.bot_settings.max_open_positions} vị thế trên exchange",
                 )
         elif self.state.execution.open_positions():
-            return await self._skip("WAITING_POSITION", "Đang có vị thế mô phỏng mở")
+            active_symbols = {position.symbol for position in self.state.execution.open_positions()}
+            if open_position_count >= self.state.bot_settings.max_open_positions:
+                return await self._skip("WAITING_POSITION", "Đã chạm số vị thế mô phỏng tối đa")
 
         self.last_status = "SCANNING"
         results = await self.state.scanner.scan(limit=40)
@@ -120,6 +128,15 @@ class AutoTrader:
             return await self._skip("NO_SIGNAL", "Scanner chưa có tín hiệu đủ điểm")
 
         for result in candidates:
+            if result.symbol in active_symbols:
+                continue
+            if snapshot is not None and not await adapter.is_symbol_tradable(result.symbol):
+                await self.state.storage.log(
+                    "Auto-trader skip non-tradable symbol",
+                    {"symbol": result.symbol, "mode": self.state.trading_mode.value},
+                    level="INFO",
+                )
+                continue
             signal = self.state.scanner.signal_from_result(result)
             if signal is None:
                 continue
@@ -131,13 +148,13 @@ class AutoTrader:
 
             decision = self.state.risk.evaluate(
                 signal,
-                open_positions=len(self.state.execution.open_positions()),
+                open_positions=open_position_count,
                 daily_loss_fraction=self._daily_loss_fraction(),
                 emergency_stop=self.state.emergency_stop,
                 account_equity=account_equity,
                 weekly_drawdown_fraction=self._weekly_drawdown_fraction(),
-                portfolio_exposure_fraction=self._portfolio_exposure_fraction(),
-                correlated_positions=self._correlated_positions(signal.symbol),
+                portfolio_exposure_fraction=portfolio_exposure_fraction,
+                correlated_positions=self._correlated_positions(signal.symbol, snapshot=snapshot),
                 loss_streak=self._loss_streak(),
                 market_regime=result.regime,
                 atr_fraction=(result.indicators.atr / result.price) if result.indicators.atr else None,
@@ -160,7 +177,7 @@ class AutoTrader:
                 quantity=self.state.position_sizer.apply(decision),
                 entry_price=signal.entry_price,
                 stop_loss=signal.stop_loss,
-                leverage=signal.leverage,
+                leverage=self._select_leverage(signal, result),
                 order_type=signal.order_type,
                 take_profits=signal.take_profits,
                 risk_fraction=signal.risk_fraction,
@@ -268,14 +285,41 @@ class AutoTrader:
         )
         return exposure / equity
 
-    def _correlated_positions(self, symbol: str) -> int:
+    def _exchange_portfolio_exposure_fraction(self, snapshot: Any) -> float:
+        equity = max(snapshot.balance.margin_balance or snapshot.balance.available, 1.0)
+        exposure = sum(
+            position.quantity * (position.mark_price or position.entry_price)
+            for position in snapshot.positions
+        )
+        return exposure / equity
+
+    def _correlated_positions(self, symbol: str, *, snapshot: Any | None = None) -> int:
         base = symbol.replace("USDT", "")
         bucket = "BTC_ETH" if base in {"BTC", "ETH"} else base[:3]
+        if snapshot is not None:
+            return sum(
+                1
+                for position in snapshot.positions
+                if position.symbol.replace("USDT", "")[:3] == bucket[:3]
+            )
         return sum(
             1
             for position in self.state.execution.open_positions()
             if position.symbol.replace("USDT", "")[:3] == bucket[:3]
         )
+
+    def _select_leverage(self, signal: Any, result: Any) -> int:
+        maximum = max(5, min(int(self.state.bot_settings.max_leverage), 10))
+        atr_fraction = (result.indicators.atr / result.price) if result.indicators.atr else 0.02
+        risk_reward = result.risk_reward or 0.0
+        confidence = signal.confidence
+        if confidence >= 0.78 and risk_reward >= 2.4 and atr_fraction <= 0.012:
+            chosen = 10
+        elif confidence >= 0.70 and risk_reward >= 2.0 and atr_fraction <= 0.02:
+            chosen = 8
+        else:
+            chosen = 5
+        return max(5, min(chosen, maximum))
 
     def _loss_streak(self) -> int:
         streak = 0

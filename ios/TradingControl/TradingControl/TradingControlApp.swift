@@ -815,7 +815,11 @@ private func viRegime(_ value: String) -> String {
 }
 
 private func viSide(_ value: String) -> String {
-    value == "LONG" ? "Long" : "Short"
+    switch value {
+    case "LONG": return "Long"
+    case "SHORT": return "Short"
+    default: return value
+    }
 }
 
 private func viExchangeConnection(_ value: String?) -> String {

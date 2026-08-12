@@ -122,11 +122,24 @@ class BinanceFuturesAdapter(ExchangeAdapter):
 
         take_profit_orders = []
         try:
+            tp_created = 0
             for index, take_profit in enumerate(plan.take_profits):
                 quantity = await self._take_profit_quantity_for_plan(plan, index, len(plan.take_profits))
-                if quantity <= 0:
+                is_last = index == len(plan.take_profits) - 1
+                if quantity <= 0 and not is_last:
                     continue
-                take_profit_orders.append(await self._place_take_profit(plan, take_profit, quantity, index))
+                take_profit_orders.append(
+                    await self._place_take_profit(
+                        plan,
+                        take_profit,
+                        quantity,
+                        index,
+                        close_position=quantity <= 0,
+                    )
+                )
+                tp_created += 1
+            if tp_created == 0:
+                raise ExchangeError("Không tạo được TP hợp lệ sau khi làm tròn quantity")
         except ExchangeError as exc:
             await self.cancel_all_orders(plan.symbol)
             await self._close_position_market(plan)
@@ -301,6 +314,20 @@ class BinanceFuturesAdapter(ExchangeAdapter):
             unrealized_pnl=float(data.get("totalUnrealizedProfit", 0) or 0),
         )
 
+    async def income_history(self, *, income_type: str | None = None, limit: int = 100) -> list[dict[str, Any]]:
+        params: dict[str, Any] = {"limit": limit}
+        if income_type:
+            params["incomeType"] = income_type
+        data = await self._signed("GET", "/fapi/v1/income", params)
+        return list(data)
+
+    async def is_symbol_tradable(self, symbol: str) -> bool:
+        try:
+            await self._filters_for(symbol)
+        except ExchangeError:
+            return False
+        return True
+
     async def _normalize_plan(self, plan: OrderPlan) -> OrderPlan:
         filters = await self._filters_for(plan.symbol)
         quantity = _round_step(plan.quantity, filters["quantity_step"])
@@ -328,6 +355,8 @@ class BinanceFuturesAdapter(ExchangeAdapter):
         for item in data.get("symbols", []):
             if item.get("symbol") != symbol:
                 continue
+            if item.get("status") != "TRADING":
+                raise ExchangeError(f"{symbol} không ở trạng thái TRADING trên {self.mode.value}")
             filters = {entry.get("filterType"): entry for entry in item.get("filters", [])}
             lot = filters.get("MARKET_LOT_SIZE") or filters.get("LOT_SIZE") or {}
             price = filters.get("PRICE_FILTER") or {}
@@ -389,23 +418,29 @@ class BinanceFuturesAdapter(ExchangeAdapter):
         )
 
     async def _place_take_profit(
-        self, plan: OrderPlan, take_profit: float, quantity: float, index: int
+        self,
+        plan: OrderPlan,
+        take_profit: float,
+        quantity: float,
+        index: int,
+        *,
+        close_position: bool = False,
     ) -> dict[str, Any]:
-        return await self._signed(
-            "POST",
-            "/fapi/v1/algoOrder",
-            {
-                "algoType": "CONDITIONAL",
-                "symbol": plan.symbol,
-                "side": "SELL" if plan.side == Side.LONG else "BUY",
-                "type": "TAKE_PROFIT_MARKET",
-                "triggerPrice": _format_number(take_profit),
-                "quantity": _format_number(quantity),
-                "reduceOnly": "true",
-                "workingType": "CONTRACT_PRICE",
-                "clientAlgoId": _client_order_id(plan.client_order_id, "tp", index),
-            },
-        )
+        payload: dict[str, Any] = {
+            "algoType": "CONDITIONAL",
+            "symbol": plan.symbol,
+            "side": "SELL" if plan.side == Side.LONG else "BUY",
+            "type": "TAKE_PROFIT_MARKET",
+            "triggerPrice": _format_number(take_profit),
+            "workingType": "CONTRACT_PRICE",
+            "clientAlgoId": _client_order_id(plan.client_order_id, "tp", index),
+        }
+        if close_position:
+            payload["closePosition"] = "true"
+        else:
+            payload["quantity"] = _format_number(quantity)
+            payload["reduceOnly"] = "true"
+        return await self._signed("POST", "/fapi/v1/algoOrder", payload)
 
     async def _take_profit_quantity_for_plan(self, plan: OrderPlan, index: int, total: int) -> float:
         filters = await self._filters_for(plan.symbol)
@@ -436,7 +471,13 @@ class BinanceFuturesAdapter(ExchangeAdapter):
 
     async def _signed(self, method: str, path: str, params: dict[str, Any]) -> Any:
         await self._sync_time_if_needed()
-        return await self._request(method, path, params=params, signed=True)
+        try:
+            return await self._request(method, path, params=params, signed=True)
+        except ExchangeError as exc:
+            if "-1021" not in str(exc):
+                raise
+            await self._sync_time_if_needed(force=True)
+            return await self._request(method, path, params=params, signed=True)
 
     async def _request(
         self,
@@ -465,9 +506,9 @@ class BinanceFuturesAdapter(ExchangeAdapter):
             raise ExchangeError(f"Binance {response.status_code}: {response.text}")
         return response.json()
 
-    async def _sync_time_if_needed(self) -> None:
+    async def _sync_time_if_needed(self, *, force: bool = False) -> None:
         now_ms = int(time.time() * 1000)
-        if now_ms - self._last_time_sync_ms < 60_000:
+        if not force and now_ms - self._last_time_sync_ms < 30_000:
             return
         async with httpx.AsyncClient(timeout=5) as client:
             response = await client.get(f"{self.base_url}/fapi/v1/time")

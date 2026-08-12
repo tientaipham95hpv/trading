@@ -150,13 +150,18 @@ export type Position = {
   quantity: number;
   remaining_quantity: number;
   entry_price: number;
+  mark_price?: number;
   stop_loss: number;
   take_profits: number[];
   realized_pnl: number;
+  unrealized_pnl?: number;
   fees_paid: number;
   funding_paid: number;
   break_even_active: boolean;
   trailing_stop_active: boolean;
+  liquidation_price?: number | null;
+  leverage?: number | null;
+  margin_type?: string | null;
 };
 
 export type Trade = {

@@ -11,6 +11,7 @@ from app.domain.models import (
     LiveReadiness,
     NotificationEvent,
     OrderPlan,
+    PerformanceSnapshot,
     SignalAction,
     Timeframe,
     TradingMode,
@@ -163,6 +164,9 @@ async def submit_paper_order(plan: OrderPlan) -> dict[str, object]:
 
 @router.get("/positions")
 async def positions() -> dict[str, object]:
+    if state.trading_mode in {TradingMode.DEMO, TradingMode.LIVE}:
+        snapshot = await _current_exchange_snapshot()
+        return {"items": _exchange_positions_for_app(snapshot)}
     return {"items": [item.model_dump(mode="json") for item in state.execution.positions]}
 
 
@@ -200,6 +204,10 @@ async def mark_position(symbol: str, price: float) -> dict[str, object]:
 
 @router.get("/trades")
 async def trades() -> dict[str, object]:
+    if state.trading_mode in {TradingMode.DEMO, TradingMode.LIVE}:
+        adapter = _current_adapter()
+        rows = await adapter.income_history(income_type="REALIZED_PNL", limit=100)
+        return {"items": _exchange_trades_for_app(rows)}
     return {"items": [item.model_dump(mode="json") for item in state.execution.trades]}
 
 
@@ -210,6 +218,11 @@ async def logs(limit: int = Query(default=100, ge=1, le=500)) -> dict[str, objec
 
 @router.get("/performance")
 async def performance() -> dict[str, object]:
+    if state.trading_mode in {TradingMode.DEMO, TradingMode.LIVE}:
+        adapter = _current_adapter()
+        snapshot = await adapter.snapshot()
+        income = await adapter.income_history(limit=200)
+        return _exchange_performance(snapshot, income).model_dump(mode="json")
     return state.execution.performance().model_dump(mode="json")
 
 
@@ -300,7 +313,7 @@ async def set_mode(mode: TradingMode) -> dict[str, object]:
 async def exchange_snapshot() -> dict[str, object]:
     if state.trading_mode == TradingMode.PAPER:
         return state.demo_exchange.snapshot_cache.model_dump(mode="json")
-    adapter = state.live_exchange if state.trading_mode == TradingMode.LIVE else state.demo_exchange
+    adapter = _current_adapter()
     try:
         return (await adapter.snapshot()).model_dump(mode="json")
     except ExchangeCredentialsError as exc:
@@ -544,11 +557,21 @@ async def _channel_payload(channel: str) -> dict[str, object]:
             "items": [item.model_dump(mode="json") for item in state.scanner.last_results],
         }
     if channel == "positions":
+        if state.trading_mode in {TradingMode.DEMO, TradingMode.LIVE}:
+            return {
+                "channel": channel,
+                "items": _exchange_positions_for_app(await _current_exchange_snapshot()),
+            }
         return {
             "channel": channel,
             "items": [item.model_dump(mode="json") for item in state.execution.open_positions()],
         }
     if channel == "performance":
+        if state.trading_mode in {TradingMode.DEMO, TradingMode.LIVE}:
+            adapter = _current_adapter()
+            snapshot = await adapter.snapshot()
+            income = await adapter.income_history(limit=200)
+            return {"channel": channel, "data": _exchange_performance(snapshot, income).model_dump(mode="json")}
         return {"channel": channel, "data": state.execution.performance().model_dump(mode="json")}
     if channel == "system":
         return {"channel": channel, "data": await status()}
@@ -556,6 +579,131 @@ async def _channel_payload(channel: str) -> dict[str, object]:
         return {"channel": channel, "data": await exchange_snapshot()}
     await asyncio.sleep(0)
     return {"channel": channel, "error": "Unknown channel"}
+
+
+def _current_adapter():
+    return state.live_exchange if state.trading_mode == TradingMode.LIVE else state.demo_exchange
+
+
+async def _current_exchange_snapshot():
+    return await _current_adapter().snapshot()
+
+
+def _exchange_positions_for_app(snapshot) -> list[dict[str, object]]:
+    orders_by_symbol: dict[str, list] = {}
+    for order in snapshot.orders:
+        orders_by_symbol.setdefault(order.symbol, []).append(order)
+    rows: list[dict[str, object]] = []
+    for position in snapshot.positions:
+        orders = orders_by_symbol.get(position.symbol, [])
+        stop_loss = next(
+            (
+                order.stop_price
+                for order in orders
+                if order.stop_price and "STOP" in order.order_type and "TAKE_PROFIT" not in order.order_type
+            ),
+            0.0,
+        )
+        take_profits = [
+            float(order.stop_price)
+            for order in orders
+            if order.stop_price and "TAKE_PROFIT" in order.order_type
+        ]
+        rows.append(
+            {
+                "id": f"exchange-{position.symbol}-{position.side}",
+                "symbol": position.symbol,
+                "side": position.side,
+                "status": "OPEN",
+                "quantity": position.quantity,
+                "remaining_quantity": position.quantity,
+                "entry_price": position.entry_price,
+                "mark_price": position.mark_price,
+                "stop_loss": stop_loss,
+                "take_profits": take_profits,
+                "realized_pnl": 0.0,
+                "unrealized_pnl": position.unrealized_pnl,
+                "fees_paid": 0.0,
+                "funding_paid": 0.0,
+                "break_even_active": False,
+                "trailing_stop_active": False,
+                "liquidation_price": position.liquidation_price,
+                "leverage": position.leverage,
+                "margin_type": position.margin_type,
+            }
+        )
+    return rows
+
+
+def _exchange_trades_for_app(income_rows: list[dict[str, object]]) -> list[dict[str, object]]:
+    trades: list[dict[str, object]] = []
+    for item in income_rows:
+        pnl = _float(item.get("income"))
+        if abs(pnl) <= 1e-12:
+            continue
+        timestamp = int(_float(item.get("time")))
+        trades.append(
+            {
+                "id": str(item.get("tranId") or item.get("tradeId") or f"{item.get('symbol')}-{timestamp}"),
+                "symbol": str(item.get("symbol") or "-"),
+                "side": "CLOSED",
+                "entry_price": 0.0,
+                "exit_price": 0.0,
+                "quantity": 0.0,
+                "gross_pnl": pnl,
+                "fee": 0.0,
+                "slippage": 0.0,
+                "funding": 0.0,
+                "net_pnl": pnl,
+                "reason": str(item.get("incomeType") or "REALIZED_PNL"),
+                "created_at": datetime.fromtimestamp(timestamp / 1000, UTC).isoformat() if timestamp else datetime.now(UTC).isoformat(),
+            }
+        )
+    return trades
+
+
+def _exchange_performance(snapshot, income_rows: list[dict[str, object]]) -> PerformanceSnapshot:
+    realized_rows = [row for row in income_rows if row.get("incomeType") == "REALIZED_PNL"]
+    realized_values = [_float(row.get("income")) for row in realized_rows]
+    realized = sum(realized_values)
+    fees = abs(sum(_float(row.get("income")) for row in income_rows if row.get("incomeType") == "COMMISSION"))
+    funding = sum(_float(row.get("income")) for row in income_rows if row.get("incomeType") == "FUNDING_FEE")
+    wins = sum(1 for value in realized_values if value > 0)
+    losses = [value for value in realized_values if value <= 0]
+    gains = [value for value in realized_values if value > 0]
+    total = len(realized_values)
+    gross_loss = abs(sum(losses))
+    equity_curve = 0.0
+    peak = 0.0
+    max_drawdown = 0.0
+    for value in reversed(realized_values):
+        equity_curve += value
+        peak = max(peak, equity_curve)
+        max_drawdown = max(max_drawdown, peak - equity_curve)
+    expectancy = realized / total if total else 0.0
+    return PerformanceSnapshot(
+        balance=snapshot.balance.balance,
+        equity=snapshot.balance.margin_balance or snapshot.balance.balance,
+        realized_pnl=realized,
+        unrealized_pnl=snapshot.balance.unrealized_pnl,
+        fees_paid=fees,
+        funding_paid=funding,
+        win_rate=(wins / total) if total else 0.0,
+        total_trades=total,
+        open_positions=len(snapshot.positions),
+        profit_factor=(sum(gains) / gross_loss) if gross_loss > 0 else (999.0 if gains else 0.0),
+        max_drawdown=max_drawdown,
+        sharpe=0.0,
+        sortino=0.0,
+        expectancy=expectancy,
+    )
+
+
+def _float(value: object) -> float:
+    try:
+        return float(value or 0)
+    except (TypeError, ValueError):
+        return 0.0
 
 
 def _daily_loss_fraction() -> float:

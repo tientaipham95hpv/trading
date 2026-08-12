@@ -230,12 +230,16 @@ export function DashboardApp({ page }: { page: PageKey }) {
 function Dashboard({ exchange, markets, onDone, performance, positions, scanner, status }: { exchange: ExchangeSnapshot | null; markets: Market[]; onDone: () => Promise<void>; performance: Performance | null; positions: Position[]; scanner: ScannerResult[]; status: StatusPayload | null }) {
   const equitySeries = useMemo(() => buildEquitySeries(performance), [performance]);
   const chartSymbol = exchange?.positions[0]?.symbol ?? status?.auto_trader?.last_symbol ?? scanner.find((item) => item.action !== "NO_TRADE")?.symbol ?? markets[0]?.symbol ?? "BTCUSDT";
+  const chartSymbols = useMemo(
+    () => Array.from(new Set([chartSymbol, ...markets.slice(0, 80).map((item) => item.symbol), ...scanner.slice(0, 40).map((item) => item.symbol)])),
+    [chartSymbol, markets, scanner],
+  );
   return (
     <div className="grid gap-4">
       <ActivitySummary exchange={exchange} status={status} />
       <MobileTradingOverview exchange={exchange} performance={performance} status={status} />
       <CommandCenter exchange={exchange} onDone={onDone} status={status} />
-      <MarketChart symbol={chartSymbol} />
+      <MarketChart symbol={chartSymbol} symbols={chartSymbols} />
       <div className="grid grid-cols-2 gap-3 md:gap-4 xl:grid-cols-4">
         <Metric label="Vốn hiện tại" value={money(performance?.equity)} />
         <Metric label="PNL hôm nay" value={money(performance?.realized_pnl)} tone={(performance?.realized_pnl ?? 0) >= 0 ? "good" : "bad"} />
@@ -352,21 +356,23 @@ function CommandCenter({ exchange, onDone, status }: { exchange: ExchangeSnapsho
   );
 }
 
-function MarketChart({ symbol }: { symbol: string }) {
+function MarketChart({ symbol, symbols }: { symbol: string; symbols: string[] }) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const chartRef = useRef<IChartApi | null>(null);
   const seriesRef = useRef<ISeriesApi<"Candlestick"> | null>(null);
   const [candles, setCandles] = useState<Candle[]>([]);
   const [interval, setInterval] = useState("15m");
+  const [selectedSymbol, setSelectedSymbol] = useState(symbol);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const effectiveSymbol = symbols.includes(selectedSymbol) ? selectedSymbol : symbol;
 
   useEffect(() => {
     let alive = true;
     async function load() {
       setBusy(true);
       try {
-        const response = await api.klines(symbol, interval, 220);
+        const response = await api.klines(effectiveSymbol, interval, 220);
         if (!alive) return;
         setCandles(response.items);
         setError(null);
@@ -383,7 +389,7 @@ function MarketChart({ symbol }: { symbol: string }) {
       alive = false;
       window.clearInterval(timer);
     };
-  }, [symbol, interval]);
+  }, [effectiveSymbol, interval]);
 
   useEffect(() => {
     if (!containerRef.current || chartRef.current) return;
@@ -436,17 +442,22 @@ function MarketChart({ symbol }: { symbol: string }) {
         <div>
           <p className="text-xs font-bold uppercase text-slate-500">Biểu đồ coin</p>
           <div className="mt-1 flex flex-wrap items-end gap-3">
-            <h3 className="text-xl font-black">{symbol}</h3>
+            <h3 className="text-xl font-black">{effectiveSymbol}</h3>
             <span className="text-sm font-bold text-slate-500">{last ? money(last.close) : "-"}</span>
             <span className={`text-sm font-bold ${(change ?? 0) >= 0 ? "text-emerald-700" : "text-red-700"}`}>{change === null ? "-" : signedPercent(change)}</span>
           </div>
         </div>
-        <div className="grid grid-cols-5 gap-1 md:flex md:flex-wrap md:gap-2">
+        <div className="grid gap-2 md:flex md:flex-wrap md:items-center md:justify-end">
+          <select className="min-h-9 rounded-md border border-slate-300 bg-white px-3 text-sm font-bold text-slate-800" onChange={(event) => setSelectedSymbol(event.target.value)} value={effectiveSymbol}>
+            {symbols.map((item) => <option key={item} value={item}>{item}</option>)}
+          </select>
+          <div className="grid grid-cols-5 gap-1 md:flex md:flex-wrap md:gap-2">
           {(["1m", "5m", "15m", "1h", "4h"] as const).map((value) => (
             <button className={`rounded-md px-2 py-2 text-xs font-black transition md:px-3 ${interval === value ? "bg-slate-950 text-white" : "bg-slate-100 text-slate-600 hover:bg-slate-200"}`} key={value} onClick={() => setInterval(value)} type="button">
               {value}
             </button>
           ))}
+          </div>
         </div>
       </div>
       <div className="relative p-2 md:p-4">
@@ -656,8 +667,8 @@ function Positions({ markets, positions }: { markets: Market[]; positions: Posit
       <Table
         columns={["Mã", "Hướng", "Giá vào", "Giá hiện tại", "Khối lượng", "SL", "TP", "PNL", "ROE"]}
         rows={positions.map((item) => {
-          const current = marks.get(item.symbol) ?? item.entry_price;
-          const pnl = item.side === "LONG" ? (current - item.entry_price) * item.remaining_quantity : (item.entry_price - current) * item.remaining_quantity;
+          const current = item.mark_price ?? marks.get(item.symbol) ?? item.entry_price;
+          const pnl = item.unrealized_pnl ?? (item.side === "LONG" ? (current - item.entry_price) * item.remaining_quantity : (item.entry_price - current) * item.remaining_quantity);
           const cost = item.entry_price * item.remaining_quantity;
           return [item.symbol, viSide(item.side), money(item.entry_price), money(current), number(item.remaining_quantity), money(item.stop_loss), item.take_profits.map(money).join(" / "), money(pnl), percent((pnl / cost) * 100)];
         })}
@@ -695,24 +706,51 @@ function Trades({ trades }: { trades: Trade[] }) {
       }
       title="Lệnh đã chốt"
     >
-      <Table columns={["Mã", "Hướng", "Giá vào", "Giá thoát", "Khối lượng", "PNL gộp", "Phí", "Trượt giá", "PNL ròng", "Kết quả"]} rows={rows.map((trade) => [trade.symbol, viSide(trade.side), money(trade.entry_price), money(trade.exit_price), number(trade.quantity), money(trade.gross_pnl), money(trade.fee), money(trade.slippage), money(trade.net_pnl), trade.net_pnl > 0 ? "Thắng" : "Thua"])} />
+      <Table columns={["Mã", "Hướng", "Thời gian", "Giá vào", "Giá thoát", "Khối lượng", "PNL ròng", "Phí", "Lý do", "Kết quả"]} rows={rows.map((trade) => [trade.symbol, viSide(trade.side), new Date(trade.created_at).toLocaleString("vi-VN"), trade.entry_price > 0 ? money(trade.entry_price) : "-", trade.exit_price > 0 ? money(trade.exit_price) : "-", trade.quantity > 0 ? number(trade.quantity) : "-", money(trade.net_pnl), money(trade.fee), trade.reason, trade.net_pnl > 0 ? "Thắng" : "Thua"])} />
     </DataPanel>
   );
 }
 
 function Strategies({ scanner }: { scanner: ScannerResult[] }) {
-  const strategies = ["Trend Pullback", "Breakout"];
+  const strategies = [
+    {
+      name: "Trend Pullback",
+      rule: "Đi theo trend EMA20/50/200, chờ pullback có MACD/ADX/volume xác nhận.",
+      entry: "Ưu tiên khi Long/Short score >= ngưỡng, RR >= 1.8, ATR không quá nóng.",
+    },
+    {
+      name: "Breakout",
+      rule: "Bắt phá vùng Bollinger/VWAP khi volume tăng và spread còn thấp.",
+      entry: "Chỉ vào khi breakout cùng hướng, có SL theo ATR và đủ 3 TP.",
+    },
+  ];
   return (
     <div className="grid gap-4 md:grid-cols-2">
       {strategies.map((strategy) => {
-        const active = scanner.filter((item) => item.strategy === strategy);
+        const active = scanner.filter((item) => item.strategy === strategy.name);
+        const best = [...active].sort((a, b) => Math.max(b.long_score, b.short_score) - Math.max(a.long_score, a.short_score))[0];
         return (
-          <section className="rounded-lg border border-slate-200 bg-white p-4" key={strategy}>
-            <h3 className="font-bold">{strategy}</h3>
-            <p className="mt-2 text-sm text-slate-500">{active.length ? `${active.length} tín hiệu đang đủ điều kiện.` : "Chưa có tín hiệu đủ điểm từ bộ quét."}</p>
+          <section className="rounded-lg border border-slate-200 bg-white p-4" key={strategy.name}>
+            <h3 className="font-bold">{strategy.name}</h3>
+            <p className="mt-2 text-sm font-semibold text-slate-600">{strategy.rule}</p>
+            <p className="mt-1 text-sm text-slate-500">{strategy.entry}</p>
+            <div className="mt-4 grid gap-2 text-sm">
+              <InfoPair label="Tín hiệu đang đạt" value={String(active.length)} />
+              <InfoPair label="Kèo tốt nhất" value={best ? `${best.symbol} ${viAction(best.action)} ${Math.max(best.long_score, best.short_score)}/100` : "Chưa có"} />
+              <InfoPair label="RR" value={best?.risk_reward ? number(best.risk_reward) : "-"} />
+            </div>
           </section>
         );
       })}
+    </div>
+  );
+}
+
+function InfoPair({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="flex items-center justify-between gap-3 rounded-md bg-slate-50 px-3 py-2">
+      <span className="font-bold text-slate-500">{label}</span>
+      <strong className="text-right">{value}</strong>
     </div>
   );
 }
@@ -1184,7 +1222,9 @@ function viRegime(value: string) {
 }
 
 function viSide(value: string) {
-  return value === "LONG" ? "Long" : "Short";
+  if (value === "LONG") return "Long";
+  if (value === "SHORT") return "Short";
+  return value || "-";
 }
 
 function viExchangeConnection(value: ExchangeSnapshot["connection"] | undefined) {
