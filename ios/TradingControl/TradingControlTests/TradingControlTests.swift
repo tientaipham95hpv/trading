@@ -30,10 +30,29 @@ import Testing
         "max_leverage": 5,
         "risk_per_trade": 0.005,
         "max_risk_per_trade": 0.01,
+        "max_total_open_risk": 0.03,
+        "max_margin_per_trade": 0.10,
+        "max_total_margin": 0.30,
         "max_daily_loss": 0.04,
+        "max_weekly_drawdown": 0.08,
         "max_open_positions": 4,
+        "max_portfolio_exposure": 0.30,
+        "max_correlated_positions": 2,
+        "max_loss_streak": 3,
         "minimum_risk_reward": 1.8
-      }
+      },
+      "live_readiness": {
+        "live_enabled": false,
+        "all_tests_pass": false,
+        "demo_stable": false,
+        "sl_protection_pass": false,
+        "reconnect_pass": false,
+        "reconciliation_pass": false,
+        "duplicate_order_tests_pass": false,
+        "allowed": false,
+        "blockers": []
+      },
+      "auto_trader": null
     }
     """.data(using: .utf8)!
 

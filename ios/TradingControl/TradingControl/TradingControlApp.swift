@@ -36,6 +36,8 @@ public struct TradingControlView: View {
             model.start()
             await push.refreshAuthorizationStatus()
         }
+        .preferredColorScheme(.dark)
+        .tint(.cyan)
         .alert("Thông báo", isPresented: Binding(
             get: { model.errorMessage != nil },
             set: { if !$0 { model.errorMessage = nil } }
@@ -52,61 +54,211 @@ private struct HomeView: View {
 
     var body: some View {
         NavigationStack {
-            ScrollView {
-                SystemStateBanner(model: model)
-                    .padding([.horizontal, .top])
-
-                ModeControlPanel(model: model)
-                    .padding(.horizontal)
-
-                LazyVGrid(columns: [GridItem(.adaptive(minimum: 156), spacing: 12)], spacing: 12) {
-                    MetricTile(title: "Trạng thái bot", value: viBotState(model.status?.botState), tint: .blue)
-                    MetricTile(title: "Chế độ", value: displayMode(model.status?.mode), tint: .green)
-                    MetricTile(title: "LIVE", value: model.status?.liveEnabled == true ? "Bật" : "Tắt", tint: model.status?.liveEnabled == true ? .red : .green)
-                    MetricTile(title: "Auto loop", value: viAutoStatus(model.status?.autoTrader?.lastStatus), tint: model.status?.autoTrader?.lastStatus == "ORDER_SUBMITTED" ? .green : .orange)
-                    MetricTile(title: "Vốn hiện tại", value: money(model.performance?.equity), tint: .primary)
-                    MetricTile(title: "PNL hôm nay", value: money(model.performance?.realizedPnl), tint: (model.performance?.realizedPnl ?? 0) >= 0 ? .green : .red)
-                    MetricTile(title: "Sụt giảm vốn", value: percent(drawdown(model.performance)), tint: .red)
-                    MetricTile(title: "Profit Factor", value: number(model.performance?.profitFactor), tint: .primary)
-                    MetricTile(title: "Sharpe", value: number(model.performance?.sharpe), tint: .primary)
-                    MetricTile(title: "Sortino", value: number(model.performance?.sortino), tint: .primary)
-                    MetricTile(title: "Expectancy", value: money(model.performance?.expectancy), tint: .primary)
-                    MetricTile(title: "Rủi ro mỗi lệnh", value: percent((model.status?.risk.riskPerTrade ?? 0) * 100), tint: .orange)
-                    MetricTile(title: "Vị thế mở", value: "\(model.performance?.openPositions ?? model.positions.count)", tint: .purple)
-                    MetricTile(title: "Balance DEMO", value: money(model.exchange?.balance.balance), tint: .primary)
-                    MetricTile(title: "Available DEMO", value: money(model.exchange?.balance.available), tint: .green)
-                    MetricTile(title: "Margin DEMO", value: money(model.exchange?.balance.marginBalance), tint: .orange)
-                    MetricTile(title: "Kết nối exchange", value: viExchangeConnection(model.exchange?.connection), tint: model.exchange?.connection == "CONNECTED" ? .green : .red)
-                }
-                .padding()
-
-                SectionBlock(title: "Cơ hội nổi bật") {
-                    let opportunities = model.scanner.filter { $0.action != "NO_TRADE" }.prefix(5)
-                    if opportunities.isEmpty {
-                        EmptyContent("Chưa có tín hiệu đủ điểm ở bộ lọc hiện tại.")
-                    } else {
-                        ForEach(Array(opportunities)) { item in
-                            ScannerRow(item: item)
-                        }
+            ZStack {
+                LiquidBackground()
+                ScrollView {
+                    VStack(spacing: 14) {
+                        SystemStateBanner(model: model)
+                        AccountHero(model: model)
+                        ModeControlPanel(model: model)
+                        RiskRoomPanel(model: model)
+                        OpenExchangePositionsPanel(model: model)
+                        SignalHighlights(model: model)
+                        SystemHealthPanel(model: model)
                     }
+                    .padding()
                 }
-                .padding(.horizontal)
-
-                SectionBlock(title: "Sức khỏe hệ thống") {
-                    InfoRow(label: "Đang đồng bộ", value: model.isRefreshing ? "Có" : "Không")
-                    InfoRow(label: "Realtime", value: model.realtimeState.rawValue)
-                    InfoRow(label: "Exchange", value: viExchangeConnection(model.exchange?.connection))
-                    InfoRow(label: "Lần cập nhật", value: model.lastRealtimeAt.map(shortTime) ?? "-")
-                    InfoRow(label: "Dừng khẩn cấp", value: model.status?.emergencyStop == true ? "Đang bật" : "Không")
-                    InfoRow(label: "SAFE_MODE", value: model.status?.safeMode == true ? "Đang bật" : "Không")
-                    InfoRow(label: "Vị thế tối đa", value: "\(model.status?.risk.maxOpenPositions ?? 0)")
-                    InfoRow(label: "LIVE readiness", value: model.status?.liveReadiness.allowed == true ? "PASS" : "BLOCK")
-                    InfoRow(label: "Blockers", value: model.status?.liveReadiness.blockers.joined(separator: " / ") ?? "-")
-                }
-                .padding()
             }
             .navigationTitle("Trang chủ")
+            .toolbarBackground(.hidden, for: .navigationBar)
+            .preferredColorScheme(.dark)
             .toolbar { RefreshToolbarItem(model: model) }
+        }
+    }
+}
+
+private struct AccountHero: View {
+    @ObservedObject var model: TradingViewModel
+
+    var body: some View {
+        GlassPanel {
+            VStack(alignment: .leading, spacing: 16) {
+                HStack(alignment: .top) {
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text("DEMO realtime")
+                            .font(.caption.bold())
+                            .foregroundStyle(.cyan)
+                        Text(money(model.performance?.equity ?? model.exchange?.balance.marginBalance))
+                            .font(.system(size: 34, weight: .black, design: .rounded))
+                            .minimumScaleFactor(0.65)
+                            .lineLimit(1)
+                        Text("Available \(money(model.exchange?.balance.available)) / Balance \(money(model.exchange?.balance.balance ?? model.performance?.balance))")
+                            .font(.footnote.weight(.semibold))
+                            .foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                    StatusChip(text: displayMode(model.status?.mode), color: model.status?.mode == "LIVE" ? .red : .cyan)
+                }
+                HStack(spacing: 10) {
+                    HeroMetric(title: "Đã chốt", value: money(model.performance?.realizedPnl), color: (model.performance?.realizedPnl ?? 0) >= 0 ? .green : .red)
+                    HeroMetric(title: "Đang mở", value: money(model.exchange?.balance.unrealizedPnl ?? model.performance?.unrealizedPnl), color: (model.exchange?.balance.unrealizedPnl ?? model.performance?.unrealizedPnl ?? 0) >= 0 ? .green : .red)
+                    HeroMetric(title: "Winrate", value: percent((model.performance?.winRate ?? 0) * 100), color: .cyan)
+                }
+            }
+        }
+    }
+}
+
+private struct HeroMetric: View {
+    let title: String
+    let value: String
+    let color: Color
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 5) {
+            Text(title)
+                .font(.caption2.bold())
+                .foregroundStyle(.secondary)
+            Text(value)
+                .font(.headline.weight(.black))
+                .foregroundStyle(color)
+                .lineLimit(1)
+                .minimumScaleFactor(0.62)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(10)
+        .background(.white.opacity(0.06), in: RoundedRectangle(cornerRadius: 8))
+    }
+}
+
+private struct RiskRoomPanel: View {
+    @ObservedObject var model: TradingViewModel
+
+    private var openPositions: Int { model.exchange?.positions.count ?? model.performance?.openPositions ?? model.positions.count }
+    private var maxPositions: Int { max(model.status?.risk.maxOpenPositions ?? 1, 1) }
+    private var marginUsage: Double {
+        guard let balance = model.exchange?.balance.marginBalance, balance > 0 else { return 0 }
+        return max(0, (balance - (model.exchange?.balance.available ?? 0)) / balance)
+    }
+
+    var body: some View {
+        GlassPanel {
+            VStack(alignment: .leading, spacing: 12) {
+                Text("Room rủi ro")
+                    .font(.headline)
+                RiskProgressRow(title: "Vị thế mở", value: Double(openPositions) / Double(maxPositions), trailing: "\(openPositions)/\(maxPositions)")
+                RiskProgressRow(title: "Margin đang dùng", value: marginUsage, trailing: percent(marginUsage * 100))
+                RiskProgressRow(title: "Tổng risk cho phép", value: model.status?.risk.maxTotalOpenRisk ?? 0, trailing: percent((model.status?.risk.maxTotalOpenRisk ?? 0) * 100))
+                HStack {
+                    InfoPill("Risk/lệnh \(percent((model.status?.risk.riskPerTrade ?? 0) * 100))")
+                    InfoPill("RR \(number(model.status?.risk.minimumRiskReward))")
+                }
+            }
+        }
+    }
+}
+
+private struct RiskProgressRow: View {
+    let title: String
+    let value: Double
+    let trailing: String
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                Text(title).font(.footnote.weight(.semibold)).foregroundStyle(.secondary)
+                Spacer()
+                Text(trailing).font(.footnote.bold())
+            }
+            ProgressView(value: min(max(value, 0), 1))
+                .tint(value >= 0.9 ? .red : .cyan)
+        }
+    }
+}
+
+private struct OpenExchangePositionsPanel: View {
+    @ObservedObject var model: TradingViewModel
+
+    var body: some View {
+        GlassPanel {
+            VStack(alignment: .leading, spacing: 12) {
+                Text("Vị thế đang mở")
+                    .font(.headline)
+                if model.exchange?.positions.isEmpty != false {
+                    Text("Chưa có vị thế DEMO từ Binance.")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                } else {
+                    ForEach(model.exchange?.positions ?? []) { position in
+                        ExchangePositionRow(position: position)
+                    }
+                }
+            }
+        }
+    }
+}
+
+private struct ExchangePositionRow: View {
+    let position: ExchangePosition
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Text(position.symbol).font(.headline)
+                StatusChip(text: viSide(position.side), color: position.side == "LONG" ? .green : .red)
+                Spacer()
+                Text(money(position.unrealizedPnl))
+                    .font(.headline.weight(.black))
+                    .foregroundStyle(position.unrealizedPnl >= 0 ? .green : .red)
+            }
+            Text("Entry \(money(position.entryPrice)) / Mark \(money(position.markPrice)) / Thanh lý \(money(position.liquidationPrice)) / \(position.leverage ?? 0)x")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+        .padding(10)
+        .background(.white.opacity(0.05), in: RoundedRectangle(cornerRadius: 8))
+    }
+}
+
+private struct SignalHighlights: View {
+    @ObservedObject var model: TradingViewModel
+
+    var body: some View {
+        GlassPanel {
+            VStack(alignment: .leading, spacing: 12) {
+                Text("Tín hiệu nổi bật")
+                    .font(.headline)
+                let opportunities = model.scanner.filter { $0.action != "NO_TRADE" }.prefix(5)
+                if opportunities.isEmpty {
+                    Text("Chưa có tín hiệu đủ điểm ở bộ lọc hiện tại.")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                } else {
+                    ForEach(Array(opportunities)) { item in
+                        ScannerRow(item: item)
+                    }
+                }
+            }
+        }
+    }
+}
+
+private struct SystemHealthPanel: View {
+    @ObservedObject var model: TradingViewModel
+
+    var body: some View {
+        GlassPanel {
+            VStack(alignment: .leading, spacing: 10) {
+                Text("Sức khỏe hệ thống")
+                    .font(.headline)
+                InfoRow(label: "Realtime", value: model.realtimeState.rawValue)
+                InfoRow(label: "Exchange", value: viExchangeConnection(model.exchange?.connection))
+                InfoRow(label: "Lần cập nhật", value: model.lastRealtimeAt.map(shortTime) ?? "-")
+                InfoRow(label: "Auto loop", value: viAutoStatus(model.status?.autoTrader?.lastStatus))
+                InfoRow(label: "Lý do gần nhất", value: model.status?.autoTrader?.lastReason ?? "-")
+                InfoRow(label: "SAFE_MODE", value: model.status?.safeMode == true ? "Đang bật" : "Không")
+                InfoRow(label: "LIVE readiness", value: model.status?.liveReadiness.allowed == true ? "PASS" : "BLOCK")
+            }
         }
     }
 }
@@ -188,7 +340,7 @@ private struct ModeControlPanel: View {
             .font(.subheadline.bold())
         }
         .padding()
-        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 8))
+        .liquidGlass()
     }
 }
 
@@ -218,8 +370,7 @@ private struct SystemStateBanner: View {
             }
         }
         .padding()
-        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 8))
-        .overlay(RoundedRectangle(cornerRadius: 8).stroke(.quaternary))
+        .liquidGlass()
     }
 
     private var summary: String {
@@ -229,6 +380,82 @@ private struct SystemStateBanner: View {
             return "Có \(orders) order và \(positions) vị thế trên \(model.status?.mode ?? "mode hiện tại")."
         }
         return model.status?.autoTrader?.lastReason ?? "Backend chạy, exchange \(viExchangeConnection(model.exchange?.connection)), hiện chưa có lệnh/vị thế mở."
+    }
+}
+
+private struct LiquidBackground: View {
+    var body: some View {
+        LinearGradient(
+            colors: [
+                Color(red: 0.03, green: 0.06, blue: 0.10),
+                Color(red: 0.04, green: 0.11, blue: 0.17),
+                Color(red: 0.02, green: 0.04, blue: 0.08)
+            ],
+            startPoint: .topLeading,
+            endPoint: .bottomTrailing
+        )
+        .ignoresSafeArea()
+    }
+}
+
+private struct GlassPanel<Content: View>: View {
+    @ViewBuilder let content: Content
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            content
+        }
+        .padding()
+        .liquidGlass()
+    }
+}
+
+private struct LiquidGlassModifier: ViewModifier {
+    func body(content: Content) -> some View {
+        content
+            .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .stroke(.white.opacity(0.16), lineWidth: 1)
+            )
+            .shadow(color: .black.opacity(0.24), radius: 18, x: 0, y: 10)
+    }
+}
+
+private extension View {
+    func liquidGlass() -> some View {
+        modifier(LiquidGlassModifier())
+    }
+}
+
+private struct StatusChip: View {
+    let text: String
+    let color: Color
+
+    var body: some View {
+        Text(text)
+            .font(.caption.bold())
+            .foregroundStyle(color)
+            .padding(.horizontal, 9)
+            .padding(.vertical, 5)
+            .background(color.opacity(0.14), in: Capsule())
+    }
+}
+
+private struct InfoPill: View {
+    let text: String
+
+    init(_ text: String) {
+        self.text = text
+    }
+
+    var body: some View {
+        Text(text)
+            .font(.caption.bold())
+            .foregroundStyle(.secondary)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 6)
+            .background(.white.opacity(0.06), in: Capsule())
     }
 }
 
@@ -504,6 +731,9 @@ private struct MoreView: View {
                 }
                 Section("Xác thực backend") {
                     SecureField("Auth token", text: $model.tokenDraft)
+                    Text("Điền Bearer token backend nếu server bật bảo vệ API. Để trống nếu backend hiện cho phép dashboard nội bộ không cần token.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                     Button("Lưu token vào Keychain") {
                         model.saveToken()
                     }
@@ -528,6 +758,9 @@ private struct MoreView: View {
                     InfoRow(label: "Spread tối đa", value: "\(number(model.settings?.maxSpreadBps)) bps")
                     InfoRow(label: "Tuổi niêm yết tối thiểu", value: "\(model.settings?.minListingAgeDays ?? 0) ngày")
                     InfoRow(label: "Điểm vào lệnh tối thiểu", value: "\(model.settings?.minScoreToTrade ?? 0)")
+                    Text("Các giá trị này lấy trực tiếp từ backend production. Thay đổi scanner/risk nên làm trên web hoặc backend để có test trước khi chạy.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                 }
                 Section("Order DEMO trên Binance") {
                     if model.exchange?.orders.isEmpty != false {
@@ -636,9 +869,7 @@ private struct MetricTile: View {
         }
         .frame(maxWidth: .infinity, minHeight: 86, alignment: .leading)
         .padding()
-        .background(.background)
-        .clipShape(RoundedRectangle(cornerRadius: 8))
-        .overlay(RoundedRectangle(cornerRadius: 8).stroke(.quaternary))
+        .liquidGlass()
     }
 }
 
@@ -653,6 +884,8 @@ private struct SectionBlock<Content: View>: View {
             content
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+        .padding()
+        .liquidGlass()
     }
 }
 
@@ -661,12 +894,13 @@ private struct InfoRow: View {
     let value: String
 
     var body: some View {
-        HStack {
+        HStack(alignment: .top) {
             Text(label)
+                .foregroundStyle(.secondary)
             Spacer()
             Text(value)
                 .fontWeight(.semibold)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(.primary)
                 .multilineTextAlignment(.trailing)
         }
     }

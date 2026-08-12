@@ -198,8 +198,8 @@ export function DashboardApp({ page }: { page: PageKey }) {
   const currentPage = nav.find((item) => item.key === page) ?? nav[0];
 
   return (
-    <main className="grid min-h-screen grid-cols-1 bg-[#eef3f6] text-slate-900 lg:grid-cols-[264px_1fr]">
-      <aside className="min-w-0 border-r border-slate-200 bg-[#0f1720] text-white lg:sticky lg:top-0 lg:h-screen">
+    <main className="grid min-h-screen grid-cols-1 bg-[#070b12] text-slate-100 lg:grid-cols-[264px_1fr]">
+      <aside className="min-w-0 border-r border-white/10 bg-[#0a101a] text-white lg:sticky lg:top-0 lg:h-screen">
         <div className="flex items-center justify-between border-b border-white/10 px-4 py-3 lg:block lg:px-5 lg:py-5">
           <div>
             <p className="text-xs font-bold uppercase text-cyan-300">USD-M Futures</p>
@@ -214,7 +214,7 @@ export function DashboardApp({ page }: { page: PageKey }) {
             return (
               <Link
                 className={`flex min-h-10 shrink-0 items-center gap-2 rounded-md px-3 text-sm font-semibold transition lg:gap-3 ${
-                  active ? "bg-cyan-400 text-slate-950 shadow-sm" : "text-slate-300 hover:bg-white/10 hover:text-white"
+                  active ? "bg-cyan-300 text-slate-950 shadow-sm shadow-cyan-500/20" : "text-slate-300 hover:bg-white/10 hover:text-white"
                 }`}
                 href={item.href}
                 key={item.key}
@@ -228,9 +228,9 @@ export function DashboardApp({ page }: { page: PageKey }) {
       </aside>
 
       <section className="min-w-0">
-        <header className="sticky top-0 z-10 flex flex-col gap-3 border-b border-slate-200 bg-white/95 px-4 py-3 shadow-sm backdrop-blur md:px-5 md:py-4 xl:flex-row xl:items-center xl:justify-between">
+        <header className="sticky top-0 z-10 flex flex-col gap-3 border-b border-white/10 bg-[#0b111d]/95 px-4 py-3 shadow-sm shadow-black/30 backdrop-blur md:px-5 md:py-4 xl:flex-row xl:items-center xl:justify-between">
           <div className="min-w-0">
-            <p className="text-xs font-bold uppercase text-slate-500">Control Surface</p>
+            <p className="text-xs font-bold uppercase text-cyan-300">Control Surface</p>
             <h2 className="text-xl font-bold md:text-2xl">{currentPage.label}</h2>
             <StatusLine exchange={exchange ?? status?.exchange ?? null} isRefreshing={isRefreshing} lastLiveAt={lastLiveAt} status={status} wsState={wsState} />
           </div>
@@ -241,7 +241,7 @@ export function DashboardApp({ page }: { page: PageKey }) {
             <Pill label="LIVE" value={status?.live_enabled ? "ON" : "OFF"} tone={status?.live_enabled ? "danger" : "safe"} />
             <Pill label="Bot" value={viBotState(status?.bot_state)} tone={status?.safe_mode ? "danger" : "neutral"} />
             <Pill label="Exchange" value={viExchangeConnection(exchange?.connection ?? status?.exchange.connection)} tone={(exchange?.connection ?? status?.exchange.connection) === "CONNECTED" ? "safe" : "danger"} />
-            <button className="inline-flex min-h-9 items-center gap-2 rounded-md border border-slate-300 bg-white px-3 py-2 text-sm font-bold text-slate-800 transition hover:bg-slate-50 disabled:opacity-60" disabled={isRefreshing} onClick={() => void refresh()} type="button">
+            <button className="inline-flex min-h-9 items-center gap-2 rounded-md border border-white/15 bg-white/10 px-3 py-2 text-sm font-bold text-slate-100 transition hover:bg-white/15 disabled:opacity-60" disabled={isRefreshing} onClick={() => void refresh()} type="button">
               <RefreshCw className={isRefreshing ? "animate-spin" : ""} size={16} />
               {isRefreshing ? "Đang tải" : "Làm mới"}
             </button>
@@ -249,7 +249,7 @@ export function DashboardApp({ page }: { page: PageKey }) {
         </header>
 
         <div className="p-4 md:p-5">
-          {error && <div className="mb-4 rounded-md border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">{error}</div>}
+          {error && <div className="mb-4 rounded-md border border-red-400/40 bg-red-500/10 px-4 py-3 text-sm text-red-200">{error}</div>}
           {!hasLoaded && <LoadingGrid />}
           {page === "dashboard" && <Dashboard exchange={exchange ?? status?.exchange ?? null} markets={markets} onDone={refresh} performance={performance} positions={positions} scanner={scanner} status={status} />}
           {page === "markets" && <Markets markets={markets} />}
@@ -277,105 +277,132 @@ function Dashboard({ exchange, markets, onDone, performance, positions, scanner,
   return (
     <div className="grid gap-4">
       <ActivitySummary exchange={exchange} status={status} />
-      <MobileTradingOverview exchange={exchange} performance={performance} status={status} />
       <CommandCenter exchange={exchange} onDone={onDone} status={status} />
+      <CriticalOverview exchange={exchange} performance={performance} positions={positions} status={status} />
       <MarketChart symbol={chartSymbol} symbols={chartSymbols} />
-      <div className="grid grid-cols-2 gap-3 md:gap-4 xl:grid-cols-4">
-        <Metric label="Vốn hiện tại" value={money(performance?.equity)} />
-        <Metric label="PNL hôm nay" value={money(performance?.realized_pnl)} tone={(performance?.realized_pnl ?? 0) >= 0 ? "good" : "bad"} />
-        <Metric label="Tổng PNL" value={money(performance?.realized_pnl)} tone={(performance?.realized_pnl ?? 0) >= 0 ? "good" : "bad"} />
-        <Metric label="Tỷ lệ thắng" value={percent((performance?.win_rate ?? 0) * 100)} />
-        <Metric label="Sụt giảm vốn" value={percent(drawdown(performance))} tone="bad" />
-        <Metric label="Hệ số lợi nhuận" value={profitFactor(performance)} />
-        <Metric label="Sharpe" value={number(performance?.sharpe)} />
-        <Metric label="Sortino" value={number(performance?.sortino)} />
-        <Metric label="Expectancy" value={money(performance?.expectancy)} />
-        <Metric label="Vị thế mở" value={String(performance?.open_positions ?? positions.length)} />
-        <Metric label="Rủi ro đã dùng" value={percent(((performance?.open_positions ?? 0) / (status?.risk.max_open_positions ?? 4)) * 100)} />
-        <Metric label="Balance DEMO" value={money(exchange?.balance.balance)} />
-        <Metric label="Available DEMO" value={money(exchange?.balance.available)} />
-        <Metric label="Margin DEMO" value={money(exchange?.balance.margin_balance)} />
-        <Metric label="Kết nối exchange" value={viExchangeConnection(exchange?.connection)} tone={exchange?.connection === "CONNECTED" ? "good" : "bad"} />
+      <div className="grid gap-4 xl:grid-cols-[1.15fr_0.85fr]">
+        <OpenPositionsPanel positions={exchange?.positions ?? []} />
+        <SignalFocus scanner={scanner} />
       </div>
-      <section className="rounded-lg border border-slate-200 bg-white p-4">
-        <div className="mb-3 flex items-center justify-between">
-          <h3 className="font-bold">Biểu đồ vốn</h3>
-          <span className="text-sm text-slate-500">Số dư {money(performance?.balance)}</span>
+      <DataPanel title="Đường vốn">
+        <div className="mb-3 flex items-center justify-between gap-3">
+          <span className="text-sm font-semibold text-slate-400">Số dư {money(performance?.balance)}</span>
+          <span className={`text-sm font-black ${(performance?.realized_pnl ?? 0) >= 0 ? "text-emerald-300" : "text-red-300"}`}>Đã chốt {money(performance?.realized_pnl)}</span>
         </div>
         <EquityChart values={equitySeries} />
-      </section>
-      <div className="grid gap-4 xl:grid-cols-2">
-        <ExchangeOrders orders={exchange?.orders ?? []} />
-        <ExchangePositions positions={exchange?.positions ?? []} />
-      </div>
+      </DataPanel>
       <LiveReadinessPanel onDone={onDone} status={status} />
     </div>
   );
 }
 
-function MobileTradingOverview({ exchange, performance, status }: { exchange: ExchangeSnapshot | null; performance: Performance | null; status: StatusPayload | null }) {
-  const activePosition = exchange?.positions[0] ?? null;
-  const protectiveOrders = exchange?.orders.filter((order) => order.reduce_only || order.order_type.includes("STOP") || order.order_type.includes("TAKE_PROFIT")) ?? [];
-  const pnl = activePosition?.unrealized_pnl ?? exchange?.balance.unrealized_pnl ?? performance?.unrealized_pnl ?? 0;
-  const leverage = activePosition?.leverage ? `${activePosition.leverage}x` : `${status?.risk.max_leverage ?? "-"}x`;
+function CriticalOverview({ exchange, performance, positions, status }: { exchange: ExchangeSnapshot | null; performance: Performance | null; positions: Position[]; status: StatusPayload | null }) {
+  const openPositions = exchange?.positions.length ?? performance?.open_positions ?? positions.length;
+  const maxPositions = Math.max(status?.risk.max_open_positions ?? 1, 1);
+  const positionUsage = (openPositions / maxPositions) * 100;
+  const marginBalance = exchange?.balance.margin_balance ?? performance?.equity ?? 0;
+  const available = exchange?.balance.available ?? 0;
+  const usedMargin = Math.max(0, marginBalance - available);
+  const marginUsage = marginBalance > 0 ? (usedMargin / marginBalance) * 100 : 0;
+  const unrealized = exchange?.balance.unrealized_pnl ?? performance?.unrealized_pnl ?? 0;
+  const realized = performance?.realized_pnl ?? 0;
+
   return (
-    <section className="grid gap-3 rounded-lg border border-slate-200 bg-white p-3 shadow-sm md:hidden">
-      <div className="flex items-start justify-between gap-3">
-        <div className="min-w-0">
-          <p className="text-xs font-black uppercase text-slate-500">Theo dõi nhanh</p>
-          <h3 className="mt-1 truncate text-lg font-black">{activePosition?.symbol ?? status?.auto_trader?.last_symbol ?? "Chưa có vị thế"}</h3>
-        </div>
-        <span className={`shrink-0 rounded-full px-3 py-1 text-xs font-black ${status?.mode === "LIVE" ? "bg-red-100 text-red-700" : "bg-cyan-50 text-cyan-700"}`}>
-          {normalizeMode(status?.mode)}
-        </span>
-      </div>
-
-      <div className="grid grid-cols-[minmax(0,1fr)_minmax(0,1fr)] gap-2">
-        <MobileStat label="PNL mở" value={money(pnl)} tone={pnl >= 0 ? "good" : "bad"} />
-        <MobileStat label="Đòn bẩy" value={leverage} />
-        <MobileStat label="Balance" value={money(exchange?.balance.balance ?? performance?.balance)} />
-        <MobileStat label="Available" value={money(exchange?.balance.available)} />
-        <MobileStat label="Vị thế" value={String(exchange?.positions.length ?? 0)} />
-        <MobileStat label="Order bảo vệ" value={String(protectiveOrders.length)} />
-      </div>
-
-      {activePosition ? (
-        <div className="grid gap-2 rounded-md border border-slate-200 bg-slate-50 p-3 text-sm">
+    <section className="grid gap-4 xl:grid-cols-[1.1fr_0.9fr]">
+      <div className="rounded-lg border border-cyan-300/20 bg-[#0d1724] p-4 shadow-sm shadow-cyan-950/30 md:p-5">
+        <div className="flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
           <div>
-            <span className="font-bold text-slate-500">Hướng</span>
-            <strong className={`mt-1 block break-words ${activePosition.side === "LONG" ? "text-emerald-700" : "text-red-700"}`}>{viSide(activePosition.side)}</strong>
+            <p className="text-xs font-black uppercase text-cyan-300">Tài khoản DEMO realtime</p>
+            <h3 className="mt-2 text-3xl font-black leading-tight md:text-4xl">{money(performance?.equity ?? exchange?.balance.margin_balance)}</h3>
+            <p className="mt-2 text-sm font-semibold text-slate-400">Available {money(available)} / Balance {money(exchange?.balance.balance ?? performance?.balance)}</p>
           </div>
-          <div>
-            <span className="font-bold text-slate-500">Entry / Mark</span>
-            <strong className="mt-1 block break-words">{money(activePosition.entry_price)} / {money(activePosition.mark_price)}</strong>
-          </div>
-          <div>
-            <span className="font-bold text-slate-500">Thanh lý</span>
-            <strong className="mt-1 block break-words">{money(activePosition.liquidation_price)}</strong>
+          <div className="grid min-w-[220px] gap-2">
+            <Pill label="Mode" value={normalizeMode(status?.mode)} tone={status?.mode === "LIVE" ? "danger" : "safe"} />
+            <Pill label="Exchange" value={viExchangeConnection(exchange?.connection)} tone={exchange?.connection === "CONNECTED" ? "safe" : "danger"} />
+            <Pill label="Bot" value={viBotState(status?.bot_state)} tone={status?.bot_state === "RUNNING" ? "safe" : "neutral"} />
           </div>
         </div>
-      ) : (
-        <p className="rounded-md border border-dashed border-slate-300 bg-slate-50 px-3 py-3 text-sm font-semibold text-slate-500">
-          {status?.auto_trader?.last_reason ?? "Auto loop đang chờ signal đủ điều kiện."}
-        </p>
-      )}
+        <div className="mt-5 grid gap-3 md:grid-cols-3">
+          <Metric label="PNL đã chốt" value={money(realized)} tone={realized >= 0 ? "good" : "bad"} />
+          <Metric label="PNL đang mở" value={money(unrealized)} tone={unrealized >= 0 ? "good" : "bad"} />
+          <Metric label="Winrate sau reset" value={percent((performance?.win_rate ?? 0) * 100)} />
+        </div>
+      </div>
+      <div className="grid gap-4">
+        <RiskUsageCard label="Vị thế mở" maxLabel={`${openPositions}/${maxPositions}`} tone={positionUsage >= 100 ? "bad" : "good"} value={positionUsage} />
+        <RiskUsageCard label="Margin đang dùng" maxLabel={`${money(usedMargin)} / ${money(marginBalance)}`} tone={marginUsage >= (status?.risk.max_total_margin ?? 0.3) * 100 ? "bad" : "good"} value={marginUsage} />
+        <RiskUsageCard label="Tổng risk cho phép" maxLabel={percent((status?.risk.max_total_open_risk ?? 0) * 100)} tone="neutral" value={Math.min(positionUsage, 100)} />
+      </div>
     </section>
   );
 }
 
-function MobileStat({ label, tone = "neutral", value }: { label: string; value: string; tone?: "neutral" | "good" | "bad" }) {
-  const color = tone === "good" ? "text-emerald-700" : tone === "bad" ? "text-red-700" : "text-slate-950";
+function RiskUsageCard({ label, maxLabel, tone, value }: { label: string; maxLabel: string; tone: "good" | "bad" | "neutral"; value: number }) {
+  const color = tone === "bad" ? "bg-red-400" : tone === "good" ? "bg-emerald-300" : "bg-cyan-300";
   return (
-    <div className="min-w-0 rounded-md border border-slate-200 bg-slate-50 p-3">
-      <p className="text-[11px] font-black uppercase text-slate-500">{label}</p>
-      <strong className={`mt-1 block truncate text-base leading-tight ${color}`} title={value}>{value}</strong>
-    </div>
+    <section className="rounded-lg border border-white/10 bg-[#0d1724] p-4">
+      <div className="flex items-center justify-between gap-3">
+        <p className="text-xs font-black uppercase text-slate-400">{label}</p>
+        <strong className="text-sm text-slate-100">{maxLabel}</strong>
+      </div>
+      <div className="mt-3 h-2 overflow-hidden rounded-full bg-white/10">
+        <div className={`h-full rounded-full ${color}`} style={{ width: `${Math.max(0, Math.min(value, 100))}%` }} />
+      </div>
+    </section>
+  );
+}
+
+function OpenPositionsPanel({ positions }: { positions: ExchangeSnapshot["positions"] }) {
+  return (
+    <DataPanel title="Vị thế đang mở">
+      <div className="grid gap-3">
+        {positions.length ? positions.map((position) => (
+          <article className="grid gap-3 rounded-md border border-white/10 bg-white/[0.03] p-3 md:grid-cols-[1fr_auto]" key={`${position.symbol}-${position.side}`}>
+            <div>
+              <div className="flex flex-wrap items-center gap-2">
+                <strong className="text-lg">{position.symbol}</strong>
+                <span className={`rounded px-2 py-1 text-xs font-black ${position.side === "LONG" ? "bg-emerald-400/15 text-emerald-300" : "bg-red-400/15 text-red-300"}`}>{viSide(position.side)}</span>
+                <span className="rounded bg-white/10 px-2 py-1 text-xs font-black text-slate-300">{position.leverage ?? "-"}x</span>
+              </div>
+              <p className="mt-2 text-sm font-semibold text-slate-400">Entry {money(position.entry_price)} / Mark {money(position.mark_price)} / Thanh lý {money(position.liquidation_price)}</p>
+            </div>
+            <div className="text-left md:text-right">
+              <p className={`text-xl font-black ${position.unrealized_pnl >= 0 ? "text-emerald-300" : "text-red-300"}`}>{money(position.unrealized_pnl)}</p>
+              <p className="mt-1 text-xs font-semibold text-slate-400">Qty {number(position.quantity)}</p>
+            </div>
+          </article>
+        )) : <EmptyState message="Bot chưa có vị thế mở trên exchange." title="Chưa có vị thế" />}
+      </div>
+    </DataPanel>
+  );
+}
+
+function SignalFocus({ scanner }: { scanner: ScannerResult[] }) {
+  const candidates = scanner.filter((item) => item.action !== "NO_TRADE").slice(0, 5);
+  return (
+    <DataPanel title="Tín hiệu đáng chú ý">
+      <div className="grid gap-3">
+        {candidates.length ? candidates.map((item) => (
+          <article className="rounded-md border border-white/10 bg-white/[0.03] p-3" key={`${item.symbol}-${item.timeframe}`}>
+            <div className="flex items-center justify-between gap-3">
+              <strong>{item.symbol}</strong>
+              <span className={`rounded px-2 py-1 text-xs font-black ${item.action === "LONG" ? "bg-emerald-400/15 text-emerald-300" : "bg-red-400/15 text-red-300"}`}>{viAction(item.action)}</span>
+            </div>
+            <div className="mt-2 grid grid-cols-3 gap-2 text-sm">
+              <InfoPair label="Score" value={String(Math.max(item.long_score, item.short_score))} />
+              <InfoPair label="RR" value={number(item.risk_reward)} />
+              <InfoPair label="TF" value={item.timeframe} />
+            </div>
+          </article>
+        )) : <EmptyState message="Scanner chưa có tín hiệu đủ điều kiện auto entry." title="Đang chờ" />}
+      </div>
+    </DataPanel>
   );
 }
 
 function CommandCenter({ exchange, onDone, status }: { exchange: ExchangeSnapshot | null; onDone: () => Promise<void>; status: StatusPayload | null }) {
   return (
-    <section className="grid gap-4 rounded-lg border border-slate-200 bg-white p-4 shadow-sm xl:grid-cols-[1.2fr_1fr]">
+    <section className="grid gap-4 rounded-lg border border-white/10 bg-[#0d1724] p-4 shadow-sm xl:grid-cols-[1.2fr_1fr]">
       <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
         <ModeCard label="Trading mode" value={normalizeMode(status?.mode)} tone={status?.mode === "LIVE" ? "danger" : "warning"} />
         <ModeCard label="Exchange" value={viExchangeConnection(exchange?.connection)} tone={exchange?.connection === "CONNECTED" ? "safe" : "danger"} />
@@ -383,7 +410,7 @@ function CommandCenter({ exchange, onDone, status }: { exchange: ExchangeSnapsho
         <ModeCard label="Auto loop" value={viAutoStatus(status?.auto_trader?.last_status)} tone={status?.auto_trader?.last_status === "ORDER_SUBMITTED" ? "safe" : "warning"} />
       </div>
       <div className="flex flex-col justify-center gap-3 xl:items-end">
-        <p className="max-w-xl text-sm font-semibold text-slate-600 xl:text-right">
+        <p className="max-w-xl text-sm font-semibold text-slate-400 xl:text-right">
           {status?.mode === "LIVE" ? "LIVE đang dùng tiền thật. Kiểm tra lệnh và rủi ro trước mọi thao tác." : "Đang ở môi trường an toàn. Có thể kiểm tra kết nối, signal và lệnh demo tại đây."}
         </p>
         <div className="flex flex-wrap items-center justify-start gap-2 xl:justify-end">
@@ -436,10 +463,10 @@ function MarketChart({ symbol, symbols }: { symbol: string; symbols: string[] })
     const chart = createChart(containerRef.current, {
       autoSize: true,
       height: 360,
-      layout: { background: { color: "#ffffff" }, textColor: "#334155" },
-      grid: { vertLines: { color: "#edf2f7" }, horzLines: { color: "#edf2f7" } },
-      rightPriceScale: { borderColor: "#e2e8f0" },
-      timeScale: { borderColor: "#e2e8f0", timeVisible: true, secondsVisible: false },
+      layout: { background: { color: "#0d1724" }, textColor: "#cbd5e1" },
+      grid: { vertLines: { color: "rgba(148, 163, 184, 0.12)" }, horzLines: { color: "rgba(148, 163, 184, 0.12)" } },
+      rightPriceScale: { borderColor: "rgba(148, 163, 184, 0.18)" },
+      timeScale: { borderColor: "rgba(148, 163, 184, 0.18)", timeVisible: true, secondsVisible: false },
       crosshair: { mode: 1 },
     });
     const series = chart.addSeries(CandlestickSeries, {
@@ -477,24 +504,24 @@ function MarketChart({ symbol, symbols }: { symbol: string; symbols: string[] })
   const change = last && first ? ((last.close - first.open) / first.open) * 100 : null;
 
   return (
-    <section className="rounded-lg border border-slate-200 bg-white shadow-sm">
-      <div className="flex flex-col gap-3 border-b border-slate-200 p-4 md:flex-row md:items-center md:justify-between">
+    <section className="rounded-lg border border-white/10 bg-[#0d1724] shadow-sm">
+      <div className="flex flex-col gap-3 border-b border-white/10 p-4 md:flex-row md:items-center md:justify-between">
         <div>
-          <p className="text-xs font-bold uppercase text-slate-500">Biểu đồ coin</p>
+          <p className="text-xs font-bold uppercase text-cyan-300">Biểu đồ coin</p>
           <div className="mt-1 flex flex-wrap items-end gap-3">
             <h3 className="text-xl font-black">{effectiveSymbol}</h3>
-            <span className="text-sm font-bold text-slate-500">{last ? money(last.close) : "-"}</span>
-            <span className={`text-sm font-bold ${(change ?? 0) >= 0 ? "text-emerald-700" : "text-red-700"}`}>{change === null ? "-" : signedPercent(change)}</span>
-            <span className="rounded-full bg-emerald-50 px-2 py-1 text-[11px] font-black uppercase text-emerald-700">Realtime 5s</span>
+            <span className="text-sm font-bold text-slate-400">{last ? money(last.close) : "-"}</span>
+            <span className={`text-sm font-bold ${(change ?? 0) >= 0 ? "text-emerald-300" : "text-red-300"}`}>{change === null ? "-" : signedPercent(change)}</span>
+            <span className="rounded-full bg-emerald-400/15 px-2 py-1 text-[11px] font-black uppercase text-emerald-300">Realtime 5s</span>
           </div>
         </div>
         <div className="grid gap-2 md:flex md:flex-wrap md:items-center md:justify-end">
-          <select className="min-h-9 rounded-md border border-slate-300 bg-white px-3 text-sm font-bold text-slate-800" onChange={(event) => setSelectedSymbol(event.target.value)} value={effectiveSymbol}>
+          <select className="min-h-9 rounded-md border border-white/15 bg-[#111c2b] px-3 text-sm font-bold text-slate-100" onChange={(event) => setSelectedSymbol(event.target.value)} value={effectiveSymbol}>
             {symbols.map((item) => <option key={item} value={item}>{item}</option>)}
           </select>
           <div className="grid grid-cols-5 gap-1 md:flex md:flex-wrap md:gap-2">
           {(["1m", "5m", "15m", "1h", "4h"] as const).map((value) => (
-            <button className={`rounded-md px-2 py-2 text-xs font-black transition md:px-3 ${interval === value ? "bg-slate-950 text-white" : "bg-slate-100 text-slate-600 hover:bg-slate-200"}`} key={value} onClick={() => setInterval(value)} type="button">
+            <button className={`rounded-md px-2 py-2 text-xs font-black transition md:px-3 ${interval === value ? "bg-cyan-300 text-slate-950" : "bg-white/10 text-slate-300 hover:bg-white/15"}`} key={value} onClick={() => setInterval(value)} type="button">
               {value}
             </button>
           ))}
@@ -503,21 +530,21 @@ function MarketChart({ symbol, symbols }: { symbol: string; symbols: string[] })
       </div>
       <div className="relative p-2 md:p-4">
         <div className="h-[300px] w-full md:h-[420px]" ref={containerRef} />
-        {busy && <div className="absolute right-5 top-5 rounded-full bg-white/90 px-3 py-1 text-xs font-bold text-slate-500 shadow">Đang tải</div>}
-        {error && <div className="absolute inset-x-5 bottom-5 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm font-semibold text-red-700">{error}</div>}
+        {busy && <div className="absolute right-5 top-5 rounded-full bg-[#0d1724]/90 px-3 py-1 text-xs font-bold text-slate-300 shadow">Đang tải</div>}
+        {error && <div className="absolute inset-x-5 bottom-5 rounded-md border border-red-400/40 bg-red-500/10 px-3 py-2 text-sm font-semibold text-red-200">{error}</div>}
       </div>
     </section>
   );
 }
 
 function ModeCard({ label, tone, value }: { label: string; value: string; tone: "safe" | "warning" | "danger" }) {
-  const iconColor = tone === "safe" ? "text-emerald-700" : tone === "warning" ? "text-amber-700" : "text-red-700";
+  const iconColor = tone === "safe" ? "text-emerald-300" : tone === "warning" ? "text-amber-300" : "text-red-300";
   return (
-    <div className="rounded-md border border-slate-200 bg-slate-50 p-4 transition hover:border-slate-300">
-      <div className={`mb-3 flex h-9 w-9 items-center justify-center rounded-md bg-white ${iconColor}`}>
+    <div className="rounded-md border border-white/10 bg-white/[0.03] p-4 transition hover:border-white/20">
+      <div className={`mb-3 flex h-9 w-9 items-center justify-center rounded-md bg-white/10 ${iconColor}`}>
         {tone === "danger" ? <ShieldAlert size={18} /> : tone === "warning" ? <Radio size={18} /> : <LockKeyhole size={18} />}
       </div>
-      <p className="text-xs font-bold uppercase text-slate-500">{label}</p>
+      <p className="text-xs font-bold uppercase text-slate-400">{label}</p>
       <strong className="mt-1 block break-words text-2xl leading-tight">{value}</strong>
     </div>
   );
@@ -573,7 +600,7 @@ function LiveReadinessPanel({ onDone, status }: { onDone: () => Promise<void>; s
       <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
         <Pill label="Runtime LIVE" value={readiness?.live_enabled ? "ON" : "OFF"} tone={readiness?.live_enabled ? "danger" : "safe"} />
         <button
-          className="inline-flex items-center gap-2 rounded-md border border-slate-300 bg-white px-3 py-2 text-sm font-bold text-slate-800 hover:bg-slate-50 disabled:opacity-50"
+          className="inline-flex items-center gap-2 rounded-md border border-white/15 bg-white/10 px-3 py-2 text-sm font-bold text-slate-100 hover:bg-white/15 disabled:opacity-50"
           disabled={readiness?.allowed !== true && readiness?.live_enabled !== true}
           onClick={() => void toggleLive(!(readiness?.live_enabled ?? false))}
           type="button"
@@ -587,47 +614,7 @@ function LiveReadinessPanel({ onDone, status }: { onDone: () => Promise<void>; s
           <Pill key={String(label)} label={String(label)} value={ok ? "PASS" : "BLOCK"} tone={ok ? "safe" : "danger"} />
         ))}
       </div>
-      {readiness?.blockers.length ? <p className="mt-3 text-sm font-semibold text-red-700">{readiness.blockers.join(" / ")}</p> : null}
-    </DataPanel>
-  );
-}
-
-function ExchangeOrders({ orders }: { orders: ExchangeSnapshot["orders"] }) {
-  return (
-    <DataPanel title="Order DEMO trên Binance">
-      <Table
-        columns={["Mã", "Hướng", "Loại", "Trạng thái", "Giá", "SL/TP", "Khối lượng", "Reduce-only"]}
-        rows={orders.map((order) => [
-          order.symbol,
-          viSide(order.side),
-          viOrderType(order.order_type),
-          order.status,
-          money(order.price),
-          money(order.stop_price),
-          number(order.quantity),
-          order.reduce_only ? "Có" : "Không",
-        ])}
-      />
-    </DataPanel>
-  );
-}
-
-function ExchangePositions({ positions }: { positions: ExchangeSnapshot["positions"] }) {
-  return (
-    <DataPanel title="Vị thế DEMO trên Binance">
-      <Table
-        columns={["Mã", "Hướng", "Khối lượng", "Giá vào", "Mark", "PNL", "Giá thanh lý", "Đòn bẩy"]}
-        rows={positions.map((position) => [
-          position.symbol,
-          viSide(position.side),
-          number(position.quantity),
-          money(position.entry_price),
-          money(position.mark_price),
-          money(position.unrealized_pnl),
-          money(position.liquidation_price),
-          position.leverage ? `${position.leverage}x` : "-",
-        ])}
-      />
+      {readiness?.blockers.length ? <p className="mt-3 text-sm font-semibold text-red-300">{readiness.blockers.join(" / ")}</p> : null}
     </DataPanel>
   );
 }
@@ -672,7 +659,7 @@ function Scanner({ scanner }: { scanner: ScannerResult[] }) {
       controls={
         <div className="flex flex-wrap gap-2">
           <SearchBox query={query} setQuery={setQuery} />
-          <select className="rounded-md border border-slate-300 bg-white px-3 py-2 text-sm" onChange={(event) => setSignal(event.target.value)} value={signal}>
+          <select className="rounded-md border border-white/15 bg-[#111c2b] px-3 py-2 text-sm text-slate-100" onChange={(event) => setSignal(event.target.value)} value={signal}>
             <option value="ALL">Tất cả</option>
             <option>LONG</option>
             <option>SHORT</option>
@@ -733,12 +720,12 @@ function Trades({ trades }: { trades: Trade[] }) {
       controls={
         <div className="flex flex-wrap gap-2">
           <SearchBox query={query} setQuery={setQuery} />
-          <select className="rounded-md border border-slate-300 bg-white px-3 py-2 text-sm" onChange={(event) => setSide(event.target.value)} value={side}>
+          <select className="rounded-md border border-white/15 bg-[#111c2b] px-3 py-2 text-sm text-slate-100" onChange={(event) => setSide(event.target.value)} value={side}>
             <option value="ALL">Tất cả</option>
             <option>LONG</option>
             <option>SHORT</option>
           </select>
-          <select className="rounded-md border border-slate-300 bg-white px-3 py-2 text-sm" onChange={(event) => setResult(event.target.value)} value={result}>
+          <select className="rounded-md border border-white/15 bg-[#111c2b] px-3 py-2 text-sm text-slate-100" onChange={(event) => setResult(event.target.value)} value={result}>
             <option value="ALL">Tất cả</option>
             <option value="WIN">Thắng</option>
             <option value="LOSS">Thua</option>
@@ -771,10 +758,10 @@ function Strategies({ scanner }: { scanner: ScannerResult[] }) {
         const active = scanner.filter((item) => item.strategy === strategy.name);
         const best = [...active].sort((a, b) => Math.max(b.long_score, b.short_score) - Math.max(a.long_score, a.short_score))[0];
         return (
-          <section className="rounded-lg border border-slate-200 bg-white p-4" key={strategy.name}>
+          <section className="rounded-lg border border-white/10 bg-[#0d1724] p-4" key={strategy.name}>
             <h3 className="font-bold">{strategy.name}</h3>
-            <p className="mt-2 text-sm font-semibold text-slate-600">{strategy.rule}</p>
-            <p className="mt-1 text-sm text-slate-500">{strategy.entry}</p>
+            <p className="mt-2 text-sm font-semibold text-slate-300">{strategy.rule}</p>
+            <p className="mt-1 text-sm text-slate-400">{strategy.entry}</p>
             <div className="mt-4 grid gap-2 text-sm">
               <InfoPair label="Tín hiệu đang đạt" value={String(active.length)} />
               <InfoPair label="Kèo tốt nhất" value={best ? `${best.symbol} ${viAction(best.action)} ${Math.max(best.long_score, best.short_score)}/100` : "Chưa có"} />
@@ -789,8 +776,8 @@ function Strategies({ scanner }: { scanner: ScannerResult[] }) {
 
 function InfoPair({ label, value }: { label: string; value: string }) {
   return (
-    <div className="flex items-center justify-between gap-3 rounded-md bg-slate-50 px-3 py-2">
-      <span className="font-bold text-slate-500">{label}</span>
+    <div className="flex items-center justify-between gap-3 rounded-md bg-white/[0.04] px-3 py-2">
+      <span className="font-bold text-slate-400">{label}</span>
       <strong className="text-right">{value}</strong>
     </div>
   );
@@ -808,7 +795,7 @@ function Analytics({ performance, trades }: { performance: Performance | null; t
       <Metric label="Sortino" value={number(performance?.sortino)} />
       <Metric label="Expectancy" value={money(performance?.expectancy)} />
       <Metric label="Winrate" value={percent((performance?.win_rate ?? 0) * 100)} />
-      <section className="rounded-lg border border-slate-200 bg-white p-4 md:col-span-3">
+      <section className="rounded-lg border border-white/10 bg-[#0d1724] p-4 md:col-span-3">
         <h3 className="mb-3 font-bold">Phân bổ kết quả lệnh</h3>
         <Table columns={["Kết quả", "Số lượng"]} rows={[["Thắng", String(trades.filter((item) => item.net_pnl > 0).length)], ["Thua", String(trades.filter((item) => item.net_pnl <= 0).length)]]} />
       </section>
@@ -850,13 +837,13 @@ function Risk({ onDone, status }: { onDone: () => Promise<void>; status: StatusP
             ["reconciliation_pass", "Reconciliation"],
             ["duplicate_order_tests_pass", "Duplicate order"],
           ] as const).map(([key, label]) => (
-            <label className="flex items-center justify-between gap-3 rounded-md border border-slate-200 bg-slate-50 px-3 py-3 text-sm font-bold" key={key}>
+            <label className="flex items-center justify-between gap-3 rounded-md border border-white/10 bg-white/[0.03] px-3 py-3 text-sm font-bold" key={key}>
               <span>{label}</span>
               <input checked={Boolean(readiness?.[key])} onChange={(event) => void setCheck(key, event.target.checked)} type="checkbox" />
             </label>
           ))}
         </div>
-        {readiness?.blockers.length ? <p className="mt-3 text-sm font-semibold text-red-700">{readiness.blockers.join(" / ")}</p> : null}
+        {readiness?.blockers.length ? <p className="mt-3 text-sm font-semibold text-red-300">{readiness.blockers.join(" / ")}</p> : null}
       </DataPanel>
     </div>
   );
@@ -887,7 +874,7 @@ function SettingsPage({ settings, onSaved }: { settings: BotSettings; onSaved: (
     setSaving(false);
   }
   return (
-    <section className="rounded-lg border border-slate-200 bg-white p-4">
+    <section className="rounded-lg border border-white/10 bg-[#0d1724] p-4">
       <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
         <NumberField label="Khối lượng tối thiểu" value={draft.min_quote_volume} onChange={(value) => setDraft({ ...draft, min_quote_volume: value })} />
         <NumberField label="Spread tối đa bps" value={draft.max_spread_bps} onChange={(value) => setDraft({ ...draft, max_spread_bps: value })} />
@@ -906,7 +893,7 @@ function SettingsPage({ settings, onSaved }: { settings: BotSettings; onSaved: (
         <NumberField label="Vị thế tối đa" value={draft.max_open_positions} onChange={(value) => setDraft({ ...draft, max_open_positions: value })} />
       </div>
       <div className="mt-4 flex justify-end">
-        <button className="rounded-md bg-slate-950 px-4 py-2 text-sm font-bold text-white disabled:opacity-60" disabled={saving} onClick={() => void save()} type="button">
+        <button className="rounded-md bg-cyan-300 px-4 py-2 text-sm font-bold text-slate-950 disabled:opacity-60" disabled={saving} onClick={() => void save()} type="button">
           Lưu cài đặt
         </button>
       </div>
@@ -948,7 +935,7 @@ function BotControls({ onDone }: { onDone: () => Promise<void> }) {
   const disabled = busy !== null;
   return (
     <div className="flex flex-wrap gap-2">
-      <div className="flex rounded-md border border-slate-300 bg-white p-1 shadow-sm">
+      <div className="flex rounded-md border border-white/15 bg-white/10 p-1 shadow-sm">
         <ActionIcon busy={busy === "start"} disabled={disabled} label="Chạy bot" onClick={() => void act("start")} tone="safe">
           <Play size={16} />
         </ActionIcon>
@@ -959,7 +946,7 @@ function BotControls({ onDone }: { onDone: () => Promise<void> }) {
           <Square size={16} />
         </ActionIcon>
       </div>
-      <div className="flex rounded-md border border-red-200 bg-white p-1 shadow-sm">
+      <div className="flex rounded-md border border-red-400/30 bg-white/10 p-1 shadow-sm">
         <ActionIcon busy={busy === "pause-new-trades"} disabled={disabled} label="Tạm dừng lệnh mới" onClick={() => void control("pause-new-trades")} tone="warning">
           <ShieldX size={16} />
         </ActionIcon>
@@ -979,10 +966,10 @@ function BotControls({ onDone }: { onDone: () => Promise<void> }) {
 
 function ActionIcon({ busy, children, disabled, label, onClick, tone }: { busy: boolean; children: React.ReactNode; disabled: boolean; label: string; onClick: () => void; tone: "safe" | "warning" | "orange" | "danger" | "solidDanger" }) {
   const toneClass: Record<"safe" | "warning" | "orange" | "danger" | "solidDanger", string> = {
-    safe: "text-emerald-700 hover:bg-emerald-50",
-    warning: "text-amber-700 hover:bg-amber-50",
-    orange: "text-orange-700 hover:bg-orange-50",
-    danger: "text-red-700 hover:bg-red-50",
+    safe: "text-emerald-300 hover:bg-emerald-400/10",
+    warning: "text-amber-300 hover:bg-amber-400/10",
+    orange: "text-orange-300 hover:bg-orange-400/10",
+    danger: "text-red-300 hover:bg-red-400/10",
     solidDanger: "bg-red-700 text-white hover:bg-red-800",
   };
   return (
@@ -1020,8 +1007,8 @@ function LiveQuickActions({ onDone, status }: { onDone: () => Promise<void>; sta
     return <Pill label="LIVE" value="Đang chạy tiền thật" tone="danger" />;
   }
   return (
-    <div className="flex rounded-md border border-amber-300 bg-amber-50 p-1 shadow-sm">
-      <button className="min-h-9 rounded px-3 text-xs font-black text-amber-800 transition hover:bg-amber-100 disabled:opacity-50" disabled={busy} onClick={() => void prepare()} type="button">
+    <div className="flex rounded-md border border-amber-400/30 bg-amber-400/10 p-1 shadow-sm">
+      <button className="min-h-9 rounded px-3 text-xs font-black text-amber-200 transition hover:bg-amber-400/15 disabled:opacity-50" disabled={busy} onClick={() => void prepare()} type="button">
         {busy ? "Đang kiểm tra" : "Chuẩn bị LIVE"}
       </button>
       <button className="min-h-9 rounded bg-red-700 px-3 text-xs font-black text-white transition hover:bg-red-800 disabled:opacity-50" disabled={busy || !status?.live_readiness.allowed} onClick={() => void goLive()} title={!status?.live_readiness.allowed ? "Cần chuẩn bị LIVE trước" : "Chuyển sang LIVE"} type="button">
@@ -1039,7 +1026,7 @@ function StatusLine({ exchange, isRefreshing, lastLiveAt, status, wsState }: { e
     lastLiveAt > 0 ? `Cập nhật ${new Date(lastLiveAt).toLocaleTimeString("vi-VN")}` : null,
   ].filter(Boolean);
   return (
-    <p className="mt-1 max-w-3xl truncate text-sm font-semibold text-slate-500" title={parts.join(" • ")}>
+    <p className="mt-1 max-w-3xl truncate text-sm font-semibold text-slate-400" title={parts.join(" • ")}>
       {isRefreshing ? "Đang đồng bộ dữ liệu..." : parts.join(" • ")}
     </p>
   );
@@ -1049,9 +1036,9 @@ function LoadingGrid() {
   return (
     <div className="mb-4 grid gap-4 md:grid-cols-2 xl:grid-cols-4" aria-label="Đang tải dữ liệu">
       {Array.from({ length: 4 }).map((_, index) => (
-        <div className="h-24 animate-pulse rounded-lg border border-slate-200 bg-white p-4 shadow-sm" key={index}>
-          <div className="h-3 w-24 rounded bg-slate-200" />
-          <div className="mt-4 h-7 w-32 rounded bg-slate-200" />
+        <div className="h-24 animate-pulse rounded-lg border border-white/10 bg-white/[0.04] p-4 shadow-sm" key={index}>
+          <div className="h-3 w-24 rounded bg-white/10" />
+          <div className="mt-4 h-7 w-32 rounded bg-white/10" />
         </div>
       ))}
     </div>
@@ -1072,10 +1059,10 @@ function ModeSelector({ current, liveAllowed, onDone }: { current: "DEMO" | "LIV
     }
   }
   return (
-    <div className="flex rounded-md border border-slate-300 bg-white p-1 shadow-sm">
+    <div className="flex rounded-md border border-white/15 bg-white/10 p-1 shadow-sm">
       {(["DEMO", "LIVE"] as const).map((mode) => (
         <button
-          className={`min-h-8 rounded px-3 py-1 text-xs font-black transition ${current === mode ? "bg-slate-950 text-white" : "text-slate-600 hover:bg-slate-100 disabled:text-slate-300 disabled:hover:bg-transparent"}`}
+          className={`min-h-8 rounded px-3 py-1 text-xs font-black transition ${current === mode ? "bg-cyan-300 text-slate-950" : "text-slate-300 hover:bg-white/10 disabled:text-slate-600 disabled:hover:bg-transparent"}`}
           disabled={busy || (mode === "LIVE" && !liveAllowed)}
           key={mode}
           onClick={() => void change(mode)}
@@ -1091,8 +1078,8 @@ function ModeSelector({ current, liveAllowed, onDone }: { current: "DEMO" | "LIV
 
 function DataPanel({ children, controls, title }: { children: React.ReactNode; controls?: React.ReactNode; title: string }) {
   return (
-    <section className="rounded-lg border border-slate-200 bg-white shadow-sm">
-      <div className="flex flex-col gap-3 border-b border-slate-200 p-3 md:p-4 xl:flex-row xl:items-center xl:justify-between">
+    <section className="rounded-lg border border-white/10 bg-[#0d1724] shadow-sm">
+      <div className="flex flex-col gap-3 border-b border-white/10 p-3 md:p-4 xl:flex-row xl:items-center xl:justify-between">
         <h3 className="text-base font-bold">{title}</h3>
         {controls}
       </div>
@@ -1109,16 +1096,16 @@ function Table({ columns, rows }: { columns: string[]; rows: string[][] }) {
     <>
       <div className="grid gap-3 sm:hidden">
         {rows.map((row, rowIndex) => (
-          <article className="rounded-md border border-slate-200 bg-slate-50 p-3" key={`${row[0]}-${rowIndex}`}>
+          <article className="rounded-md border border-white/10 bg-white/[0.03] p-3" key={`${row[0]}-${rowIndex}`}>
             <div className="mb-2 flex items-center justify-between gap-3">
-              <strong className="truncate text-base text-slate-950">{row[0]}</strong>
-              {row[1] ? <span className="shrink-0 rounded bg-white px-2 py-1 text-xs font-black text-slate-600">{row[1]}</span> : null}
+              <strong className="truncate text-base text-slate-100">{row[0]}</strong>
+              {row[1] ? <span className="shrink-0 rounded bg-white/10 px-2 py-1 text-xs font-black text-slate-300">{row[1]}</span> : null}
             </div>
             <div className="grid gap-2">
               {row.slice(2).map((cell, index) => (
                 <div className="flex items-start justify-between gap-3 text-sm" key={`${columns[index + 2]}-${cell}-${index}`}>
-                  <span className="font-bold text-slate-500">{columns[index + 2]}</span>
-                  <span className="max-w-[58%] break-words text-right font-semibold text-slate-900">{cell}</span>
+                  <span className="font-bold text-slate-400">{columns[index + 2]}</span>
+                  <span className="max-w-[58%] break-words text-right font-semibold text-slate-100">{cell}</span>
                 </div>
               ))}
             </div>
@@ -1127,7 +1114,7 @@ function Table({ columns, rows }: { columns: string[]; rows: string[][] }) {
       </div>
       <table className="hidden w-full min-w-[880px] border-collapse text-sm sm:table">
         <thead>
-          <tr className="border-b border-slate-200 bg-white text-left text-xs uppercase text-slate-500">
+          <tr className="border-b border-white/10 bg-white/[0.03] text-left text-xs uppercase text-slate-400">
             {columns.map((column) => (
               <th className="px-3 py-3 font-bold" key={column}>{column}</th>
             ))}
@@ -1135,7 +1122,7 @@ function Table({ columns, rows }: { columns: string[]; rows: string[][] }) {
         </thead>
         <tbody>
           {rows.map((row, rowIndex) => (
-            <tr className="border-b border-slate-100 transition hover:bg-slate-50 last:border-0" key={`${row[0]}-${rowIndex}`}>
+            <tr className="border-b border-white/5 transition hover:bg-white/[0.04] last:border-0" key={`${row[0]}-${rowIndex}`}>
               {row.map((cell, cellIndex) => (
                 <td className="whitespace-nowrap px-3 py-3" key={`${cell}-${cellIndex}`}>{cell}</td>
               ))}
@@ -1151,10 +1138,10 @@ function TableControls<T extends string>({ query, setQuery, sort, setSort, sortO
   return (
     <div className="flex flex-wrap gap-2">
       <SearchBox query={query} setQuery={setQuery} />
-      <label className="inline-flex min-h-10 items-center gap-2 rounded-md border border-slate-300 bg-white px-3 py-2 text-sm shadow-sm focus-within:border-cyan-500">
+      <label className="inline-flex min-h-10 items-center gap-2 rounded-md border border-white/15 bg-[#111c2b] px-3 py-2 text-sm shadow-sm focus-within:border-cyan-300">
         <ListFilter size={16} />
-        <span className="text-slate-500">Sắp xếp</span>
-        <select className="bg-transparent outline-none" onChange={(event) => setSort(event.target.value as T)} value={sort}>
+        <span className="text-slate-400">Sắp xếp</span>
+        <select className="bg-transparent text-slate-100 outline-none" onChange={(event) => setSort(event.target.value as T)} value={sort}>
           {sortOptions.map((item) => <option key={item} value={item}>{viSortLabel(item)}</option>)}
         </select>
       </label>
@@ -1164,18 +1151,18 @@ function TableControls<T extends string>({ query, setQuery, sort, setSort, sortO
 
 function SearchBox({ query, setQuery }: { query: string; setQuery: (value: string) => void }) {
   return (
-    <label className="inline-flex min-h-10 items-center gap-2 rounded-md border border-slate-300 bg-white px-3 py-2 text-sm shadow-sm focus-within:border-cyan-500">
+    <label className="inline-flex min-h-10 items-center gap-2 rounded-md border border-white/15 bg-[#111c2b] px-3 py-2 text-sm shadow-sm focus-within:border-cyan-300">
       <Search size={16} />
-      <input className="w-36 bg-transparent outline-none" onChange={(event) => setQuery(event.target.value)} placeholder="Tìm mã" value={query} />
+      <input className="w-36 bg-transparent text-slate-100 outline-none placeholder:text-slate-500" onChange={(event) => setQuery(event.target.value)} placeholder="Tìm mã" value={query} />
     </label>
   );
 }
 
 function Metric({ label, value, tone = "neutral" }: { label: string; value: string; tone?: "neutral" | "good" | "bad" }) {
-  const color = tone === "good" ? "text-emerald-700" : tone === "bad" ? "text-red-700" : "text-slate-950";
+  const color = tone === "good" ? "text-emerald-300" : tone === "bad" ? "text-red-300" : "text-slate-100";
   return (
-    <section className="rounded-lg border border-slate-200 bg-white p-3 shadow-sm transition hover:border-slate-300 md:p-4">
-      <p className="text-xs font-bold uppercase text-slate-500">{label}</p>
+    <section className="rounded-lg border border-white/10 bg-white/[0.03] p-3 shadow-sm transition hover:border-white/20 md:p-4">
+      <p className="text-xs font-bold uppercase text-slate-400">{label}</p>
       <strong className={`mt-2 block break-words text-xl leading-tight md:text-2xl ${color}`}>{value}</strong>
     </section>
   );
@@ -1183,9 +1170,9 @@ function Metric({ label, value, tone = "neutral" }: { label: string; value: stri
 
 function NumberField({ label, onChange, step = 1, value }: { label: string; onChange: (value: number) => void; step?: number; value: number }) {
   return (
-    <label className="grid gap-2 text-sm font-bold text-slate-600">
+    <label className="grid gap-2 text-sm font-bold text-slate-300">
       {label}
-      <input className="rounded-md border border-slate-300 px-3 py-2 font-normal text-slate-950 shadow-sm outline-none focus:border-cyan-500" onChange={(event) => onChange(Number(event.target.value))} step={step} type="number" value={value} />
+      <input className="rounded-md border border-white/15 bg-[#111c2b] px-3 py-2 font-normal text-slate-100 shadow-sm outline-none focus:border-cyan-300" onChange={(event) => onChange(Number(event.target.value))} step={step} type="number" value={value} />
     </label>
   );
 }
@@ -1197,12 +1184,12 @@ function StatusBadge({ value }: { value: WsState }) {
 
 function Pill({ label, tone, value }: { label: string; value: string; tone: "neutral" | "safe" | "danger" }) {
   const color = tone === "safe" ? "text-emerald-700" : tone === "danger" ? "text-red-700" : "text-slate-700";
-  return <span className="max-w-full truncate rounded-full border border-slate-300 bg-white px-3 py-1 text-xs font-bold"><span className="text-slate-400">{label}</span> <span className={color}>{value}</span></span>;
+  return <span className="max-w-full truncate rounded-full border border-white/15 bg-white/10 px-3 py-1 text-xs font-bold"><span className="text-slate-400">{label}</span> <span className={color}>{value}</span></span>;
 }
 
 function EquityChart({ values }: { values: number[] }) {
   if (!values.length) {
-    return <div className="grid h-64 place-items-center rounded-md bg-slate-50 text-sm text-slate-500">Chưa có lịch sử vốn từ backend.</div>;
+    return <div className="grid h-64 place-items-center rounded-md bg-white/[0.03] text-sm text-slate-400">Chưa có lịch sử vốn từ backend.</div>;
   }
   const max = Math.max(...values);
   const min = Math.min(...values);
@@ -1214,24 +1201,19 @@ function EquityChart({ values }: { values: number[] }) {
     })
     .join(" ");
   return (
-    <svg className="h-64 w-full rounded-md bg-slate-50" preserveAspectRatio="none" viewBox="0 0 100 100">
-      <polyline fill="none" points={points} stroke="#0f766e" strokeWidth="2" vectorEffect="non-scaling-stroke" />
-      {values.length === 1 && <line stroke="#0f766e" strokeWidth="2" vectorEffect="non-scaling-stroke" x1="0" x2="100" y1="50" y2="50" />}
+    <svg className="h-64 w-full rounded-md bg-white/[0.03]" preserveAspectRatio="none" viewBox="0 0 100 100">
+      <polyline fill="none" points={points} stroke="#67e8f9" strokeWidth="2" vectorEffect="non-scaling-stroke" />
+      {values.length === 1 && <line stroke="#67e8f9" strokeWidth="2" vectorEffect="non-scaling-stroke" x1="0" x2="100" y1="50" y2="50" />}
     </svg>
   );
 }
 
 function EmptyState({ message, title }: { title: string; message: string }) {
-  return <div className="rounded-md border border-dashed border-slate-300 bg-slate-50 p-8 text-center"><h3 className="font-bold">{title}</h3><p className="mt-2 text-sm text-slate-500">{message}</p></div>;
+  return <div className="rounded-md border border-dashed border-white/15 bg-white/[0.03] p-8 text-center"><h3 className="font-bold">{title}</h3><p className="mt-2 text-sm text-slate-400">{message}</p></div>;
 }
 
 function buildEquitySeries(performance: Performance | null) {
   return performance ? [performance.equity] : [];
-}
-
-function drawdown(performance: Performance | null) {
-  if (!performance || performance.balance <= 0) return 0;
-  return Math.max(0, ((performance.balance - performance.equity) / performance.balance) * 100);
 }
 
 function profitFactor(performance: Performance | null) {
@@ -1301,17 +1283,6 @@ function viWsState(value: WsState) {
   if (value === "LIVE") return "RT";
   if (value === "STALE") return "Chậm";
   return "Offline";
-}
-
-function viOrderType(value: string) {
-  const labels: Record<string, string> = {
-    MARKET: "Market",
-    LIMIT: "Limit",
-    STOP_MARKET: "Stop market",
-    TAKE_PROFIT_MARKET: "Take profit",
-    TRAILING_STOP_MARKET: "Trailing stop",
-  };
-  return labels[value] ?? value;
 }
 
 function viSortLabel(value: string) {

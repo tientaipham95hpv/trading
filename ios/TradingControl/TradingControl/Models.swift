@@ -202,6 +202,9 @@ public struct RuiRo: Codable, Equatable {
     public let maxLeverage: Int
     public let riskPerTrade: Double
     public let maxRiskPerTrade: Double
+    public let maxTotalOpenRisk: Double
+    public let maxMarginPerTrade: Double
+    public let maxTotalMargin: Double
     public let maxDailyLoss: Double
     public let maxWeeklyDrawdown: Double
     public let maxOpenPositions: Int
@@ -214,6 +217,9 @@ public struct RuiRo: Codable, Equatable {
         case maxLeverage = "max_leverage"
         case riskPerTrade = "risk_per_trade"
         case maxRiskPerTrade = "max_risk_per_trade"
+        case maxTotalOpenRisk = "max_total_open_risk"
+        case maxMarginPerTrade = "max_margin_per_trade"
+        case maxTotalMargin = "max_total_margin"
         case maxDailyLoss = "max_daily_loss"
         case maxWeeklyDrawdown = "max_weekly_drawdown"
         case maxOpenPositions = "max_open_positions"
@@ -434,6 +440,9 @@ public struct CaiDatBot: Codable, Equatable {
     public var maxLeverage: Int
     public var riskPerTrade: Double
     public var maxRiskPerTrade: Double
+    public var maxTotalOpenRisk: Double
+    public var maxMarginPerTrade: Double
+    public var maxTotalMargin: Double
     public var maxDailyLoss: Double
     public var maxWeeklyDrawdown: Double
     public var maxOpenPositions: Int
@@ -461,6 +470,9 @@ public struct CaiDatBot: Codable, Equatable {
         case maxLeverage = "max_leverage"
         case riskPerTrade = "risk_per_trade"
         case maxRiskPerTrade = "max_risk_per_trade"
+        case maxTotalOpenRisk = "max_total_open_risk"
+        case maxMarginPerTrade = "max_margin_per_trade"
+        case maxTotalMargin = "max_total_margin"
         case maxDailyLoss = "max_daily_loss"
         case maxWeeklyDrawdown = "max_weekly_drawdown"
         case maxOpenPositions = "max_open_positions"
