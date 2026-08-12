@@ -36,6 +36,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 
 import { api, wsUrl } from "./api";
 import type {
+  BacktestReport,
   BotSettings,
   Candle,
   DemoStability,
@@ -1525,6 +1526,7 @@ function Analytics({
       <Metric label="Tổng lệnh" value={String(performance?.total_trades ?? 0)} />
       <Metric label="Lệnh thắng" value={String(performance?.winning_trades ?? 0)} />
       <Metric label="Lệnh thua" value={String(performance?.losing_trades ?? 0)} />
+      <BacktestPanel />
       <section className="rounded-lg border border-white/10 bg-[#0d1724] p-4 md:col-span-3">
         <h3 className="mb-3 font-bold">Phân bổ kết quả lệnh</h3>
         <Table
@@ -1536,6 +1538,45 @@ function Analytics({
         />
       </section>
     </div>
+  );
+}
+
+function BacktestPanel() {
+  const [symbol, setSymbol] = useState("BTCUSDT");
+  const [interval, setInterval] = useState("15m");
+  const [candidateScore, setCandidateScore] = useState(75);
+  const [report, setReport] = useState<BacktestReport | null>(null);
+  const [running, setRunning] = useState(false);
+  const [message, setMessage] = useState("");
+  async function run() {
+    setRunning(true);
+    setMessage("");
+    try {
+      setReport(
+        await api.runBacktest({
+          symbol: symbol.toUpperCase(), interval, limit: 1000,
+          baseline: { name: "Baseline", min_score: 70, risk_fraction: 0.005, stop_atr_multiplier: 1.2, take_profit_r_multiples: [1, 1.8, 2.6], take_profit_fractions: [0.4, 0.3, 0.3] },
+          candidate: { name: "Candidate", min_score: candidateScore, risk_fraction: 0.005, stop_atr_multiplier: 1.2, take_profit_r_multiples: [1, 1.8, 2.6], take_profit_fractions: [0.4, 0.3, 0.3] },
+        }),
+      );
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Không chạy được backtest");
+    } finally { setRunning(false); }
+  }
+  const cards = report ? [report.baseline, report.candidate].filter((item): item is NonNullable<typeof item> => item !== null) : [];
+  return (
+    <section className="rounded-lg border border-white/10 bg-[#0d1724] p-4 md:col-span-3">
+      <div className="mb-4 flex flex-wrap items-end gap-3">
+        <div><label className="mb-1 block text-xs text-slate-400">Cặp</label><input className="rounded border border-white/10 bg-[#08111d] px-3 py-2" value={symbol} onChange={(event) => setSymbol(event.target.value)} /></div>
+        <div><label className="mb-1 block text-xs text-slate-400">Khung</label><select className="rounded border border-white/10 bg-[#08111d] px-3 py-2" value={interval} onChange={(event) => setInterval(event.target.value)}><option>5m</option><option>15m</option><option>1h</option><option>4h</option></select></div>
+        <div><label className="mb-1 block text-xs text-slate-400">Score Candidate</label><input className="w-28 rounded border border-white/10 bg-[#08111d] px-3 py-2" type="number" min={0} max={100} value={candidateScore} onChange={(event) => setCandidateScore(Number(event.target.value))} /></div>
+        <button className="rounded bg-cyan-500 px-4 py-2 font-bold text-slate-950 disabled:opacity-50" disabled={running} onClick={run} type="button">{running ? "Đang chạy…" : "Chạy so sánh"}</button>
+      </div>
+      <p className="mb-4 text-xs text-amber-300">Candidate chỉ dùng để thử nghiệm, không tự áp dụng vào DEMO/LIVE. Khớp ở nến kế tiếp và ưu tiên SL khi cùng nến chạm SL/TP.</p>
+      {message && <p className="text-sm text-red-300">{message}</p>}
+      {report && <div className="mb-3 text-xs text-slate-500">{report.symbol} · {report.interval} · {report.candle_count} nến · dữ liệu {report.dataset_fingerprint.slice(0, 12)}</div>}
+      <div className="grid gap-4 md:grid-cols-2">{cards.map((item) => <div className="rounded border border-white/10 p-4" key={item.config_fingerprint}><h4 className="mb-3 font-black">{item.config.name}</h4><div className="grid grid-cols-2 gap-2 text-sm"><span>PNL</span><b>{money(item.metrics.pnl)}</b><span>Profit Factor</span><b>{number(item.metrics.profit_factor)}</b><span>Max DD</span><b>{percent(item.max_drawdown_percent)}</b><span>Expectancy</span><b>{money(item.metrics.expectancy)}</b><span>Winrate</span><b>{percent(item.metrics.winrate * 100)}</b><span>Average R</span><b>{number(item.average_r)}</b><span>Sharpe / Sortino</span><b>{number(item.metrics.sharpe)} / {number(item.metrics.sortino)}</b><span>OOS trades</span><b>{item.metrics.out_of_sample_trades}</b></div></div>)}</div>
+    </section>
   );
 }
 

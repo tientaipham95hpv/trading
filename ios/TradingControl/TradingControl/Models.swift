@@ -571,3 +571,54 @@ public struct GoiRealtime<T: Codable>: Codable {
     public let data: T?
     public let items: [T]?
 }
+
+public struct BacktestMetrics: Codable, Equatable {
+    public let pnl: Double
+    public let profitFactor: Double
+    public let drawdown: Double
+    public let sharpe: Double
+    public let sortino: Double
+    public let expectancy: Double
+    public let winrate: Double
+    public let trades: Int
+    public let outOfSampleTrades: Int
+
+    enum CodingKeys: String, CodingKey {
+        case pnl, drawdown, sharpe, sortino, expectancy, winrate, trades
+        case profitFactor = "profit_factor"
+        case outOfSampleTrades = "out_of_sample_trades"
+    }
+}
+
+public struct BacktestConfig: Codable, Equatable {
+    public let name: String
+}
+
+public struct BacktestStrategyReport: Codable, Equatable {
+    public let config: BacktestConfig
+    public let metrics: BacktestMetrics
+    public let averageR: Double
+    public let maxDrawdownPercent: Double
+
+    enum CodingKeys: String, CodingKey {
+        case config, metrics
+        case averageR = "average_r"
+        case maxDrawdownPercent = "max_drawdown_percent"
+    }
+}
+
+public struct BacktestReport: Codable, Equatable {
+    public let id: String
+    public let symbol: String
+    public let interval: String
+    public let candleCount: Int
+    public let baseline: BacktestStrategyReport
+    public let candidate: BacktestStrategyReport?
+    public let candidateApplied: Bool
+
+    enum CodingKeys: String, CodingKey {
+        case id, symbol, interval, baseline, candidate
+        case candleCount = "candle_count"
+        case candidateApplied = "candidate_applied"
+    }
+}

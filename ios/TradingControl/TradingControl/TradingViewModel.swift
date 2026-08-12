@@ -9,6 +9,7 @@ public final class TradingViewModel: ObservableObject {
     @Published public private(set) var positions: [ViThe] = []
     @Published public private(set) var trades: [LenhDaChot] = []
     @Published public private(set) var performance: HieuSuat?
+    @Published public private(set) var latestBacktest: BacktestReport?
     @Published public private(set) var exchange: ExchangeSnapshot?
     @Published public private(set) var settings: CaiDatBot?
     @Published public private(set) var realtimeState: KetNoiRealtime = .offline
@@ -83,6 +84,7 @@ public final class TradingViewModel: ObservableObject {
             async let nextPerformance = api.performance()
             async let nextExchange = api.exchange()
             async let nextSettings = api.settings()
+            async let nextBacktest = try? api.latestBacktest()
 
             status = try await nextStatus
             markets = try await nextMarkets
@@ -92,6 +94,7 @@ public final class TradingViewModel: ObservableObject {
             performance = try await nextPerformance
             exchange = try await nextExchange
             settings = try await nextSettings
+            latestBacktest = await nextBacktest
             errorMessage = nil
         } catch {
             errorMessage = error.localizedDescription

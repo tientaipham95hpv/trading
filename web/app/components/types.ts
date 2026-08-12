@@ -253,6 +253,52 @@ export type Performance = {
   expectancy: number;
 };
 
+export type BacktestConfig = {
+  name: string;
+  min_score: number;
+  risk_fraction: number;
+  stop_atr_multiplier: number;
+  take_profit_r_multiples: number[];
+  take_profit_fractions: number[];
+};
+export type BacktestMetrics = {
+  pnl: number;
+  profit_factor: number;
+  drawdown: number;
+  sharpe: number;
+  sortino: number;
+  expectancy: number;
+  winrate: number;
+  trades: number;
+  fees: number;
+  slippage: number;
+  funding: number;
+  walk_forward_windows: number;
+  out_of_sample_trades: number;
+  no_lookahead_bias: boolean;
+};
+export type BacktestStrategyReport = {
+  config: BacktestConfig;
+  config_fingerprint: string;
+  metrics: BacktestMetrics;
+  average_r: number;
+  max_drawdown_percent: number;
+  segments: Array<{ name: string; metrics: BacktestMetrics; average_r: number; max_drawdown_percent: number }>;
+};
+export type BacktestReport = {
+  id: string;
+  symbol: string;
+  interval: string;
+  candle_count: number;
+  dataset_start: number;
+  dataset_end: number;
+  dataset_fingerprint: string;
+  execution_policy: string;
+  baseline: BacktestStrategyReport;
+  candidate: BacktestStrategyReport | null;
+  candidate_applied: false;
+};
+
 export type BotSettings = {
   whitelist: string[];
   blacklist: string[];

@@ -1,7 +1,7 @@
 from datetime import UTC, datetime
 from enum import StrEnum
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 
 class TradingMode(StrEnum):
@@ -485,6 +485,96 @@ class BacktestMetrics(BaseModel):
     walk_forward_windows: int = 0
     out_of_sample_trades: int = 0
     no_lookahead_bias: bool = True
+
+
+class BacktestStrategyConfig(BaseModel):
+    """Versioned experiment settings; never written to runtime settings."""
+
+    name: str = "Baseline"
+    min_score: int = Field(default=70, ge=0, le=100)
+    risk_fraction: float = Field(default=0.005, gt=0, le=0.01)
+    stop_atr_multiplier: float = Field(default=1.2, gt=0, le=10)
+    take_profit_r_multiples: list[float] = Field(default_factory=lambda: [1.0, 1.8, 2.6])
+    take_profit_fractions: list[float] = Field(default_factory=lambda: [0.4, 0.3, 0.3])
+
+
+class BacktestRunRequest(BaseModel):
+    symbol: str = Field(default="BTCUSDT", min_length=3, max_length=30)
+    interval: Timeframe = Timeframe.M15
+    limit: int = Field(default=1000, ge=250, le=1000)
+    initial_capital: float = Field(default=10_000, gt=0)
+    taker_fee_rate: float = Field(default=0.0005, ge=0, le=0.01)
+    slippage_bps: float = Field(default=2.0, ge=0, le=100)
+    funding_rate_per_8h: float = Field(default=0.0001, ge=-0.01, le=0.01)
+    train_fraction: float = Field(default=0.6, gt=0, lt=1)
+    validation_fraction: float = Field(default=0.2, gt=0, lt=1)
+    walk_forward_windows: int = Field(default=3, ge=1, le=20)
+    baseline: BacktestStrategyConfig = Field(default_factory=BacktestStrategyConfig)
+    candidate: BacktestStrategyConfig | None = None
+
+    @model_validator(mode="after")
+    def validate_splits(self) -> "BacktestRunRequest":
+        if self.train_fraction + self.validation_fraction >= 1:
+            raise ValueError("Train + Validation phải nhỏ hơn 1")
+        return self
+
+
+class BacktestPoint(BaseModel):
+    time: int
+    equity: float
+
+
+class BacktestTrade(BaseModel):
+    side: Side
+    signal_time: int
+    entry_time: int
+    exit_time: int
+    entry_price: float
+    exit_price: float
+    quantity: float
+    gross_pnl: float
+    fees: float
+    funding: float
+    slippage: float
+    net_pnl: float
+    r_multiple: float
+    reason: str
+
+
+class BacktestSegment(BaseModel):
+    name: str
+    start_time: int | None = None
+    end_time: int | None = None
+    metrics: BacktestMetrics
+    average_r: float = 0.0
+    max_drawdown_percent: float = 0.0
+
+
+class BacktestStrategyReport(BaseModel):
+    config: BacktestStrategyConfig
+    config_fingerprint: str
+    metrics: BacktestMetrics
+    average_r: float = 0.0
+    max_drawdown_percent: float = 0.0
+    segments: list[BacktestSegment] = Field(default_factory=list)
+    walk_forward: list[BacktestSegment] = Field(default_factory=list)
+    trades: list[BacktestTrade] = Field(default_factory=list)
+    equity_curve: list[BacktestPoint] = Field(default_factory=list)
+
+
+class BacktestRunReport(BaseModel):
+    id: str
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    symbol: str
+    interval: Timeframe
+    candle_count: int
+    dataset_start: int
+    dataset_end: int
+    dataset_fingerprint: str
+    execution_policy: str = "NEXT_OPEN_CONSERVATIVE"
+    baseline: BacktestStrategyReport
+    candidate: BacktestStrategyReport | None = None
+    candidate_applied: bool = False
 
 
 class NotificationPayload(BaseModel):

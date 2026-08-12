@@ -1,4 +1,5 @@
 import type {
+  BacktestReport,
   BotSettings,
   DemoStability,
   Candle,
@@ -44,6 +45,12 @@ export const api = {
   performance: () => request<Performance>("/api/performance"),
   exchange: () => request<ExchangeSnapshot>("/api/exchange"),
   settings: () => request<BotSettings>("/api/settings"),
+  runBacktest: (payload: object) =>
+    request<BacktestReport>("/api/backtests/run", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    }),
+  latestBacktest: () => request<BacktestReport>("/api/backtests/latest"),
   klines: (symbol: string, interval = "15m", limit = 180) =>
     request<{ symbol: string; interval: string; items: Candle[] }>(
       `/api/klines/${symbol}?interval=${interval}&limit=${limit}`,

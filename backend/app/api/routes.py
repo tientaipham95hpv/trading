@@ -5,6 +5,7 @@ from uuid import uuid4
 from fastapi import APIRouter, HTTPException, Query, WebSocket, WebSocketDisconnect
 
 from app.domain.models import (
+    BacktestRunRequest,
     BotSettings,
     BotState,
     LiveConfigUpdate,
@@ -280,6 +281,25 @@ async def performance() -> dict[str, object]:
 async def backtest() -> dict[str, object]:
     metrics = state.backtest.metrics(state.execution.trades)
     return metrics.model_dump(mode="json")
+
+
+@router.post("/backtests/run")
+async def run_backtest(request: BacktestRunRequest) -> dict[str, object]:
+    candles = await state.market_client.klines(
+        request.symbol.upper(), request.interval.value, limit=request.limit
+    )
+    try:
+        report = state.backtest.run(candles, request)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return report.model_dump(mode="json")
+
+
+@router.get("/backtests/latest")
+async def latest_backtest() -> dict[str, object]:
+    if state.backtest.latest is None:
+        raise HTTPException(status_code=404, detail="Chưa có kết quả backtest")
+    return state.backtest.latest.model_dump(mode="json")
 
 
 @router.post("/performance/reset")

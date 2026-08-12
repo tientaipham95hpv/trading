@@ -62,6 +62,7 @@ private struct HomeView: View {
                         OpenExchangePositionsPanel(model: model)
                         SignalHighlights(model: model)
                         SystemHealthPanel(model: model)
+                        LatestBacktestPanel(model: model)
                     }
                     .padding()
                 }
@@ -108,6 +109,37 @@ private struct AccountHero: View {
                 }
             }
         }
+    }
+}
+
+private struct LatestBacktestPanel: View {
+    @ObservedObject var model: TradingViewModel
+
+    var body: some View {
+        if let report = model.latestBacktest {
+            GlassPanel {
+                VStack(alignment: .leading, spacing: 12) {
+                    Text("Backtest gần nhất").font(.headline)
+                    Text("\(report.symbol) · \(report.interval) · \(report.candleCount) nến")
+                        .font(.caption).foregroundStyle(.secondary)
+                    HStack {
+                        result(report.baseline)
+                        if let candidate = report.candidate { result(candidate) }
+                    }
+                    Text("Candidate chỉ để so sánh, không tự áp dụng vào DEMO/LIVE.")
+                        .font(.caption2).foregroundStyle(.orange)
+                }
+            }
+        }
+    }
+
+    private func result(_ value: BacktestStrategyReport) -> some View {
+        VStack(alignment: .leading, spacing: 5) {
+            Text(value.config.name).font(.subheadline.bold())
+            Text("PNL \(money(value.metrics.pnl))")
+            Text("PF \(String(format: "%.2f", value.metrics.profitFactor)) · DD \(String(format: "%.2f%%", value.maxDrawdownPercent))")
+            Text("Avg R \(String(format: "%.2f", value.averageR)) · OOS \(value.metrics.outOfSampleTrades)")
+        }.font(.caption).frame(maxWidth: .infinity, alignment: .leading)
     }
 }
 
