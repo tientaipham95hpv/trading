@@ -339,6 +339,15 @@ class ExchangeConnectionState(StrEnum):
     SAFE_MODE = "SAFE_MODE"
 
 
+class ExchangePositionLifecycleState(StrEnum):
+    OPENING = "OPENING"
+    PROTECTED = "PROTECTED"
+    TP1_HIT = "TP1_HIT"
+    TP2_HIT = "TP2_HIT"
+    CLOSING = "CLOSING"
+    CLOSED = "CLOSED"
+
+
 class ExchangeBalance(BaseModel):
     asset: str = "USDT"
     balance: float = 0.0
@@ -375,6 +384,20 @@ class ExchangePosition(BaseModel):
     raw: dict[str, object] = Field(default_factory=dict)
 
 
+class ExchangePositionLifecycle(BaseModel):
+    symbol: str
+    group_id: str
+    state: ExchangePositionLifecycleState = ExchangePositionLifecycleState.OPENING
+    side: str | None = None
+    entry_price: float = 0.0
+    current_quantity: float = 0.0
+    initial_quantity: float = 0.0
+    remaining_take_profits: int = 0
+    active_stop: float | None = None
+    last_event_at: datetime | None = None
+    updated_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+
+
 class ExchangeSnapshot(BaseModel):
     mode: TradingMode = TradingMode.PAPER
     connection: ExchangeConnectionState = ExchangeConnectionState.DISCONNECTED
@@ -383,6 +406,7 @@ class ExchangeSnapshot(BaseModel):
     balance: ExchangeBalance = Field(default_factory=ExchangeBalance)
     orders: list[ExchangeOrder] = Field(default_factory=list)
     positions: list[ExchangePosition] = Field(default_factory=list)
+    lifecycles: list[ExchangePositionLifecycle] = Field(default_factory=list)
     last_reconciled_at: datetime | None = None
     last_user_stream_at: datetime | None = None
 

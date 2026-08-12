@@ -113,6 +113,9 @@ class UserStreamWatchdog:
         adapter.mark_user_stream_event(now)
         event_type = str(event.get("e") or "")
         if event_type in {"ACCOUNT_UPDATE", "ORDER_TRADE_UPDATE"}:
+            lifecycle_actions: list[dict[str, object]] = []
+            if event_type == "ORDER_TRADE_UPDATE" and hasattr(adapter, "handle_user_stream_event"):
+                lifecycle_actions = await adapter.handle_user_stream_event(event)
             await self.state.storage.log(
                 "User-stream event",
                 {
@@ -120,6 +123,7 @@ class UserStreamWatchdog:
                     "event": event_type,
                     "symbol": _event_symbol(event),
                     "order_status": _event_order_status(event),
+                    "lifecycle_actions": lifecycle_actions,
                 },
                 level="INFO",
             )

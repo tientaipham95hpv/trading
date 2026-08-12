@@ -15,6 +15,8 @@ from app.domain.models import (
     ExchangeExecutionResult,
     ExchangeOrder,
     ExchangePosition,
+    ExchangePositionLifecycle,
+    ExchangePositionLifecycleState,
     ExchangeSnapshot,
     OrderPlan,
     OrderType,
@@ -83,6 +85,7 @@ class BinanceFuturesAdapter(ExchangeAdapter):
         self.snapshot_cache = ExchangeSnapshot(mode=mode)
         self._symbol_filters: dict[str, dict[str, Decimal]] = {}
         self._submitted_plans_by_symbol: dict[str, OrderPlan] = {}
+        self._lifecycles_by_symbol: dict[str, ExchangePositionLifecycle] = {}
         self._time_offset_ms = 0
         self._last_time_sync_ms = 0
 
@@ -105,6 +108,16 @@ class BinanceFuturesAdapter(ExchangeAdapter):
             raise ExchangeError(f"Duplicate client order id: {plan.client_order_id}")
         self._submitted_client_ids.add(plan.client_order_id)
         self._submitted_plans_by_symbol[plan.symbol] = plan
+        self._lifecycles_by_symbol[plan.symbol] = ExchangePositionLifecycle(
+            symbol=plan.symbol,
+            group_id=plan.client_order_id,
+            state=ExchangePositionLifecycleState.OPENING,
+            side=plan.side.value,
+            entry_price=plan.entry_price,
+            current_quantity=plan.quantity,
+            initial_quantity=plan.quantity,
+            remaining_take_profits=len(plan.take_profits),
+        )
 
         await self.change_margin_type(plan.symbol, plan.margin_type.value)
         await self.change_leverage(plan.symbol, plan.leverage)
@@ -179,6 +192,7 @@ class BinanceFuturesAdapter(ExchangeAdapter):
         balance = await self.balance()
         orders = await self.open_orders()
         positions = await self.positions()
+        lifecycles = self._sync_lifecycles_from_snapshot(positions, orders)
         self.snapshot_cache = ExchangeSnapshot(
             mode=self.mode,
             connection=ExchangeConnectionState.CONNECTED,
@@ -187,6 +201,7 @@ class BinanceFuturesAdapter(ExchangeAdapter):
             balance=balance,
             orders=orders,
             positions=positions,
+            lifecycles=lifecycles,
             last_reconciled_at=self.snapshot_cache.last_reconciled_at,
             last_user_stream_at=self.snapshot_cache.last_user_stream_at,
         )
@@ -261,18 +276,26 @@ class BinanceFuturesAdapter(ExchangeAdapter):
 
         for position in snapshot.positions:
             orders = orders_by_symbol.get(position.symbol, [])
+            group_id = self._managed_group_id(position.symbol, orders)
+            if group_id is None:
+                self._set_lifecycle_state(position, orders, ExchangePositionLifecycleState.PROTECTED)
+                continue
+            managed_orders = [
+                order for order in orders if self._order_group_id(order.client_order_id) == group_id
+            ]
             stop_orders = [
                 order
-                for order in orders
+                for order in managed_orders
                 if order.stop_price
                 and "STOP" in order.order_type
                 and "TAKE_PROFIT" not in order.order_type
             ]
             take_profit_orders = [
                 order
-                for order in orders
+                for order in managed_orders
                 if order.stop_price and "TAKE_PROFIT" in order.order_type
             ]
+            self._sync_lifecycle(position, managed_orders, group_id=group_id)
             target = self._managed_stop_target(position, take_profit_orders)
             if target is None:
                 continue
@@ -280,8 +303,7 @@ class BinanceFuturesAdapter(ExchangeAdapter):
             if not self._stop_improves(position, current, target):
                 continue
             client_id = _client_order_id(
-                self.mode.value.lower(),
-                position.symbol,
+                group_id,
                 "be" if self._remaining_tp_count(take_profit_orders) >= 2 else "lock",
                 int(time.time() * 1000),
             )
@@ -302,6 +324,8 @@ class BinanceFuturesAdapter(ExchangeAdapter):
                     await self.cancel_algo_order(position.symbol, old_stop.client_order_id, old_stop.order_id)
             action = {
                 "symbol": position.symbol,
+                "group_id": group_id,
+                "lifecycle_state": self._lifecycle_state_for(position, take_profit_orders).value,
                 "side": position.side,
                 "old_stop": current,
                 "new_stop": target,
@@ -311,6 +335,35 @@ class BinanceFuturesAdapter(ExchangeAdapter):
             }
             actions.append(action)
         return actions
+
+    async def handle_user_stream_event(self, event: dict[str, Any]) -> list[dict[str, object]]:
+        order = event.get("o")
+        if not isinstance(order, dict):
+            return []
+        symbol = str(order.get("s") or "")
+        client_order_id = str(order.get("c") or "")
+        status = str(order.get("X") or "")
+        if not symbol or not self._is_bot_order_id(client_order_id):
+            return []
+
+        group_id = self._order_group_id(client_order_id)
+        lifecycle = self._lifecycles_by_symbol.get(symbol) or ExchangePositionLifecycle(
+            symbol=symbol,
+            group_id=group_id,
+        )
+        lifecycle.group_id = group_id
+        lifecycle.last_event_at = datetime.now(UTC)
+        lifecycle.updated_at = lifecycle.last_event_at
+        if status == "FILLED" and "-tp-0" in client_order_id:
+            lifecycle.state = ExchangePositionLifecycleState.TP1_HIT
+        elif status == "FILLED" and "-tp-" in client_order_id:
+            lifecycle.state = ExchangePositionLifecycleState.TP2_HIT
+        elif status == "FILLED" and ("-sl-" in client_order_id or "-close" in client_order_id):
+            lifecycle.state = ExchangePositionLifecycleState.CLOSING
+        self._lifecycles_by_symbol[symbol] = lifecycle
+        if status in {"FILLED", "PARTIALLY_FILLED"} and ("-tp-" in client_order_id or "-sl-" in client_order_id):
+            return await self.manage_open_position_stops()
+        return []
 
     async def keepalive_user_stream(self) -> None:
         if self._listen_key:
@@ -569,6 +622,109 @@ class BinanceFuturesAdapter(ExchangeAdapter):
         orders = await self.open_orders(symbol)
         return any(order.client_order_id == client_id and order.order_type == "STOP_MARKET" for order in orders)
 
+    def _sync_lifecycles_from_snapshot(
+        self,
+        positions: list[ExchangePosition],
+        orders: list[ExchangeOrder],
+    ) -> list[ExchangePositionLifecycle]:
+        orders_by_symbol: dict[str, list[ExchangeOrder]] = {}
+        for order in orders:
+            orders_by_symbol.setdefault(order.symbol, []).append(order)
+
+        live_symbols = {position.symbol for position in positions}
+        for symbol in list(self._lifecycles_by_symbol):
+            if symbol not in live_symbols and symbol not in orders_by_symbol:
+                lifecycle = self._lifecycles_by_symbol[symbol]
+                lifecycle.state = ExchangePositionLifecycleState.CLOSED
+                lifecycle.current_quantity = 0.0
+                lifecycle.remaining_take_profits = 0
+                lifecycle.updated_at = datetime.now(UTC)
+
+        for position in positions:
+            symbol_orders = orders_by_symbol.get(position.symbol, [])
+            group_id = self._managed_group_id(position.symbol, symbol_orders)
+            if group_id is None:
+                continue
+            self._sync_lifecycle(position, symbol_orders, group_id=group_id)
+        return list(self._lifecycles_by_symbol.values())
+
+    def _sync_lifecycle(
+        self,
+        position: ExchangePosition,
+        orders: list[ExchangeOrder],
+        *,
+        group_id: str,
+    ) -> ExchangePositionLifecycle:
+        managed_orders = [
+            order for order in orders if self._order_group_id(order.client_order_id) == group_id
+        ]
+        take_profit_orders = [
+            order for order in managed_orders if order.stop_price and "TAKE_PROFIT" in order.order_type
+        ]
+        stop_orders = [
+            order
+            for order in managed_orders
+            if order.stop_price and "STOP" in order.order_type and "TAKE_PROFIT" not in order.order_type
+        ]
+        lifecycle = self._lifecycles_by_symbol.get(position.symbol) or ExchangePositionLifecycle(
+            symbol=position.symbol,
+            group_id=group_id,
+            initial_quantity=position.quantity,
+        )
+        lifecycle.group_id = group_id
+        lifecycle.side = position.side
+        lifecycle.entry_price = position.entry_price
+        lifecycle.current_quantity = position.quantity
+        lifecycle.initial_quantity = max(lifecycle.initial_quantity, position.quantity)
+        lifecycle.remaining_take_profits = self._remaining_tp_count(take_profit_orders)
+        lifecycle.active_stop = self._active_stop_price(position, stop_orders)
+        lifecycle.state = self._lifecycle_state_for(position, take_profit_orders)
+        lifecycle.updated_at = datetime.now(UTC)
+        self._lifecycles_by_symbol[position.symbol] = lifecycle
+        return lifecycle
+
+    def _set_lifecycle_state(
+        self,
+        position: ExchangePosition,
+        orders: list[ExchangeOrder],
+        state: ExchangePositionLifecycleState,
+    ) -> None:
+        group_id = self._managed_group_id(position.symbol, orders)
+        if group_id is None:
+            return
+        lifecycle = self._sync_lifecycle(position, orders, group_id=group_id)
+        lifecycle.state = state
+        lifecycle.updated_at = datetime.now(UTC)
+
+    def _lifecycle_state_for(
+        self,
+        position: ExchangePosition,
+        take_profit_orders: list[ExchangeOrder],
+    ) -> ExchangePositionLifecycleState:
+        remaining = self._remaining_tp_count(take_profit_orders)
+        if position.quantity <= 0:
+            return ExchangePositionLifecycleState.CLOSED
+        if remaining >= 3:
+            return ExchangePositionLifecycleState.PROTECTED
+        if remaining == 2:
+            return ExchangePositionLifecycleState.TP1_HIT
+        if remaining <= 1:
+            return ExchangePositionLifecycleState.TP2_HIT
+        return ExchangePositionLifecycleState.PROTECTED
+
+    def _managed_group_id(self, symbol: str, orders: list[ExchangeOrder]) -> str | None:
+        plan = self._submitted_plans_by_symbol.get(symbol)
+        if plan:
+            return plan.client_order_id
+        group_ids = [
+            self._order_group_id(order.client_order_id)
+            for order in orders
+            if self._is_bot_order_id(order.client_order_id)
+        ]
+        if not group_ids:
+            return None
+        return max(set(group_ids), key=group_ids.count)
+
     def _managed_stop_target(
         self,
         position: ExchangePosition,
@@ -731,6 +887,17 @@ class BinanceFuturesAdapter(ExchangeAdapter):
         if index == 1:
             return quantity * 0.3
         return quantity * 0.3 / max(total - 2, 1)
+
+    @staticmethod
+    def _is_bot_order_id(client_order_id: str) -> bool:
+        return client_order_id.startswith(("a-demo-", "a-live-", "demo-", "live-"))
+
+    @staticmethod
+    def _order_group_id(client_order_id: str) -> str:
+        for marker in ("-tp-", "-sl-", "-be-", "-lock-", "-close"):
+            if marker in client_order_id:
+                return client_order_id.split(marker, 1)[0]
+        return client_order_id
 
 
 def _format_number(value: float) -> str:

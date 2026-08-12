@@ -87,6 +87,19 @@ export type ExchangeSnapshot = {
     leverage: number | null;
     margin_type: string | null;
   }>;
+  lifecycles?: Array<{
+    symbol: string;
+    group_id: string;
+    state: "OPENING" | "PROTECTED" | "TP1_HIT" | "TP2_HIT" | "CLOSING" | "CLOSED";
+    side: string | null;
+    entry_price: number;
+    current_quantity: number;
+    initial_quantity: number;
+    remaining_take_profits: number;
+    active_stop: number | null;
+    last_event_at: string | null;
+    updated_at: string;
+  }>;
   last_reconciled_at: string | null;
   last_user_stream_at: string | null;
 };

@@ -250,6 +250,157 @@ async def test_manage_stops_moves_to_break_even_after_tp1_missing():
     )
 
 
+async def test_manage_stops_only_touches_bot_owned_order_group():
+    adapter = FakeBinanceAdapter()
+    adapter.position_risk = [
+        {
+            "symbol": "BTCUSDT",
+            "positionAmt": "0.006",
+            "entryPrice": "100",
+            "markPrice": "107",
+            "unRealizedProfit": "0.042",
+            "liquidationPrice": "80",
+            "leverage": "5",
+            "marginType": "isolated",
+        }
+    ]
+    adapter.open_algo_orders = [
+        {
+            "symbol": "BTCUSDT",
+            "algoId": 1,
+            "clientAlgoId": "manual-stop",
+            "side": "SELL",
+            "orderType": "STOP_MARKET",
+            "algoStatus": "NEW",
+            "quantity": "0",
+            "actualQty": "0",
+            "reduceOnly": False,
+            "triggerPrice": "96",
+        },
+        {
+            "symbol": "BTCUSDT",
+            "algoId": 2,
+            "clientAlgoId": "demo-BTCUSDT-1-sl-0",
+            "side": "SELL",
+            "orderType": "STOP_MARKET",
+            "algoStatus": "NEW",
+            "quantity": "0",
+            "actualQty": "0",
+            "reduceOnly": False,
+            "triggerPrice": "95",
+        },
+        {
+            "symbol": "BTCUSDT",
+            "algoId": 3,
+            "clientAlgoId": "demo-BTCUSDT-1-tp-1",
+            "side": "SELL",
+            "orderType": "TAKE_PROFIT_MARKET",
+            "algoStatus": "NEW",
+            "quantity": "0.003",
+            "actualQty": "0",
+            "reduceOnly": True,
+            "triggerPrice": "110",
+        },
+        {
+            "symbol": "BTCUSDT",
+            "algoId": 4,
+            "clientAlgoId": "demo-BTCUSDT-1-tp-2",
+            "side": "SELL",
+            "orderType": "TAKE_PROFIT_MARKET",
+            "algoStatus": "NEW",
+            "quantity": "0.003",
+            "actualQty": "0",
+            "reduceOnly": True,
+            "triggerPrice": "115",
+        },
+    ]
+
+    actions = await adapter.manage_open_position_stops()
+
+    assert actions[0]["group_id"] == "demo-BTCUSDT-1"
+    assert not any(
+        path == "/fapi/v1/algoOrder"
+        and method == "DELETE"
+        and params.get("clientAlgoId") == "manual-stop"
+        for method, path, params in adapter.calls
+    )
+
+
+async def test_user_stream_tp_fill_triggers_lifecycle_stop_management():
+    adapter = FakeBinanceAdapter()
+    adapter.position_risk = [
+        {
+            "symbol": "BTCUSDT",
+            "positionAmt": "0.006",
+            "entryPrice": "100",
+            "markPrice": "107",
+            "unRealizedProfit": "0.042",
+            "liquidationPrice": "80",
+            "leverage": "5",
+            "marginType": "isolated",
+        }
+    ]
+    adapter.open_algo_orders = [
+        {
+            "symbol": "BTCUSDT",
+            "algoId": 1,
+            "clientAlgoId": "demo-BTCUSDT-1-sl-0",
+            "side": "SELL",
+            "orderType": "STOP_MARKET",
+            "algoStatus": "NEW",
+            "quantity": "0",
+            "actualQty": "0",
+            "reduceOnly": False,
+            "triggerPrice": "95",
+        },
+        {
+            "symbol": "BTCUSDT",
+            "algoId": 2,
+            "clientAlgoId": "demo-BTCUSDT-1-tp-1",
+            "side": "SELL",
+            "orderType": "TAKE_PROFIT_MARKET",
+            "algoStatus": "NEW",
+            "quantity": "0.003",
+            "actualQty": "0",
+            "reduceOnly": True,
+            "triggerPrice": "110",
+        },
+        {
+            "symbol": "BTCUSDT",
+            "algoId": 3,
+            "clientAlgoId": "demo-BTCUSDT-1-tp-2",
+            "side": "SELL",
+            "orderType": "TAKE_PROFIT_MARKET",
+            "algoStatus": "NEW",
+            "quantity": "0.003",
+            "actualQty": "0",
+            "reduceOnly": True,
+            "triggerPrice": "115",
+        },
+    ]
+    state = type("State", (), {"trading_mode": adapter.mode, "storage": FakeStorage()})()
+    watchdog = UserStreamWatchdog(state)
+
+    await watchdog._handle_event(
+        adapter,
+        {
+            "e": "ORDER_TRADE_UPDATE",
+            "o": {"s": "BTCUSDT", "c": "demo-BTCUSDT-1-tp-0", "X": "FILLED"},
+        },
+    )
+
+    lifecycle = adapter.snapshot_cache.lifecycles[0]
+    assert lifecycle.group_id == "demo-BTCUSDT-1"
+    assert lifecycle.state == "TP1_HIT"
+    assert any(
+        path == "/fapi/v1/algoOrder"
+        and method == "POST"
+        and params.get("type") == "STOP_MARKET"
+        and params.get("triggerPrice") == "100"
+        for method, path, params in adapter.calls
+    )
+
+
 async def test_user_stream_event_marks_adapter_and_snapshot():
     adapter = FakeBinanceAdapter()
     state = type("State", (), {"trading_mode": adapter.mode, "storage": FakeStorage()})()
