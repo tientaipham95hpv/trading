@@ -2,10 +2,15 @@ import pytest
 
 from app.domain.models import (
     EmergencyStopState,
+    ExchangeOrder,
+    ExchangePosition,
+    ExchangeSnapshot,
     Side,
     StrategySignal,
     TradeRecord,
+    TradingMode,
 )
+from app.services.auto_trader import AutoTrader
 from app.services.backtest import BacktestService
 from app.services.risk_engine import RiskEngine
 
@@ -103,3 +108,75 @@ def test_backtest_metrics_include_required_costs_and_ratios():
     assert metrics.walk_forward_windows == 2
     assert metrics.out_of_sample_trades == 1
     assert metrics.no_lookahead_bias is True
+
+
+def test_exchange_watchdog_treats_open_orders_as_busy_symbols():
+    snapshot = ExchangeSnapshot(
+        mode=TradingMode.DEMO,
+        positions=[
+            ExchangePosition(
+                symbol="BTCUSDT",
+                side="LONG",
+                quantity=1,
+                entry_price=100,
+                mark_price=101,
+            )
+        ],
+        orders=[
+            ExchangeOrder(
+                symbol="UNIUSDT",
+                order_id=1,
+                client_order_id="orphan",
+                side="SELL",
+                order_type="STOP_MARKET",
+                status="NEW",
+                stop_price=95,
+            )
+        ],
+    )
+
+    assert AutoTrader._busy_exchange_symbols(snapshot) == {"BTCUSDT", "UNIUSDT"}
+
+
+def test_exchange_watchdog_detects_position_without_protective_stop():
+    snapshot = ExchangeSnapshot(
+        mode=TradingMode.DEMO,
+        positions=[
+            ExchangePosition(
+                symbol="BTCUSDT",
+                side="LONG",
+                quantity=1,
+                entry_price=100,
+                mark_price=101,
+            ),
+            ExchangePosition(
+                symbol="ETHUSDT",
+                side="SHORT",
+                quantity=1,
+                entry_price=100,
+                mark_price=99,
+            ),
+        ],
+        orders=[
+            ExchangeOrder(
+                symbol="BTCUSDT",
+                order_id=1,
+                client_order_id="sl",
+                side="SELL",
+                order_type="STOP_MARKET",
+                status="NEW",
+                stop_price=98,
+            ),
+            ExchangeOrder(
+                symbol="ETHUSDT",
+                order_id=2,
+                client_order_id="wrong",
+                side="SELL",
+                order_type="STOP_MARKET",
+                status="NEW",
+                stop_price=95,
+            ),
+        ],
+    )
+
+    assert AutoTrader._unprotected_exchange_positions(snapshot) == ["ETHUSDT"]

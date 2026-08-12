@@ -99,17 +99,21 @@ class AutoTrader:
             except (ExchangeCredentialsError, ExchangeError) as exc:
                 self.rejected += 1
                 return await self._skip("BLOCKED", f"Exchange snapshot lỗi: {exc}")
-            open_position_count = len(snapshot.positions)
-            active_symbols = {position.symbol for position in snapshot.positions}
-            portfolio_exposure_fraction = self._exchange_portfolio_exposure_fraction(snapshot)
-            if snapshot.orders and not snapshot.positions:
-                symbols = sorted({order.symbol for order in snapshot.orders})
-                for symbol in symbols:
-                    await adapter.cancel_all_orders(symbol)
-                return await self._skip(
-                    "CLEANED_ORPHAN_ORDERS",
-                    f"Đã hủy {len(snapshot.orders)} order mồ côi, không có vị thế mở",
+            snapshot = await self._clean_exchange_orphans(adapter, snapshot)
+            unprotected_symbols = self._unprotected_exchange_positions(snapshot)
+            if unprotected_symbols:
+                reason = f"SAFE_MODE: vị thế không có SL bảo vệ: {', '.join(unprotected_symbols)}"
+                self.state.enter_safe_mode(reason)
+                await self.state.storage.log(
+                    "Auto-trader protection watchdog entered safe mode",
+                    {"mode": self.state.trading_mode.value, "symbols": unprotected_symbols},
+                    level="CRITICAL",
                 )
+                return await self._skip("BLOCKED", reason)
+
+            open_position_count = len(snapshot.positions)
+            active_symbols = self._busy_exchange_symbols(snapshot)
+            portfolio_exposure_fraction = self._exchange_portfolio_exposure_fraction(snapshot)
             stop_actions = await adapter.manage_open_position_stops()
             if stop_actions:
                 await self.state.storage.log(
@@ -289,6 +293,59 @@ class AutoTrader:
         self.last_reason = reason
         await self.state.storage.log("Auto-trader skip", {"status": status, "reason": reason}, level="INFO")
         return self.snapshot()
+
+    async def _clean_exchange_orphans(self, adapter: Any, snapshot: Any) -> Any:
+        position_symbols = {position.symbol for position in snapshot.positions}
+        order_symbols = {order.symbol for order in snapshot.orders}
+        orphan_symbols = sorted(order_symbols - position_symbols)
+        if not orphan_symbols:
+            return snapshot
+
+        canceled = 0
+        for symbol in orphan_symbols:
+            canceled += len(await adapter.cancel_all_orders(symbol))
+        await self.state.storage.log(
+            "Auto-trader cleaned orphan exchange orders",
+            {
+                "mode": self.state.trading_mode.value,
+                "symbols": orphan_symbols,
+                "canceled_symbols": canceled,
+            },
+            level="WARNING",
+        )
+        refreshed = await adapter.snapshot()
+        await self._skip(
+            "CLEANED_ORPHAN_ORDERS",
+            f"Đã hủy order mồ côi cho {', '.join(orphan_symbols)} trước khi quét lệnh mới",
+        )
+        return refreshed
+
+    @staticmethod
+    def _busy_exchange_symbols(snapshot: Any) -> set[str]:
+        return {position.symbol for position in snapshot.positions} | {order.symbol for order in snapshot.orders}
+
+    @staticmethod
+    def _unprotected_exchange_positions(snapshot: Any) -> list[str]:
+        stop_orders_by_symbol: dict[str, list[Any]] = {}
+        for order in snapshot.orders:
+            if not order.stop_price or "STOP" not in order.order_type or "TAKE_PROFIT" in order.order_type:
+                continue
+            stop_orders_by_symbol.setdefault(order.symbol, []).append(order)
+
+        unprotected: list[str] = []
+        for position in snapshot.positions:
+            stops = stop_orders_by_symbol.get(position.symbol, [])
+            if not stops:
+                unprotected.append(position.symbol)
+                continue
+            mark = position.mark_price or position.entry_price
+            if position.side == "LONG":
+                protects = any(order.side == "SELL" and (order.stop_price or 0) < mark for order in stops)
+            else:
+                protects = any(order.side == "BUY" and (order.stop_price or 0) > mark for order in stops)
+            if not protects:
+                unprotected.append(position.symbol)
+        return sorted(set(unprotected))
 
     def _live_allowed(self) -> bool:
         return self.state.live_trading_enabled and all(self.state.live_preflight.values())
