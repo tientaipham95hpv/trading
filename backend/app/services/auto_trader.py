@@ -99,7 +99,12 @@ class AutoTrader:
             except (ExchangeCredentialsError, ExchangeError) as exc:
                 self.rejected += 1
                 return await self._skip("BLOCKED", f"Exchange snapshot lỗi: {exc}")
-            snapshot = await self._clean_exchange_orphans(adapter, snapshot)
+            snapshot, orphan_symbols = await self._clean_exchange_orphans(adapter, snapshot)
+            if orphan_symbols:
+                return await self._skip(
+                    "CLEANED_ORPHAN_ORDERS",
+                    f"Đã hủy order mồ côi cho {', '.join(orphan_symbols)}; chờ chu kỳ sau mới xét lệnh mới",
+                )
             unprotected_symbols = self._unprotected_exchange_positions(snapshot)
             if unprotected_symbols:
                 reason = f"SAFE_MODE: vị thế không có SL bảo vệ: {', '.join(unprotected_symbols)}"
@@ -294,12 +299,12 @@ class AutoTrader:
         await self.state.storage.log("Auto-trader skip", {"status": status, "reason": reason}, level="INFO")
         return self.snapshot()
 
-    async def _clean_exchange_orphans(self, adapter: Any, snapshot: Any) -> Any:
+    async def _clean_exchange_orphans(self, adapter: Any, snapshot: Any) -> tuple[Any, list[str]]:
         position_symbols = {position.symbol for position in snapshot.positions}
         order_symbols = {order.symbol for order in snapshot.orders}
         orphan_symbols = sorted(order_symbols - position_symbols)
         if not orphan_symbols:
-            return snapshot
+            return snapshot, []
 
         canceled = 0
         for symbol in orphan_symbols:
@@ -313,12 +318,7 @@ class AutoTrader:
             },
             level="WARNING",
         )
-        refreshed = await adapter.snapshot()
-        await self._skip(
-            "CLEANED_ORPHAN_ORDERS",
-            f"Đã hủy order mồ côi cho {', '.join(orphan_symbols)} trước khi quét lệnh mới",
-        )
-        return refreshed
+        return await adapter.snapshot(), orphan_symbols
 
     @staticmethod
     def _busy_exchange_symbols(snapshot: Any) -> set[str]:
