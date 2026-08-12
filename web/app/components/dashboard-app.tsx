@@ -839,7 +839,6 @@ function Risk({ onDone, status }: { onDone: () => Promise<void>; status: StatusP
         <Metric label="Correlation tối đa" value={String(risk?.max_correlated_positions ?? "-")} />
         <Metric label="Loss streak" value={String(risk?.max_loss_streak ?? "-")} />
         <Metric label="RR tối thiểu" value={number(risk?.minimum_risk_reward)} />
-        <Metric label="AI evaluator" value={status?.ai?.enabled ? (status.ai.provider_configured ? `ON ${status.ai.model ?? ""}` : "ON thiếu key") : "OFF"} />
       </div>
       <DataPanel title="LIVE preflight">
         <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">

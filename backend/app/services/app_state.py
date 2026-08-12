@@ -4,8 +4,6 @@ from pathlib import Path
 
 from app.core.settings import Settings
 from app.domain.models import BotSettings, BotState, EmergencyStopState, TradingMode
-from app.services.ai_evaluator import AiEvaluator
-from app.services.ai_openai_provider import OpenAiSignalEvaluator
 from app.services.auto_trader import AutoTrader
 from app.services.backtest import BacktestService
 from app.services.binance_client import BinanceMarketDataClient
@@ -71,21 +69,6 @@ class AppState:
         self.market_client = BinanceMarketDataClient(settings.binance_base_url)
         self.scanner = FuturesScanner(self.market_client, bot_settings)
         self.execution = ExecutionService(bot_settings)
-        ai_provider = (
-            OpenAiSignalEvaluator(
-                api_key=settings.openai_api_key,
-                model=settings.openai_model,
-                base_url=settings.openai_base_url,
-                timeout_seconds=settings.ai_evaluator_timeout_seconds,
-            )
-            if settings.openai_api_key
-            else None
-        )
-        self.ai = AiEvaluator(
-            enabled=settings.ai_evaluator_enabled,
-            timeout_seconds=settings.ai_evaluator_timeout_seconds,
-            provider=ai_provider.evaluate if ai_provider else None,
-        )
         self.backtest = BacktestService()
         self.notifications = NotificationService()
         self.position_sizer = PositionSizer()

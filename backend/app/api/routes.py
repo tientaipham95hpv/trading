@@ -48,11 +48,6 @@ async def status() -> dict[str, object]:
             "max_loss_streak": state.bot_settings.max_loss_streak,
             "minimum_risk_reward": state.bot_settings.minimum_risk_reward,
         },
-        "ai": {
-            "enabled": state.ai.enabled,
-            "provider_configured": state.ai.provider is not None,
-            "model": state.settings.openai_model if state.ai.provider is not None else None,
-        },
         "live_readiness": _live_readiness().model_dump(mode="json"),
         "auto_trader": state.auto_trader.snapshot(),
         "performance_reset_at": state.performance_reset_at.isoformat() if state.performance_reset_at else None,
@@ -120,9 +115,6 @@ async def paper_from_signal(symbol: str) -> dict[str, object]:
     signal = state.scanner.signal_from_result(result)
     if signal is None:
         raise HTTPException(status_code=400, detail="Signal không hợp lệ")
-    signal = await state.ai.score(signal)
-    if signal.metadata.get("ai_action") == "NO_TRADE":
-        return {"accepted": False, "reason": "AI trả NO_TRADE hoặc timeout"}
     decision = state.risk.evaluate(
         signal,
         open_positions=len(state.execution.open_positions()),

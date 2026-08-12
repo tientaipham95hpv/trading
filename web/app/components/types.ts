@@ -25,11 +25,6 @@ export type StatusPayload = {
     max_loss_streak: number;
     minimum_risk_reward: number;
   };
-  ai?: {
-    enabled: boolean;
-    provider_configured: boolean;
-    model: string | null;
-  };
   live_readiness: {
     live_enabled: boolean;
     all_tests_pass: boolean;

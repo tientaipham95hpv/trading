@@ -34,11 +34,6 @@ class Settings(BaseSettings):
     stale_data_seconds: int = Field(default=180, ge=10, le=3600)
     minimum_risk_reward: float = Field(default=1.8, ge=1)
     default_margin_type: str = "ISOLATED"
-    ai_evaluator_enabled: bool = False
-    openai_api_key: str = ""
-    openai_model: str = "gpt-5.6-terra"
-    openai_base_url: str = "https://api.openai.com/v1"
-    ai_evaluator_timeout_seconds: float = Field(default=3.0, gt=0, le=30)
     live_preflight_all_tests_pass: bool = False
     live_preflight_demo_stable: bool = False
     live_preflight_sl_protection_pass: bool = False

@@ -151,11 +151,6 @@ class AutoTrader:
             signal = self.state.scanner.signal_from_result(result)
             if signal is None:
                 continue
-            signal = await self.state.ai.score(signal)
-            if signal.metadata.get("ai_action") == "NO_TRADE":
-                self.rejected += 1
-                await self.state.storage.log("Auto-trader AI skip", {"symbol": result.symbol}, level="INFO")
-                continue
             correlated_positions = self._correlated_positions(signal.symbol, snapshot=snapshot)
             selected_leverage = self._select_leverage(signal, result)
             selected_risk_fraction = self._risk_fraction_for_candidate(result, correlated_positions=correlated_positions)

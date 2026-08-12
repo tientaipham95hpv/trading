@@ -1,16 +1,11 @@
-import asyncio
-
 import pytest
 
 from app.domain.models import (
-    AiDecision,
     EmergencyStopState,
     Side,
-    SignalAction,
     StrategySignal,
     TradeRecord,
 )
-from app.services.ai_evaluator import AiEvaluator
 from app.services.backtest import BacktestService
 from app.services.risk_engine import RiskEngine
 
@@ -29,44 +24,6 @@ def make_signal(**overrides):
     }
     data.update(overrides)
     return StrategySignal(**data)
-
-
-async def test_ai_timeout_returns_no_trade_only():
-    async def slow_provider(signal: StrategySignal) -> AiDecision:
-        await asyncio.sleep(0.05)
-        return AiDecision(action=SignalAction.LONG, confidence=0.9, strategy=signal.strategy)
-
-    decision = await AiEvaluator(enabled=True, timeout_seconds=0.001, provider=slow_provider).decide(make_signal())
-
-    assert decision.action == SignalAction.NO_TRADE
-    assert "AI_TIMEOUT" in decision.risk_flags
-
-
-async def test_ai_enabled_without_provider_fails_closed():
-    decision = await AiEvaluator(enabled=True).decide(make_signal())
-
-    assert decision.action == SignalAction.NO_TRADE
-    assert "AI_PROVIDER_MISSING" in decision.risk_flags
-
-
-async def test_ai_provider_error_fails_closed():
-    async def broken_provider(signal: StrategySignal) -> AiDecision:
-        raise RuntimeError("boom")
-
-    decision = await AiEvaluator(enabled=True, provider=broken_provider).decide(make_signal())
-
-    assert decision.action == SignalAction.NO_TRADE
-    assert "AI_ERROR" in decision.risk_flags
-
-
-async def test_ai_cannot_flip_scanner_side():
-    async def flip_provider(signal: StrategySignal) -> AiDecision:
-        return AiDecision(action=SignalAction.SHORT, confidence=0.9, strategy=signal.strategy)
-
-    decision = await AiEvaluator(enabled=True, provider=flip_provider).decide(make_signal(side=Side.LONG))
-
-    assert decision.action == SignalAction.NO_TRADE
-    assert "AI_SIDE_FLIP_BLOCKED" in decision.risk_flags
 
 
 def test_risk_rejects_weekly_drawdown_correlation_and_stale_data():
