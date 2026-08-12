@@ -36,6 +36,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 
 import { api, wsUrl } from "./api";
 import type {
+  BacktestOptimizerReport,
   BacktestReport,
   BotSettings,
   Candle,
@@ -1546,7 +1547,9 @@ function BacktestPanel() {
   const [interval, setInterval] = useState("15m");
   const [candidateScore, setCandidateScore] = useState(75);
   const [report, setReport] = useState<BacktestReport | null>(null);
+  const [optimizer, setOptimizer] = useState<BacktestOptimizerReport | null>(null);
   const [running, setRunning] = useState(false);
+  const [optimizing, setOptimizing] = useState(false);
   const [message, setMessage] = useState("");
   async function run() {
     setRunning(true);
@@ -1563,6 +1566,22 @@ function BacktestPanel() {
       setMessage(error instanceof Error ? error.message : "Không chạy được backtest");
     } finally { setRunning(false); }
   }
+  async function optimize() {
+    setOptimizing(true);
+    setMessage("");
+    try {
+      setOptimizer(await api.optimizeBacktest({
+        run: { symbol: symbol.toUpperCase(), interval, limit: 1000 },
+        min_scores: [65, 70, 75],
+        stop_atr_multipliers: [1, 1.2],
+        risk_fractions: [0.003],
+        minimum_oos_trades: 2,
+        max_candidates: 6,
+      }));
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Không chạy được optimizer");
+    } finally { setOptimizing(false); }
+  }
   const cards = report ? [report.baseline, report.candidate].filter((item): item is NonNullable<typeof item> => item !== null) : [];
   return (
     <section className="rounded-lg border border-white/10 bg-[#0d1724] p-4 md:col-span-3">
@@ -1571,11 +1590,13 @@ function BacktestPanel() {
         <div><label className="mb-1 block text-xs text-slate-400">Khung</label><select className="rounded border border-white/10 bg-[#08111d] px-3 py-2" value={interval} onChange={(event) => setInterval(event.target.value)}><option>5m</option><option>15m</option><option>1h</option><option>4h</option></select></div>
         <div><label className="mb-1 block text-xs text-slate-400">Score Candidate</label><input className="w-28 rounded border border-white/10 bg-[#08111d] px-3 py-2" type="number" min={0} max={100} value={candidateScore} onChange={(event) => setCandidateScore(Number(event.target.value))} /></div>
         <button className="rounded bg-cyan-500 px-4 py-2 font-bold text-slate-950 disabled:opacity-50" disabled={running} onClick={run} type="button">{running ? "Đang chạy…" : "Chạy so sánh"}</button>
+        <button className="rounded border border-cyan-400 px-4 py-2 font-bold text-cyan-300 disabled:opacity-50" disabled={optimizing || running} onClick={optimize} type="button">{optimizing ? "Đang tối ưu…" : "Tối ưu có giới hạn"}</button>
       </div>
       <p className="mb-4 text-xs text-amber-300">Candidate chỉ dùng để thử nghiệm, không tự áp dụng vào DEMO/LIVE. Khớp ở nến kế tiếp và ưu tiên SL khi cùng nến chạm SL/TP.</p>
       {message && <p className="text-sm text-red-300">{message}</p>}
       {report && <div className="mb-3 text-xs text-slate-500">{report.symbol} · {report.interval} · {report.candle_count} nến · dữ liệu {report.dataset_fingerprint.slice(0, 12)}</div>}
       <div className="grid gap-4 md:grid-cols-2">{cards.map((item) => <div className="rounded border border-white/10 p-4" key={item.config_fingerprint}><h4 className="mb-3 font-black">{item.config.name}</h4><div className="grid grid-cols-2 gap-2 text-sm"><span>PNL</span><b>{money(item.metrics.pnl)}</b><span>Profit Factor</span><b>{number(item.metrics.profit_factor)}</b><span>Max DD</span><b>{percent(item.max_drawdown_percent)}</b><span>Expectancy</span><b>{money(item.metrics.expectancy)}</b><span>Winrate</span><b>{percent(item.metrics.winrate * 100)}</b><span>Average R</span><b>{number(item.average_r)}</b><span>Sharpe / Sortino</span><b>{number(item.metrics.sharpe)} / {number(item.metrics.sortino)}</b><span>OOS trades</span><b>{item.metrics.out_of_sample_trades}</b></div></div>)}</div>
+      {optimizer && <div className="mt-5 rounded border border-cyan-400/20 bg-cyan-950/10 p-4"><div className="mb-3 flex flex-wrap justify-between gap-2"><h4 className="font-black">Xếp hạng Candidate theo Validation/OOS</h4><span className="text-xs text-slate-400">{optimizer.eligible_candidates}/{optimizer.evaluated_candidates} đủ điều kiện · dữ liệu {optimizer.dataset_fingerprint.slice(0, 12)}</span></div><p className="mb-3 text-xs text-amber-300">Chỉ đọc: kết quả không thể tự thay đổi Baseline, DEMO hoặc LIVE.</p><div className="overflow-x-auto"><table className="w-full min-w-[760px] text-left text-sm"><thead className="text-xs text-slate-400"><tr><th className="py-2">Hạng</th><th>Candidate</th><th>Điểm ổn định</th><th>Validation PNL</th><th>OOS PNL / lệnh</th><th>Walk-forward</th><th>Đánh giá</th></tr></thead><tbody>{optimizer.candidates.map((item) => { const validation = item.report.segments.find((segment) => segment.name === "VALIDATION"); const oos = item.report.segments.find((segment) => segment.name === "OUT_OF_SAMPLE"); return <tr className="border-t border-white/10" key={item.report.config_fingerprint}><td className="py-3 font-black">#{item.rank}</td><td>{item.report.config.name}</td><td>{number(item.score)}</td><td>{money(validation?.metrics.pnl)}</td><td>{money(oos?.metrics.pnl)} / {oos?.metrics.trades ?? 0}</td><td>{percent(item.profitable_walk_forward_ratio * 100)}</td><td className={item.eligible ? "text-emerald-300" : "text-red-300"}>{item.eligible ? "Đủ điều kiện nghiên cứu tiếp" : item.rejection_reasons.join("; ")}</td></tr>; })}</tbody></table></div></div>}
     </section>
   );
 }

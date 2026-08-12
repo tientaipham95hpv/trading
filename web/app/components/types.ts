@@ -299,6 +299,27 @@ export type BacktestReport = {
   candidate_applied: false;
 };
 
+export type BacktestOptimizerCandidate = {
+  rank: number;
+  score: number;
+  eligible: boolean;
+  rejection_reasons: string[];
+  profitable_walk_forward_ratio: number;
+  report: BacktestStrategyReport;
+};
+export type BacktestOptimizerReport = {
+  id: string;
+  symbol: string;
+  interval: string;
+  dataset_fingerprint: string;
+  evaluated_candidates: number;
+  eligible_candidates: number;
+  minimum_oos_trades: number;
+  selection_policy: string;
+  candidates: BacktestOptimizerCandidate[];
+  candidate_applied: false;
+};
+
 export type BotSettings = {
   whitelist: string[];
   blacklist: string[];

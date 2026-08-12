@@ -501,7 +501,7 @@ class BacktestStrategyConfig(BaseModel):
 class BacktestRunRequest(BaseModel):
     symbol: str = Field(default="BTCUSDT", min_length=3, max_length=30)
     interval: Timeframe = Timeframe.M15
-    limit: int = Field(default=1000, ge=250, le=1000)
+    limit: int = Field(default=1000, ge=250, le=5000)
     initial_capital: float = Field(default=10_000, gt=0)
     taker_fee_rate: float = Field(default=0.0005, ge=0, le=0.01)
     slippage_bps: float = Field(default=2.0, ge=0, le=100)

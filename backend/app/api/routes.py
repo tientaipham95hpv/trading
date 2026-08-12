@@ -286,7 +286,7 @@ async def backtest() -> dict[str, object]:
 
 @router.post("/backtests/run")
 async def run_backtest(request: BacktestRunRequest) -> dict[str, object]:
-    candles = await state.market_client.klines(
+    candles = await state.market_client.historical_klines(
         request.symbol.upper(), request.interval.value, limit=request.limit
     )
     try:
@@ -305,7 +305,7 @@ async def latest_backtest() -> dict[str, object]:
 
 @router.post("/backtests/optimize")
 async def optimize_backtest(request: BacktestOptimizerRequest) -> dict[str, object]:
-    candles = await state.market_client.klines(
+    candles = await state.market_client.historical_klines(
         request.run.symbol.upper(), request.run.interval.value, limit=request.run.limit
     )
     try:

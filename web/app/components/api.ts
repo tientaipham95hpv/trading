@@ -1,4 +1,5 @@
 import type {
+  BacktestOptimizerReport,
   BacktestReport,
   BotSettings,
   DemoStability,
@@ -51,6 +52,13 @@ export const api = {
       body: JSON.stringify(payload),
     }),
   latestBacktest: () => request<BacktestReport>("/api/backtests/latest"),
+  optimizeBacktest: (payload: object) =>
+    request<BacktestOptimizerReport>("/api/backtests/optimize", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    }),
+  latestBacktestOptimizer: () =>
+    request<BacktestOptimizerReport>("/api/backtests/optimizer/latest"),
   klines: (symbol: string, interval = "15m", limit = 180) =>
     request<{ symbol: string; interval: string; items: Candle[] }>(
       `/api/klines/${symbol}?interval=${interval}&limit=${limit}`,

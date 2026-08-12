@@ -28,6 +28,13 @@ from app.services.indicators import calculate_indicators
 from app.services.scanner import detect_regime, score_market
 
 
+@dataclass(frozen=True)
+class _SignalFeature:
+    long_score: int
+    short_score: int
+    regime: MarketRegime
+    atr: float
+
 @dataclass
 class _Position:
     side: Side
@@ -63,6 +70,7 @@ class BacktestService:
                 separators=(",", ":"),
             ).encode()
         ).hexdigest()
+        features = self._precompute_features(ordered)
         report = BacktestRunReport(
             id=str(uuid4()),
             symbol=request.symbol.upper(),
@@ -71,9 +79,11 @@ class BacktestService:
             dataset_start=ordered[0].open_time,
             dataset_end=ordered[-1].close_time,
             dataset_fingerprint=dataset_hash,
-            baseline=self._simulate(ordered, request, request.baseline),
+            baseline=self._simulate(ordered, request, request.baseline, features),
             candidate=(
-                self._simulate(ordered, request, request.candidate) if request.candidate else None
+                self._simulate(ordered, request, request.candidate, features)
+                if request.candidate
+                else None
             ),
             candidate_applied=False,
         )
@@ -94,6 +104,7 @@ class BacktestService:
         ).hexdigest()
         scored: list[tuple[float, bool, list[str], float, BacktestStrategyReport]] = []
         baseline = request.run.baseline
+        features = self._precompute_features(ordered)
         for min_score, stop_atr, risk in product(
             sorted(set(request.min_scores)),
             sorted(set(request.stop_atr_multipliers)),
@@ -107,7 +118,7 @@ class BacktestService:
                     "risk_fraction": risk,
                 }
             )
-            report = self._simulate(ordered, request.run, config)
+            report = self._simulate(ordered, request.run, config, features)
             validation = next(item for item in report.segments if item.name == "VALIDATION")
             oos = next(item for item in report.segments if item.name == "OUT_OF_SAMPLE")
             profitable_windows = sum(item.metrics.pnl > 0 for item in report.walk_forward)
@@ -160,8 +171,27 @@ class BacktestService:
         self.latest_optimizer = result
         return result
 
+    def _precompute_features(self, candles: list[Candle]) -> dict[int, _SignalFeature]:
+        features: dict[int, _SignalFeature] = {}
+        for index in range(210, len(candles) - 1):
+            history = candles[: index + 1]
+            indicators = calculate_indicators(history)
+            regime = detect_regime(history, indicators)
+            long_score, short_score, _ = score_market(history, indicators, regime)
+            features[index] = _SignalFeature(
+                long_score=long_score,
+                short_score=short_score,
+                regime=regime,
+                atr=indicators.atr or candles[index].close * 0.01,
+            )
+        return features
+
     def _simulate(
-        self, candles: list[Candle], request: BacktestRunRequest, config: BacktestStrategyConfig
+        self,
+        candles: list[Candle],
+        request: BacktestRunRequest,
+        config: BacktestStrategyConfig,
+        features: dict[int, _SignalFeature] | None = None,
     ) -> BacktestStrategyReport:
         if len(config.take_profit_r_multiples) != len(config.take_profit_fractions):
             raise ValueError("Số mốc TP và tỷ lệ chốt lời phải bằng nhau")
@@ -209,17 +239,16 @@ class BacktestService:
                     curve.append(BacktestPoint(time=closed.exit_time, equity=equity))
                     position = None
             if position is None and pending is None and index < len(candles) - 1:
-                history = candles[: index + 1]
-                indicators = calculate_indicators(history)
-                regime = detect_regime(history, indicators)
-                long_score, short_score, _ = score_market(history, indicators, regime)
+                feature = (features or self._precompute_features(candles))[index]
+                regime = feature.regime
+                long_score, short_score = feature.long_score, feature.short_score
                 action = SignalAction.NO_TRADE
                 if long_score >= config.min_score and long_score > short_score:
                     action = SignalAction.LONG
                 elif short_score >= config.min_score and short_score > long_score:
                     action = SignalAction.SHORT
                 if action != SignalAction.NO_TRADE and regime != MarketRegime.PANIC:
-                    atr = indicators.atr or candle.close * 0.01
+                    atr = feature.atr
                     distance = max(atr * config.stop_atr_multiplier, candle.close * 0.004)
                     pending = (Side(action.value), candle.close_time, distance)
         if position:
