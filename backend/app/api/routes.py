@@ -117,6 +117,24 @@ async def signals(limit: int = Query(default=100, ge=1, le=500)) -> dict[str, ob
     return {"items": await state.storage.list_payloads("signals", limit)}
 
 
+@router.get("/smart-entry")
+async def smart_entry(limit: int = Query(default=100, ge=1, le=500)) -> dict[str, object]:
+    items = await state.storage.smart_entry_events(mode=state.trading_mode.value, limit=limit)
+    counts = {"WOULD_ENTER": 0, "WOULD_SKIP": 0}
+    for item in items:
+        decision = str(item.get("decision"))
+        if decision in counts:
+            counts[decision] += 1
+    return {
+        "mode": state.trading_mode.value,
+        "shadow_only": True,
+        "read_only": True,
+        "items": items,
+        "summary": {"total": len(items), **counts},
+        "note": "Smart Entry chỉ quan sát; không thay đổi Baseline hoặc gửi lệnh.",
+    }
+
+
 @router.post("/signals/{symbol}/paper")
 async def paper_from_signal(symbol: str) -> dict[str, object]:
     result = next(

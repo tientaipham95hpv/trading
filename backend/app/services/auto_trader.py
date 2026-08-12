@@ -16,6 +16,7 @@ from app.domain.models import (
     TradingMode,
 )
 from app.services.exchange import ExchangeCredentialsError, ExchangeError
+from app.services.smart_entry import SmartEntryAnalytics
 
 
 class AutoTrader:
@@ -185,6 +186,9 @@ class AutoTrader:
             await self.state.storage.save_signal(result.model_dump(mode="json"))
 
         candidates = [item for item in results if item.action != SignalAction.NO_TRADE]
+        for result in candidates:
+            evidence = SmartEntryAnalytics.evaluate(result, mode=self.state.trading_mode.value)
+            await self.state.storage.save_smart_entry_event(evidence)
         if not candidates:
             return await self._skip("NO_SIGNAL", "Scanner chưa có tín hiệu đủ điểm")
 

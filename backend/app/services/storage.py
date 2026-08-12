@@ -121,6 +121,20 @@ class LifecycleAnalyticsEventRow(Base):
     )
 
 
+class SmartEntryEventRow(Base):
+    __tablename__ = "smart_entry_events"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    event_key: Mapped[str] = mapped_column(String(160), unique=True, index=True)
+    mode: Mapped[str] = mapped_column(String(16), index=True)
+    symbol: Mapped[str] = mapped_column(String(32), index=True)
+    decision: Mapped[str] = mapped_column(String(32), index=True)
+    payload: Mapped[dict[str, Any]] = mapped_column(JSON)
+    decision_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(UTC), index=True
+    )
+
+
 class IncidentRow(Base):
     __tablename__ = "incidents"
 
@@ -238,6 +252,61 @@ class Storage:
             rows = (
                 await session.execute(
                     query.order_by(LifecycleAnalyticsEventRow.event_at.desc()).limit(limit)
+                )
+            ).scalars()
+            return [row.payload for row in rows]
+
+    async def save_smart_entry_event(self, payload: dict[str, Any]) -> bool:
+        """Persist immutable shadow evidence without feeding strategy behavior."""
+        async with self.session_factory() as session:
+            exists = (
+                await session.execute(
+                    select(SmartEntryEventRow.id).where(
+                        SmartEntryEventRow.event_key == payload["event_key"]
+                    )
+                )
+            ).scalar_one_or_none()
+            if exists is not None:
+                return False
+            decision_at = payload.get("decision_at")
+            if isinstance(decision_at, str):
+                decision_at = datetime.fromisoformat(decision_at)
+            session.add(
+                SmartEntryEventRow(
+                    event_key=str(payload["event_key"]),
+                    mode=str(payload["mode"]),
+                    symbol=str(payload["symbol"]),
+                    decision=str(payload["decision"]),
+                    payload=payload,
+                    decision_at=decision_at or datetime.now(UTC),
+                )
+            )
+            await session.flush()
+            excess = (
+                await session.execute(select(func.count()).select_from(SmartEntryEventRow))
+            ).scalar_one() - 10_000
+            if excess > 0:
+                oldest = (
+                    select(SmartEntryEventRow.id)
+                    .order_by(SmartEntryEventRow.id.asc())
+                    .limit(excess)
+                )
+                await session.execute(
+                    delete(SmartEntryEventRow).where(SmartEntryEventRow.id.in_(oldest))
+                )
+            await session.commit()
+            return True
+
+    async def smart_entry_events(
+        self, *, mode: str | None = None, limit: int = 100
+    ) -> list[dict[str, Any]]:
+        async with self.session_factory() as session:
+            query = select(SmartEntryEventRow)
+            if mode:
+                query = query.where(SmartEntryEventRow.mode == mode)
+            rows = (
+                await session.execute(
+                    query.order_by(SmartEntryEventRow.decision_at.desc()).limit(limit)
                 )
             ).scalars()
             return [row.payload for row in rows]

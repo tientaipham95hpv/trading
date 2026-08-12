@@ -43,6 +43,7 @@ import type {
   DemoStability,
   ExchangeSnapshot,
   ExitAnalytics,
+  SmartEntryPayload,
   LogItem,
   Market,
   Performance,
@@ -91,6 +92,7 @@ export function DashboardApp({ page }: { page: PageKey }) {
   const [logs, setLogs] = useState<LogItem[]>([]);
   const [performance, setPerformance] = useState<Performance | null>(null);
   const [exitAnalytics, setExitAnalytics] = useState<ExitAnalytics | null>(null);
+  const [smartEntry, setSmartEntry] = useState<SmartEntryPayload | null>(null);
   const [settings, setSettings] = useState<BotSettings | null>(null);
   const [exchange, setExchange] = useState<ExchangeSnapshot | null>(null);
   const [wsState, setWsState] = useState<WsState>("OFFLINE");
@@ -112,6 +114,7 @@ export function DashboardApp({ page }: { page: PageKey }) {
         nextTrades,
         nextPerformance,
         nextExitAnalytics,
+        nextSmartEntry,
         nextExchange,
         nextSettings,
         nextLogs,
@@ -125,6 +128,7 @@ export function DashboardApp({ page }: { page: PageKey }) {
         api.trades(),
         api.performance(),
         api.exitAnalytics(),
+        api.smartEntry(),
         api.exchange(),
         api.settings(),
         api.logs(),
@@ -138,6 +142,7 @@ export function DashboardApp({ page }: { page: PageKey }) {
       setTrades(nextTrades.items);
       setPerformance(nextPerformance);
       setExitAnalytics(nextExitAnalytics);
+      setSmartEntry(nextSmartEntry);
       setExchange(nextExchange);
       setSettings(nextSettings);
       setLogs(nextLogs.items);
@@ -380,6 +385,7 @@ export function DashboardApp({ page }: { page: PageKey }) {
           {page === "analytics" && (
             <Analytics
               exitAnalytics={exitAnalytics}
+              smartEntry={smartEntry}
               performance={performance}
               trades={trades}
             />
@@ -1515,10 +1521,12 @@ function InfoPair({ label, value }: { label: string; value: string }) {
 
 function Analytics({
   exitAnalytics,
+  smartEntry,
   performance,
   trades,
 }: {
   exitAnalytics: ExitAnalytics | null;
+  smartEntry: SmartEntryPayload | null;
   performance: Performance | null;
   trades: Trade[];
 }) {
@@ -1545,6 +1553,7 @@ function Analytics({
       <Metric label="Lệnh thua" value={String(performance?.losing_trades ?? 0)} />
       <BacktestPanel />
       <ExitAnalyticsPanel analytics={exitAnalytics} />
+      <SmartEntryPanel analytics={smartEntry} />
       <section className="rounded-lg border border-white/10 bg-[#0d1724] p-4 md:col-span-3">
         <h3 className="mb-3 font-bold">Phân bổ kết quả lệnh</h3>
         <Table
@@ -1693,6 +1702,13 @@ function BacktestPanel() {
       {optimizer && <div className="mt-5 rounded border border-cyan-400/20 bg-cyan-950/10 p-4"><div className="mb-3 flex flex-wrap justify-between gap-2"><h4 className="font-black">Xếp hạng Candidate theo Validation/OOS</h4><span className="text-xs text-slate-400">{optimizer.eligible_candidates}/{optimizer.evaluated_candidates} đủ điều kiện · dữ liệu {optimizer.dataset_fingerprint.slice(0, 12)}</span></div><p className="mb-3 text-xs text-amber-300">Chỉ đọc: kết quả không thể tự thay đổi Baseline, DEMO hoặc LIVE.</p><div className="overflow-x-auto"><table className="w-full min-w-[760px] text-left text-sm"><thead className="text-xs text-slate-400"><tr><th className="py-2">Hạng</th><th>Candidate</th><th>Điểm ổn định</th><th>Validation PNL</th><th>OOS PNL / lệnh</th><th>Walk-forward</th><th>Đánh giá</th></tr></thead><tbody>{optimizer.candidates.map((item) => { const validation = item.report.segments.find((segment) => segment.name === "VALIDATION"); const oos = item.report.segments.find((segment) => segment.name === "OUT_OF_SAMPLE"); return <tr className="border-t border-white/10" key={item.report.config_fingerprint}><td className="py-3 font-black">#{item.rank}</td><td>{item.report.config.name}</td><td>{number(item.score)}</td><td>{money(validation?.metrics.pnl)}</td><td>{money(oos?.metrics.pnl)} / {oos?.metrics.trades ?? 0}</td><td>{percent(item.profitable_walk_forward_ratio * 100)}</td><td className={item.eligible ? "text-emerald-300" : "text-red-300"}>{item.eligible ? "Đủ điều kiện nghiên cứu tiếp" : item.rejection_reasons.join("; ")}</td></tr>; })}</tbody></table></div></div>}
     </section>
   );
+}
+
+function SmartEntryPanel({ analytics }: { analytics: SmartEntryPayload | null }) {
+  return <section className="rounded-2xl border border-white/10 bg-slate-950/70 p-5"><h3 className="text-lg font-black">Smart Entry Analytics · Shadow only</h3><p className="mb-4 text-sm text-slate-400">Quan sát candidate từ nến đóng; không thay đổi Baseline hoặc gửi lệnh.</p>
+    <div className="grid gap-3 md:grid-cols-3"><Metric label="Tổng evidence" value={number(analytics?.summary.total ?? 0)} /><Metric label="WOULD ENTER" value={number(analytics?.summary.WOULD_ENTER ?? 0)} /><Metric label="WOULD SKIP" value={number(analytics?.summary.WOULD_SKIP ?? 0)} /></div>
+    <div className="mt-4 grid gap-2">{(analytics?.items ?? []).slice(0, 15).map((item) => <div className="rounded border border-white/10 bg-white/[0.02] p-3" key={item.event_key}><div className="flex flex-wrap justify-between gap-2"><b>{item.symbol} · {item.side} · {item.timeframe}</b><span className={item.decision === "WOULD_ENTER" ? "text-emerald-300" : "text-amber-300"}>{item.decision}</span></div><p className="mt-1 text-xs text-slate-400">Điểm {item.quality_score}/100 · Entry {number(item.entry_price)} · R:R {item.risk_reward === null ? "chưa xác minh" : number(item.risk_reward)} · {new Date(item.decision_at).toLocaleString("vi-VN")}</p>{item.reasons.length > 0 && <p className="mt-2 text-sm text-amber-300">{item.reasons.join("; ")}</p>}<p className="mt-1 text-xs text-slate-500">Outcome 4/12/24 nến: đang chờ đủ nến đóng, không backfill bằng dữ liệu chưa xác minh.</p></div>)}{(analytics?.items.length ?? 0) === 0 && <p className="text-sm text-slate-500">Chưa có candidate shadow được ghi nhận.</p>}</div>
+  </section>;
 }
 
 function Risk({

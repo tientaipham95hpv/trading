@@ -14,6 +14,7 @@ import type {
   Trade,
   ExchangeSnapshot,
   ExitAnalytics,
+  SmartEntryPayload,
 } from "./types";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL || "";
@@ -48,6 +49,7 @@ export const api = {
   logs: () => request<{ items: LogItem[] }>("/api/logs"),
   performance: () => request<Performance>("/api/performance"),
   exitAnalytics: () => request<ExitAnalytics>("/api/exit-analytics"),
+  smartEntry: () => request<SmartEntryPayload>("/api/smart-entry"),
   exchange: () => request<ExchangeSnapshot>("/api/exchange"),
   settings: () => request<BotSettings>("/api/settings"),
   runBacktest: (payload: object) =>
