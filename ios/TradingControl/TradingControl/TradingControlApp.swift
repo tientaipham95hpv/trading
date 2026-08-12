@@ -560,12 +560,14 @@ private struct CoinChartView: View {
                             }
                             Spacer()
                             Picker("Khung", selection: $interval) {
+                                Text("1m").tag("1m")
+                                Text("5m").tag("5m")
                                 Text("15m").tag("15m")
                                 Text("1h").tag("1h")
                                 Text("4h").tag("4h")
                             }
                             .pickerStyle(.segmented)
-                            .frame(maxWidth: 180)
+                            .frame(maxWidth: 280)
                         }
                     }
                     GlassPanel {
@@ -616,34 +618,57 @@ private struct CoinChartView: View {
 private struct PriceChart: View {
     let candles: [NenGia]
 
+    private let visibleCandleCount = 80
+    private let chartPadding: CGFloat = 8
+
     var body: some View {
         Canvas { context, size in
-            guard candles.count > 1 else { return }
-            let closes = candles.map(\.close)
-            guard let minPrice = closes.min(), let maxPrice = closes.max(), maxPrice > minPrice else { return }
-            let points = candles.enumerated().map { index, candle in
-                let x = size.width * CGFloat(index) / CGFloat(max(candles.count - 1, 1))
-                let y = size.height - (CGFloat((candle.close - minPrice) / (maxPrice - minPrice)) * size.height)
-                return CGPoint(x: x, y: y)
-            }
-            var path = Path()
-            path.move(to: points[0])
-            for point in points.dropFirst() {
-                path.addLine(to: point)
-            }
-            let up = (candles.last?.close ?? 0) >= (candles.first?.close ?? 0)
-            context.stroke(path, with: .color(up ? .green : .red), lineWidth: 2.5)
+            let visibleCandles = Array(candles.suffix(visibleCandleCount))
+            guard !visibleCandles.isEmpty else { return }
+            guard let minLow = visibleCandles.map(\.low).min(),
+                  let maxHigh = visibleCandles.map(\.high).max()
+            else { return }
 
-            var fill = path
-            fill.addLine(to: CGPoint(x: size.width, y: size.height))
-            fill.addLine(to: CGPoint(x: 0, y: size.height))
-            fill.closeSubpath()
-            context.fill(fill, with: .linearGradient(
-                Gradient(colors: [(up ? Color.green : Color.red).opacity(0.28), .clear]),
-                startPoint: CGPoint(x: size.width / 2, y: 0),
-                endPoint: CGPoint(x: size.width / 2, y: size.height)
-            ))
+            let priceRange = max(maxHigh - minLow, max(abs(maxHigh) * 0.0001, 0.000_000_01))
+            let drawingHeight = max(size.height - chartPadding * 2, 1)
+            let slotWidth = size.width / CGFloat(visibleCandles.count)
+            let bodyWidth = max(min(slotWidth * 0.68, 9), 1)
+
+            func yPosition(_ price: Double) -> CGFloat {
+                chartPadding + CGFloat((maxHigh - price) / priceRange) * drawingHeight
+            }
+
+            for line in 0 ... 4 {
+                let y = chartPadding + drawingHeight * CGFloat(line) / 4
+                var grid = Path()
+                grid.move(to: CGPoint(x: 0, y: y))
+                grid.addLine(to: CGPoint(x: size.width, y: y))
+                context.stroke(grid, with: .color(.white.opacity(0.08)), lineWidth: 0.5)
+            }
+
+            for (index, candle) in visibleCandles.enumerated() {
+                let centerX = slotWidth * (CGFloat(index) + 0.5)
+                let color: Color = candle.close >= candle.open ? .green : .red
+
+                var wick = Path()
+                wick.move(to: CGPoint(x: centerX, y: yPosition(candle.high)))
+                wick.addLine(to: CGPoint(x: centerX, y: yPosition(candle.low)))
+                context.stroke(wick, with: .color(color), lineWidth: 1)
+
+                let openY = yPosition(candle.open)
+                let closeY = yPosition(candle.close)
+                let bodyTop = min(openY, closeY)
+                let bodyHeight = max(abs(closeY - openY), 1)
+                let body = CGRect(
+                    x: centerX - bodyWidth / 2,
+                    y: bodyTop,
+                    width: bodyWidth,
+                    height: bodyHeight
+                )
+                context.fill(Path(body), with: .color(color))
+            }
         }
+        .accessibilityLabel("Biểu đồ nến giá")
         .background(.white.opacity(0.04), in: RoundedRectangle(cornerRadius: 8))
     }
 }
