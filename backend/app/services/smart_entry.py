@@ -166,3 +166,68 @@ class SmartEntryOutcomeAnalytics:
             expected = expected_open + index * interval_ms
             if candle.open_time != expected or candle.close_time >= expected + interval_ms:
                 raise ValueError("Chuỗi nến outcome không liên tục hoặc chứa nến chưa đóng")
+
+
+class SmartEntryPerformanceReport:
+    """Deterministic descriptive report; never recommends or changes thresholds."""
+
+    MIN_SAMPLE = 30
+
+    @classmethod
+    def build(cls, items: list[dict[str, Any]]) -> dict[str, Any]:
+        from statistics import median
+
+        rows = []
+        for item in items:
+            for outcome in item.get("outcomes", {}).values():
+                if outcome is not None:
+                    rows.append({**outcome, "quality_score": item["quality_score"]})
+
+        def metrics(group: list[dict[str, Any]]) -> dict[str, Any]:
+            sample = len(group)
+            returns = [float(row["return_fraction"]) for row in group]
+            status = (
+                "ĐỦ MẪU ĐỂ ĐÁNH GIÁ"
+                if sample >= cls.MIN_SAMPLE
+                else ("ĐANG THU THẬP" if sample else "CHƯA ĐỦ DỮ LIỆU")
+            )
+            return {
+                "sample_size": sample,
+                "confidence_status": status,
+                "win_rate": sum(value > 0 for value in returns) / sample if sample else None,
+                "average_return": sum(returns) / sample if sample else None,
+                "median_return": median(returns) if sample else None,
+                "average_mfe": sum(float(row["mfe_fraction"]) for row in group) / sample
+                if sample
+                else None,
+                "average_mae": sum(float(row["mae_fraction"]) for row in group) / sample
+                if sample
+                else None,
+            }
+
+        dimensions: dict[str, dict[str, dict[str, Any]]] = {}
+        selectors = {
+            "horizon": lambda row: str(row["horizon"]),
+            "decision": lambda row: str(row["decision"]),
+            "side": lambda row: str(row["side"]),
+            "symbol": lambda row: str(row["symbol"]),
+            "timeframe": lambda row: str(row["timeframe"]),
+            "quality_band": lambda row: (
+                "80-100"
+                if row["quality_score"] >= 80
+                else ("60-79" if row["quality_score"] >= 60 else "0-59")
+            ),
+        }
+        for name, selector in selectors.items():
+            keys = sorted({selector(row) for row in rows})
+            dimensions[name] = {
+                key: metrics([row for row in rows if selector(row) == key]) for key in keys
+            }
+        return {
+            "sample_size": len(rows),
+            "confidence_status": metrics(rows)["confidence_status"],
+            "minimum_sample": cls.MIN_SAMPLE,
+            "overall": metrics(rows),
+            "dimensions": dimensions,
+            "note": "Thống kê mô tả shadow-only; không tối ưu threshold và không thay đổi Baseline.",
+        }

@@ -119,7 +119,7 @@ async def signals(limit: int = Query(default=100, ge=1, le=500)) -> dict[str, ob
 
 @router.get("/smart-entry")
 async def smart_entry(limit: int = Query(default=100, ge=1, le=500)) -> dict[str, object]:
-    from app.services.smart_entry import SmartEntryOutcomeAnalytics
+    from app.services.smart_entry import SmartEntryOutcomeAnalytics, SmartEntryPerformanceReport
 
     mode = state.trading_mode.value
     items = await state.storage.smart_entry_events(mode=mode, limit=limit)
@@ -173,6 +173,7 @@ async def smart_entry(limit: int = Query(default=100, ge=1, le=500)) -> dict[str
                 sum(value is not None for value in item["outcomes"].values()) for item in items
             ),
         },
+        "performance": SmartEntryPerformanceReport.build(items),
         "note": "Smart Entry chỉ quan sát; không thay đổi Baseline hoặc gửi lệnh.",
     }
 

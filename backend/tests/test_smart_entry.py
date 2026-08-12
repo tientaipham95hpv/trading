@@ -91,3 +91,24 @@ def test_outcomes_reject_gaps_and_forming_candles():
 
     with pytest.raises(ValueError, match="không liên tục"):
         SmartEntryOutcomeAnalytics.evaluate(decision, broken)
+
+
+from app.services.smart_entry import SmartEntryPerformanceReport
+
+
+def test_performance_report_is_descriptive_and_sample_guarded():
+    decision = SmartEntryAnalytics.evaluate(result(), mode="DEMO")
+    decision["outcomes"] = {
+        str(row["horizon"]): row
+        for row in SmartEntryOutcomeAnalytics.evaluate(decision, candles(24))
+    }
+    report = SmartEntryPerformanceReport.build([decision])
+    assert report["sample_size"] == 3
+    assert report["confidence_status"] == "ĐANG THU THẬP"
+    assert report["overall"]["win_rate"] == 1
+    assert report["dimensions"]["horizon"]["4"]["sample_size"] == 1
+    assert "không tối ưu threshold" in report["note"]
+
+
+def test_performance_report_handles_no_verified_outcomes():
+    assert SmartEntryPerformanceReport.build([])["confidence_status"] == "CHƯA ĐỦ DỮ LIỆU"
