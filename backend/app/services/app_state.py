@@ -13,6 +13,7 @@ from app.services.notifications import NotificationService
 from app.services.order_pipeline import OrderValidator, PositionSizer
 from app.services.risk_engine import RiskEngine
 from app.services.scanner import FuturesScanner
+from app.services.stability import DemoStabilityService
 from app.services.storage import Storage
 from app.services.user_stream import UserStreamWatchdog
 
@@ -108,6 +109,7 @@ class AppState:
         self.storage = Storage(settings.database_url)
         self.auto_trader = AutoTrader(self)
         self.user_stream = UserStreamWatchdog(self)
+        self.stability = DemoStabilityService(self)
 
     @property
     def safe_mode(self) -> bool:

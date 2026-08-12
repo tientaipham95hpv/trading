@@ -354,7 +354,13 @@ class AutoTrader:
         adapter.snapshot_cache = snapshot
 
     def _live_allowed(self) -> bool:
-        return self.state.live_trading_enabled and all(self.state.live_preflight.values())
+        report = self.state.stability.last_report
+        return (
+            self.state.live_trading_enabled
+            and all(self.state.live_preflight.values())
+            and report is not None
+            and report.verdict == "READY"
+        )
 
     def _daily_loss_fraction(self) -> float:
         realized = self.state.execution.performance().realized_pnl

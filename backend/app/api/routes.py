@@ -49,7 +49,7 @@ async def status() -> dict[str, object]:
             "max_loss_streak": state.bot_settings.max_loss_streak,
             "minimum_risk_reward": state.bot_settings.minimum_risk_reward,
         },
-        "live_readiness": _live_readiness().model_dump(mode="json"),
+        "live_readiness": _live_readiness(state.stability.last_report).model_dump(mode="json"),
         "auto_trader": state.auto_trader.snapshot(),
         "user_stream": state.user_stream.snapshot(),
         "performance_reset_at": state.performance_reset_at.isoformat() if state.performance_reset_at else None,
@@ -422,9 +422,14 @@ async def exchange_manage_stops() -> dict[str, object]:
     return {"accepted": True, "actions": actions}
 
 
+@router.get("/demo/stability")
+async def demo_stability() -> dict[str, object]:
+    return (await state.stability.report()).model_dump(mode="json")
+
 @router.get("/live/readiness")
 async def live_readiness() -> dict[str, object]:
-    return _live_readiness().model_dump(mode="json")
+    report = await state.stability.report()
+    return _live_readiness(report).model_dump(mode="json")
 
 
 @router.put("/live/config")
@@ -457,12 +462,17 @@ async def prepare_live() -> dict[str, object]:
             "orders": len(demo_snapshot.orders),
             "positions": len(demo_snapshot.positions),
         }
+    report = await state.stability.report()
+    if report.verdict != "READY":
+        return {
+            "accepted": False,
+            "reason": "DEMO stability chưa đủ điều kiện tự động",
+            "stability": report.model_dump(mode="json"),
+        }
     state.live_trading_enabled = True
-    for key in state.live_preflight:
-        state.live_preflight[key] = True
-    readiness = _live_readiness()
+    readiness = _live_readiness(report)
     state.save_runtime_config()
-    await state.storage.log("Chuẩn bị LIVE nhanh", readiness.model_dump(mode="json"), level="WARNING")
+    await state.storage.log("Chuẩn bị LIVE sau auto-check", readiness.model_dump(mode="json"), level="WARNING")
     return {"accepted": readiness.allowed, "readiness": readiness.model_dump(mode="json")}
 
 
@@ -820,9 +830,19 @@ def _loss_streak() -> int:
     return streak
 
 
-def _live_readiness() -> LiveReadiness:
+def _live_readiness(report: object | None = None) -> LiveReadiness:
     blockers: list[str] = []
     checks = dict(state.live_preflight)
+    if report is not None:
+        report_checks = report.checks
+        checks.update({
+            "all_tests_pass": checks["all_tests_pass"],
+            "demo_stable": report.verdict == "READY",
+            "sl_protection_pass": report_checks["sl_protection"].passed,
+            "reconnect_pass": report_checks["user_stream"].passed,
+            "reconciliation_pass": report_checks["reconciliation"].passed,
+            "duplicate_order_tests_pass": report_checks["duplicate_orders"].passed and report_checks["order_ownership"].passed,
+        })
     if not state.live_trading_enabled:
         blockers.append("LIVE mặc định OFF, cần bật thủ công bằng cấu hình")
     for key, value in checks.items():

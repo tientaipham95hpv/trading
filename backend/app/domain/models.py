@@ -434,6 +434,22 @@ class LiveReadiness(BaseModel):
     blockers: list[str] = Field(default_factory=list)
 
 
+class StabilityCheck(BaseModel):
+    passed: bool = False
+    value: float | int | str | bool | None = None
+    requirement: str
+    detail: str
+
+class DemoStabilityReport(BaseModel):
+    generated_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    mode: TradingMode = TradingMode.DEMO
+    sample_started_at: datetime | None = None
+    score: int = 0
+    verdict: str = "NOT_READY"
+    checks: dict[str, StabilityCheck] = Field(default_factory=dict)
+    blockers: list[str] = Field(default_factory=list)
+    metrics: dict[str, float | int | str | bool | None] = Field(default_factory=dict)
+
 class LiveConfigUpdate(BaseModel):
     live_enabled: bool | None = None
     all_tests_pass: bool | None = None
