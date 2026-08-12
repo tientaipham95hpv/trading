@@ -19,8 +19,16 @@ class AiEvaluator:
         self.provider = provider
 
     async def decide(self, signal: StrategySignal) -> AiDecision:
-        if not self.enabled or self.provider is None:
+        if not self.enabled:
             return self._deterministic(signal)
+        if self.provider is None:
+            return AiDecision(
+                action=SignalAction.NO_TRADE,
+                confidence=0.0,
+                strategy=signal.strategy,
+                reasons=["AI bật nhưng chưa cấu hình provider"],
+                risk_flags=["AI_PROVIDER_MISSING"],
+            )
         try:
             decision = await asyncio.wait_for(self.provider(signal), timeout=self.timeout_seconds)
         except TimeoutError:
@@ -30,6 +38,14 @@ class AiEvaluator:
                 strategy=signal.strategy,
                 reasons=["AI timeout, fallback NO_TRADE"],
                 risk_flags=["AI_TIMEOUT"],
+            )
+        except Exception as exc:  # noqa: BLE001 - AI filter must fail closed
+            return AiDecision(
+                action=SignalAction.NO_TRADE,
+                confidence=0.0,
+                strategy=signal.strategy,
+                reasons=[f"AI error, fallback NO_TRADE: {type(exc).__name__}"],
+                risk_flags=["AI_ERROR"],
             )
         return self._sanitize(decision, signal)
 
@@ -75,5 +91,14 @@ class AiEvaluator:
                 strategy=signal.strategy,
                 reasons=["AI response ngoài schema cho phép"],
                 risk_flags=["INVALID_AI_ACTION"],
+            )
+        expected_action = SignalAction.LONG if signal.side == Side.LONG else SignalAction.SHORT
+        if decision.action not in {expected_action, SignalAction.NO_TRADE}:
+            return AiDecision(
+                action=SignalAction.NO_TRADE,
+                confidence=0.0,
+                strategy=signal.strategy,
+                reasons=["AI không được đảo chiều tín hiệu scanner"],
+                risk_flags=["AI_SIDE_FLIP_BLOCKED"],
             )
         return decision

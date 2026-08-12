@@ -48,6 +48,11 @@ async def status() -> dict[str, object]:
             "max_loss_streak": state.bot_settings.max_loss_streak,
             "minimum_risk_reward": state.bot_settings.minimum_risk_reward,
         },
+        "ai": {
+            "enabled": state.ai.enabled,
+            "provider_configured": state.ai.provider is not None,
+            "model": state.settings.openai_model if state.ai.provider is not None else None,
+        },
         "live_readiness": _live_readiness().model_dump(mode="json"),
         "auto_trader": state.auto_trader.snapshot(),
         "performance_reset_at": state.performance_reset_at.isoformat() if state.performance_reset_at else None,
