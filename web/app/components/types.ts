@@ -31,6 +31,28 @@ export type DemoStability = {
 };
 
 export type TradingMode = "DEMO" | "LIVE";
+export type PortfolioRisk = {
+  generated_at: string;
+  mode: "SHADOW";
+  enforcement_enabled: false;
+  equity: number;
+  long_notional: number;
+  short_notional: number;
+  gross_exposure: number;
+  net_exposure: number;
+  gross_exposure_fraction: number;
+  net_exposure_fraction: number;
+  open_risk: number;
+  open_risk_fraction: number;
+  open_risk_limit: number;
+  open_risk_remaining: number;
+  exposure_limit: number;
+  would_reject_new_entries: boolean;
+  reasons: string[];
+  positions: Array<{ symbol: string; side: string; quantity: number; entry_price: number; mark_price: number; stop_loss: number | null; notional: number; open_risk: number | null; protected: boolean }>;
+};
+export type RiskPayload = { limits: StatusPayload["risk"]; portfolio: PortfolioRisk };
+
 
 export type StatusPayload = {
   mode: TradingMode | "PAPER";

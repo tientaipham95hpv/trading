@@ -8,6 +8,7 @@ import type {
   LogItem,
   Performance,
   Position,
+  RiskPayload,
   ScannerResult,
   StatusPayload,
   Trade,
@@ -33,6 +34,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 
 export const api = {
   status: () => request<StatusPayload>("/api/status"),
+  risk: () => request<RiskPayload>("/api/risk"),
   stability: () => request<DemoStability>("/api/demo/stability"),
   markets: () => request<{ items: Market[] }>("/api/markets"),
   scanner: (limit = 40, timeframes = "15m") =>

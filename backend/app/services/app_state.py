@@ -11,6 +11,7 @@ from app.services.exchange import BinanceFuturesAdapter
 from app.services.execution import ExecutionService
 from app.services.notifications import NotificationService
 from app.services.order_pipeline import OrderValidator, PositionSizer
+from app.services.portfolio_risk import PortfolioRiskEngine
 from app.services.risk_engine import RiskEngine
 from app.services.scanner import FuturesScanner
 from app.services.stability import DemoStabilityService
@@ -98,6 +99,7 @@ class AppState:
             stream_url="wss://fstream.binance.com",
             mode=TradingMode.LIVE,
         )
+        self.portfolio_risk = PortfolioRiskEngine()
         self.risk = RiskEngine(
             max_leverage=settings.max_leverage,
             risk_per_trade=settings.risk_per_trade,

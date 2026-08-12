@@ -48,6 +48,7 @@ import type {
   Position,
   ScannerResult,
   StatusPayload,
+  RiskPayload,
   Trade,
   WsState,
 } from "./types";
@@ -80,6 +81,7 @@ const nav = [
 export function DashboardApp({ page }: { page: PageKey }) {
   const pathname = usePathname();
   const [status, setStatus] = useState<StatusPayload | null>(null);
+  const [portfolioRisk, setPortfolioRisk] = useState<RiskPayload | null>(null);
   const [stability, setStability] = useState<DemoStability | null>(null);
   const [markets, setMarkets] = useState<Market[]>([]);
   const [scanner, setScanner] = useState<ScannerResult[]>([]);
@@ -110,6 +112,7 @@ export function DashboardApp({ page }: { page: PageKey }) {
         nextExchange,
         nextSettings,
         nextLogs,
+        nextRisk,
       ] = await Promise.all([
         api.status(),
         api.stability(),
@@ -121,6 +124,7 @@ export function DashboardApp({ page }: { page: PageKey }) {
         api.exchange(),
         api.settings(),
         api.logs(),
+        api.risk(),
       ]);
       setStatus(nextStatus);
       setStability(nextStability);
@@ -132,6 +136,7 @@ export function DashboardApp({ page }: { page: PageKey }) {
       setExchange(nextExchange);
       setSettings(nextSettings);
       setLogs(nextLogs.items);
+      setPortfolioRisk(nextRisk);
       setError(null);
     } catch (reason) {
       setError(
@@ -246,7 +251,7 @@ export function DashboardApp({ page }: { page: PageKey }) {
               USD-M Futures
             </p>
             <h1 className="mt-1 text-lg font-bold lg:text-xl">
-              Trading Cockpit
+              Trading Bot
             </h1>
           </div>
           <StatusBadge value={wsState} />
@@ -370,7 +375,7 @@ export function DashboardApp({ page }: { page: PageKey }) {
           {page === "analytics" && (
             <Analytics performance={performance} trades={trades} />
           )}
-          {page === "risk" && <Risk onDone={refresh} status={status} />}
+          {page === "risk" && <Risk onDone={refresh} status={status} portfolioRisk={portfolioRisk} />}
           {page === "logs" && <Logs logs={logs} />}
           {page === "settings" && settings && (
             <SettingsPage onSaved={refresh} settings={settings} />
@@ -1604,9 +1609,11 @@ function BacktestPanel() {
 function Risk({
   onDone,
   status,
+  portfolioRisk,
 }: {
   onDone: () => Promise<void>;
   status: StatusPayload | null;
+  portfolioRisk: RiskPayload | null;
 }) {
   const risk = status?.risk;
   const readiness = status?.live_readiness;
@@ -1673,6 +1680,11 @@ function Risk({
           value={number(risk?.minimum_risk_reward)}
         />
       </div>
+      <DataPanel title="Portfolio Risk Engine · Shadow mode">
+        <div className="mb-4 flex flex-wrap items-center justify-between gap-2"><p className="text-sm text-slate-400">Chỉ quan sát và audit; chưa chặn Baseline DEMO, không tác động LIVE.</p><span className="rounded-full bg-amber-400/15 px-3 py-1 text-xs font-black text-amber-300">ENFORCEMENT OFF</span></div>
+        <div className="grid gap-3 md:grid-cols-3"><Metric label="Gross exposure" value={`${money(portfolioRisk?.portfolio.gross_exposure)} · ${percent((portfolioRisk?.portfolio.gross_exposure_fraction ?? 0) * 100)}`} /><Metric label="Net exposure" value={`${money(portfolioRisk?.portfolio.net_exposure)} · ${percent((portfolioRisk?.portfolio.net_exposure_fraction ?? 0) * 100)}`} /><Metric label="Open risk đã xác minh" value={`${money(portfolioRisk?.portfolio.open_risk)} / ${money(portfolioRisk?.portfolio.open_risk_limit)}`} /><Metric label="Ngân sách risk còn lại" value={money(portfolioRisk?.portfolio.open_risk_remaining)} /><Metric label="LONG / SHORT notional" value={`${money(portfolioRisk?.portfolio.long_notional)} / ${money(portfolioRisk?.portfolio.short_notional)}`} /><Metric label="Shadow decision" value={portfolioRisk?.portfolio.would_reject_new_entries ? "Sẽ từ chối lệnh mới" : "Còn room theo danh mục"} /></div>
+        {(portfolioRisk?.portfolio.reasons.length ?? 0) > 0 && <div className="mt-4 rounded border border-red-400/20 bg-red-500/5 p-3 text-sm text-red-300">{portfolioRisk?.portfolio.reasons.join("; ")}</div>}
+      </DataPanel>
       <DataPanel title="LIVE preflight">
         <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
           {(

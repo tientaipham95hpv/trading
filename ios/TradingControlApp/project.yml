@@ -19,7 +19,7 @@ targets:
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: live.cineviet.tradingcontrol
-        PRODUCT_NAME: TradingControlApp
+        PRODUCT_NAME: TradingBot
         INFOPLIST_FILE: TradingControlApp/Info.plist
         CODE_SIGN_STYLE: Manual
         DEVELOPMENT_TEAM: ""

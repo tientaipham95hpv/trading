@@ -2,7 +2,7 @@ import type { Metadata } from "next";
 import "./styles.css";
 
 export const metadata: Metadata = {
-  title: "Điều Khiển Giao Dịch",
+  title: "Trading Bot",
   description: "Bảng điều khiển hệ thống giao dịch futures tự động",
 };
 

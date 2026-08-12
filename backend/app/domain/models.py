@@ -192,6 +192,39 @@ class RiskDecision(BaseModel):
     guard: GuardSnapshot = Field(default_factory=GuardSnapshot)
 
 
+class PortfolioRiskPosition(BaseModel):
+    symbol: str
+    side: str
+    quantity: float
+    entry_price: float
+    mark_price: float
+    stop_loss: float | None = None
+    notional: float
+    open_risk: float | None = None
+    protected: bool = False
+
+
+class PortfolioRiskSnapshot(BaseModel):
+    generated_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    mode: str = "SHADOW"
+    enforcement_enabled: bool = False
+    equity: float = 0.0
+    long_notional: float = 0.0
+    short_notional: float = 0.0
+    gross_exposure: float = 0.0
+    net_exposure: float = 0.0
+    gross_exposure_fraction: float = 0.0
+    net_exposure_fraction: float = 0.0
+    open_risk: float = 0.0
+    open_risk_fraction: float = 0.0
+    open_risk_limit: float = 0.0
+    open_risk_remaining: float = 0.0
+    exposure_limit: float = 0.0
+    would_reject_new_entries: bool = False
+    reasons: list[str] = Field(default_factory=list)
+    positions: list[PortfolioRiskPosition] = Field(default_factory=list)
+
+
 class EmergencyStopState(BaseModel):
     active: bool
     reason: str | None = None

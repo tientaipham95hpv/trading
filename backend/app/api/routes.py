@@ -349,7 +349,16 @@ async def reset_performance() -> dict[str, object]:
 
 @router.get("/risk")
 async def risk() -> dict[str, object]:
-    return (await status())["risk"]  # type: ignore[index]
+    adapter = state.live_exchange if state.trading_mode == TradingMode.LIVE else state.demo_exchange
+    portfolio = state.portfolio_risk.snapshot(
+        adapter.snapshot_cache,
+        max_open_risk_fraction=state.bot_settings.max_total_open_risk,
+        max_exposure_fraction=state.bot_settings.max_portfolio_exposure,
+    )
+    return {
+        "limits": (await status())["risk"],
+        "portfolio": portfolio.model_dump(mode="json"),
+    }
 
 
 @router.get("/settings")
