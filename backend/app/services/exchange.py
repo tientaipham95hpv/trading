@@ -88,6 +88,7 @@ class BinanceFuturesAdapter(ExchangeAdapter):
         self._lifecycles_by_symbol: dict[str, ExchangePositionLifecycle] = {}
         self._time_offset_ms = 0
         self._last_time_sync_ms = 0
+        self._stop_repair_attempts: dict[str, int] = {}
 
     @property
     def configured(self) -> bool:
@@ -139,7 +140,9 @@ class BinanceFuturesAdapter(ExchangeAdapter):
         try:
             tp_created = 0
             for index, take_profit in enumerate(plan.take_profits):
-                quantity = await self._take_profit_quantity_for_plan(plan, index, len(plan.take_profits))
+                quantity = await self._take_profit_quantity_for_plan(
+                    plan, index, len(plan.take_profits)
+                )
                 is_last = index == len(plan.take_profits) - 1
                 if quantity <= 0 and not is_last:
                     continue
@@ -175,7 +178,9 @@ class BinanceFuturesAdapter(ExchangeAdapter):
                 **self._normalize_order(entry).model_dump(mode="json"),
                 "submitted_plan": plan.model_dump(mode="json"),
             },
-            positions=[position.model_dump(mode="json") for position in (await self.positions(plan.symbol))],
+            positions=[
+                position.model_dump(mode="json") for position in (await self.positions(plan.symbol))
+            ],
             fills=[],
             trades=[],
         )
@@ -209,8 +214,14 @@ class BinanceFuturesAdapter(ExchangeAdapter):
 
     async def reconcile(self, local_positions: list[dict[str, Any]]) -> ExchangeSnapshot:
         snapshot = await self.snapshot()
-        exchange_symbols = {position.symbol for position in snapshot.positions if abs(position.quantity) > 0}
-        local_symbols = {str(position.get("symbol")) for position in local_positions if position.get("status") == "OPEN"}
+        exchange_symbols = {
+            position.symbol for position in snapshot.positions if abs(position.quantity) > 0
+        }
+        local_symbols = {
+            str(position.get("symbol"))
+            for position in local_positions
+            if position.get("status") == "OPEN"
+        }
         mismatch = sorted(exchange_symbols.symmetric_difference(local_symbols))
         if mismatch:
             snapshot.safe_mode = True
@@ -230,7 +241,9 @@ class BinanceFuturesAdapter(ExchangeAdapter):
 
     async def cancel_all_orders(self, symbol: str | None = None) -> list[ExchangeOrder]:
         self._require_credentials()
-        symbols = [symbol] if symbol else sorted({order.symbol for order in await self.open_orders()})
+        symbols = (
+            [symbol] if symbol else sorted({order.symbol for order in await self.open_orders()})
+        )
         canceled: list[ExchangeOrder] = []
         for item in symbols:
             payload = await self._signed("DELETE", "/fapi/v1/allOpenOrders", {"symbol": item})
@@ -278,7 +291,9 @@ class BinanceFuturesAdapter(ExchangeAdapter):
             orders = orders_by_symbol.get(position.symbol, [])
             group_id = self._managed_group_id(position.symbol, orders)
             if group_id is None:
-                self._set_lifecycle_state(position, orders, ExchangePositionLifecycleState.PROTECTED)
+                self._set_lifecycle_state(
+                    position, orders, ExchangePositionLifecycleState.PROTECTED
+                )
                 continue
             managed_orders = [
                 order for order in orders if self._order_group_id(order.client_order_id) == group_id
@@ -321,7 +336,9 @@ class BinanceFuturesAdapter(ExchangeAdapter):
                 raise StopLossProtectionError(f"Không xác nhận được SL mới cho {position.symbol}")
             for old_stop in stop_orders:
                 if old_stop.client_order_id != client_id:
-                    await self.cancel_algo_order(position.symbol, old_stop.client_order_id, old_stop.order_id)
+                    await self.cancel_algo_order(
+                        position.symbol, old_stop.client_order_id, old_stop.order_id
+                    )
             action = {
                 "symbol": position.symbol,
                 "group_id": group_id,
@@ -361,13 +378,17 @@ class BinanceFuturesAdapter(ExchangeAdapter):
         elif status == "FILLED" and ("-sl-" in client_order_id or "-close" in client_order_id):
             lifecycle.state = ExchangePositionLifecycleState.CLOSING
         self._lifecycles_by_symbol[symbol] = lifecycle
-        if status in {"FILLED", "PARTIALLY_FILLED"} and ("-tp-" in client_order_id or "-sl-" in client_order_id):
+        if status in {"FILLED", "PARTIALLY_FILLED"} and (
+            "-tp-" in client_order_id or "-sl-" in client_order_id
+        ):
             return await self.manage_open_position_stops()
         return []
 
     async def keepalive_user_stream(self) -> None:
         if self._listen_key:
-            await self._request("PUT", "/fapi/v1/listenKey", params={"listenKey": self._listen_key}, signed=False)
+            await self._request(
+                "PUT", "/fapi/v1/listenKey", params={"listenKey": self._listen_key}, signed=False
+            )
             self.snapshot_cache.last_user_stream_at = datetime.now(UTC)
 
     def mark_user_stream_event(self, received_at: datetime | None = None) -> None:
@@ -390,7 +411,9 @@ class BinanceFuturesAdapter(ExchangeAdapter):
 
     async def change_margin_type(self, symbol: str, margin_type: str) -> None:
         try:
-            await self._signed("POST", "/fapi/v1/marginType", {"symbol": symbol, "marginType": margin_type})
+            await self._signed(
+                "POST", "/fapi/v1/marginType", {"symbol": symbol, "marginType": margin_type}
+            )
         except ExchangeError as exc:
             if "No need to change margin type" not in str(exc):
                 raise
@@ -450,12 +473,88 @@ class BinanceFuturesAdapter(ExchangeAdapter):
             unrealized_pnl=float(data.get("totalUnrealizedProfit", 0) or 0),
         )
 
-    async def income_history(self, *, income_type: str | None = None, limit: int = 100) -> list[dict[str, Any]]:
+    async def income_history(
+        self, *, income_type: str | None = None, limit: int = 100
+    ) -> list[dict[str, Any]]:
         params: dict[str, Any] = {"limit": limit}
         if income_type:
             params["incomeType"] = income_type
         data = await self._signed("GET", "/fapi/v1/income", params)
         return list(data)
+
+    async def trade_history(self, symbol: str, *, limit: int = 1000) -> list[dict[str, Any]]:
+        trades = list(
+            await self._signed("GET", "/fapi/v1/userTrades", {"symbol": symbol, "limit": limit})
+        )
+        orders = list(
+            await self._signed("GET", "/fapi/v1/allOrders", {"symbol": symbol, "limit": limit})
+        )
+        clients = {str(row.get("orderId")): str(row.get("clientOrderId") or "") for row in orders}
+        for trade in trades:
+            trade.setdefault("clientOrderId", clients.get(str(trade.get("orderId")), ""))
+        return trades
+
+    async def repair_missing_stop_losses(
+        self, snapshot: ExchangeSnapshot, *, max_attempts: int = 3
+    ) -> list[dict[str, object]]:
+        actions: list[dict[str, object]] = []
+        open_stops = {
+            o.symbol
+            for o in snapshot.orders
+            if o.stop_price and "STOP" in o.order_type and "TAKE_PROFIT" not in o.order_type
+        }
+        for position in snapshot.positions:
+            if (
+                position.symbol in open_stops
+                or self._stop_repair_attempts.get(position.symbol, 0) >= max_attempts
+            ):
+                continue
+            history = await self._signed(
+                "GET", "/fapi/v1/allAlgoOrders", {"symbol": position.symbol}
+            )
+            candidates = [
+                row
+                for row in history
+                if self._is_bot_order_id(str(row.get("clientAlgoId") or ""))
+                and "STOP" in str(row.get("orderType") or row.get("type") or "")
+                and "TAKE_PROFIT" not in str(row.get("orderType") or row.get("type") or "")
+                and float(row.get("triggerPrice") or row.get("stopPrice") or 0) > 0
+            ]
+            if not candidates:
+                continue
+            old = max(
+                candidates, key=lambda row: int(row.get("updateTime") or row.get("createTime") or 0)
+            )
+            stop = float(old.get("triggerPrice") or old.get("stopPrice"))
+            mark = position.mark_price or position.entry_price
+            if (position.side == "LONG" and stop >= mark) or (
+                position.side == "SHORT" and stop <= mark
+            ):
+                continue
+            self._stop_repair_attempts[position.symbol] = (
+                self._stop_repair_attempts.get(position.symbol, 0) + 1
+            )
+            group_id = self._order_group_id(str(old.get("clientAlgoId") or ""))
+            client_id = _client_order_id(group_id, "repair", int(time.time() * 1000))
+            plan = OrderPlan(
+                client_order_id=client_id,
+                symbol=position.symbol,
+                side=Side.LONG if position.side == "LONG" else Side.SHORT,
+                quantity=position.quantity,
+                entry_price=position.entry_price,
+                stop_loss=stop,
+                leverage=min(position.leverage or 1, 10),
+            )
+            await self._place_managed_stop_loss(plan, client_id)
+            if not await self._stop_loss_exists(position.symbol, client_id):
+                raise StopLossProtectionError(
+                    f"Không xác nhận được SL phục hồi cho {position.symbol}"
+                )
+            self._stop_repair_attempts.pop(position.symbol, None)
+            actions.append(
+                {"symbol": position.symbol, "stop_loss": stop, "status": "Đã phục hồi SL"}
+            )
+        return actions
 
     async def is_symbol_tradable(self, symbol: str) -> bool:
         try:
@@ -595,7 +694,9 @@ class BinanceFuturesAdapter(ExchangeAdapter):
             payload["reduceOnly"] = "true"
         return await self._signed("POST", "/fapi/v1/algoOrder", payload)
 
-    async def _take_profit_quantity_for_plan(self, plan: OrderPlan, index: int, total: int) -> float:
+    async def _take_profit_quantity_for_plan(
+        self, plan: OrderPlan, index: int, total: int
+    ) -> float:
         filters = await self._filters_for(plan.symbol)
         return _round_step(
             self._take_profit_quantity(plan.quantity, index, total),
@@ -620,7 +721,10 @@ class BinanceFuturesAdapter(ExchangeAdapter):
 
     async def _stop_loss_exists(self, symbol: str, client_id: str) -> bool:
         orders = await self.open_orders(symbol)
-        return any(order.client_order_id == client_id and order.order_type == "STOP_MARKET" for order in orders)
+        return any(
+            order.client_order_id == client_id and order.order_type == "STOP_MARKET"
+            for order in orders
+        )
 
     def _sync_lifecycles_from_snapshot(
         self,
@@ -659,12 +763,16 @@ class BinanceFuturesAdapter(ExchangeAdapter):
             order for order in orders if self._order_group_id(order.client_order_id) == group_id
         ]
         take_profit_orders = [
-            order for order in managed_orders if order.stop_price and "TAKE_PROFIT" in order.order_type
+            order
+            for order in managed_orders
+            if order.stop_price and "TAKE_PROFIT" in order.order_type
         ]
         stop_orders = [
             order
             for order in managed_orders
-            if order.stop_price and "STOP" in order.order_type and "TAKE_PROFIT" not in order.order_type
+            if order.stop_price
+            and "STOP" in order.order_type
+            and "TAKE_PROFIT" not in order.order_type
         ]
         lifecycle = self._lifecycles_by_symbol.get(position.symbol) or ExchangePositionLifecycle(
             symbol=position.symbol,
@@ -756,21 +864,27 @@ class BinanceFuturesAdapter(ExchangeAdapter):
         return len([order for order in take_profit_orders if order.stop_price])
 
     @staticmethod
-    def _active_stop_price(position: ExchangePosition, stop_orders: list[ExchangeOrder]) -> float | None:
+    def _active_stop_price(
+        position: ExchangePosition, stop_orders: list[ExchangeOrder]
+    ) -> float | None:
         prices = [order.stop_price for order in stop_orders if order.stop_price]
         if not prices:
             return None
         return max(prices) if position.side == "LONG" else min(prices)
 
     @staticmethod
-    def _next_take_profit(position: ExchangePosition, take_profit_orders: list[ExchangeOrder]) -> float | None:
+    def _next_take_profit(
+        position: ExchangePosition, take_profit_orders: list[ExchangeOrder]
+    ) -> float | None:
         prices = sorted(order.stop_price for order in take_profit_orders if order.stop_price)
         if not prices:
             return None
         return prices[0] if position.side == "LONG" else prices[-1]
 
     @staticmethod
-    def _stop_improves(position: ExchangePosition, current_stop: float | None, target: float) -> bool:
+    def _stop_improves(
+        position: ExchangePosition, current_stop: float | None, target: float
+    ) -> bool:
         mark = position.mark_price or position.entry_price
         if position.side == "LONG":
             if target >= mark:

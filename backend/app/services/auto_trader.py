@@ -61,7 +61,9 @@ class AutoTrader:
         }
 
     async def _run(self) -> None:
-        await self.state.storage.log("Auto-trader worker started", {"interval_seconds": self.interval_seconds})
+        await self.state.storage.log(
+            "Auto-trader worker started", {"interval_seconds": self.interval_seconds}
+        )
         while self.running:
             try:
                 await self.run_once()
@@ -70,7 +72,9 @@ class AutoTrader:
             except Exception as exc:  # noqa: BLE001 - background worker must not die on one cycle
                 self.last_status = "ERROR"
                 self.last_reason = str(exc)
-                await self.state.storage.log("Auto-trader cycle error", {"error": str(exc)}, level="ERROR")
+                await self.state.storage.log(
+                    "Auto-trader cycle error", {"error": str(exc)}, level="ERROR"
+                )
             await asyncio.sleep(self.interval_seconds)
 
     async def run_once(self) -> dict[str, object]:
@@ -78,7 +82,9 @@ class AutoTrader:
         self.last_run_at = datetime.now(UTC)
 
         if self.state.bot_state != BotState.RUNNING:
-            return await self._skip("IDLE", f"Bot state {self.state.bot_state.value}, không auto-trade")
+            return await self._skip(
+                "IDLE", f"Bot state {self.state.bot_state.value}, không auto-trade"
+            )
         if self.state.emergency_stop.active:
             return await self._skip("BLOCKED", "Emergency Stop đang bật")
         if self.state.safe_mode:
@@ -92,10 +98,16 @@ class AutoTrader:
         open_position_count = len(self.state.execution.open_positions())
         portfolio_exposure_fraction = self._portfolio_exposure_fraction()
         if self.state.trading_mode in {TradingMode.DEMO, TradingMode.LIVE}:
-            adapter = self.state.live_exchange if self.state.trading_mode == TradingMode.LIVE else self.state.demo_exchange
+            adapter = (
+                self.state.live_exchange
+                if self.state.trading_mode == TradingMode.LIVE
+                else self.state.demo_exchange
+            )
             try:
                 snapshot = await adapter.snapshot()
-                account_equity = max(snapshot.balance.margin_balance or snapshot.balance.available, 1.0)
+                account_equity = max(
+                    snapshot.balance.margin_balance or snapshot.balance.available, 1.0
+                )
             except (ExchangeCredentialsError, ExchangeError) as exc:
                 self.rejected += 1
                 return await self._skip("BLOCKED", f"Exchange snapshot lỗi: {exc}")
@@ -106,6 +118,21 @@ class AutoTrader:
                     f"Đã hủy order mồ côi cho {', '.join(orphan_symbols)}; chờ chu kỳ sau mới xét lệnh mới",
                 )
             unprotected_symbols = self._unprotected_exchange_positions(snapshot)
+            if unprotected_symbols:
+                try:
+                    repairs = await adapter.repair_missing_stop_losses(snapshot)
+                    if repairs:
+                        await self.state.storage.log(
+                            "Đã tự động phục hồi Stop Loss",
+                            {"mode": self.state.trading_mode.value, "actions": repairs},
+                            level="WARNING",
+                        )
+                        snapshot = await adapter.snapshot()
+                        unprotected_symbols = self._unprotected_exchange_positions(snapshot)
+                except Exception as exc:  # noqa: BLE001 - watchdog vẫn phải khóa an toàn
+                    await self.state.storage.log(
+                        "Phục hồi Stop Loss thất bại", {"error": str(exc)}, level="ERROR"
+                    )
             if unprotected_symbols:
                 reason = f"SAFE_MODE: vị thế không có SL bảo vệ: {', '.join(unprotected_symbols)}"
                 self.state.enter_safe_mode(reason)
@@ -154,7 +181,11 @@ class AutoTrader:
                 self.rejected += 1
                 await self.state.storage.log(
                     "Auto-trader weak signal skip",
-                    {"symbol": result.symbol, "reason": reason, "timeframe": result.timeframe.value},
+                    {
+                        "symbol": result.symbol,
+                        "reason": reason,
+                        "timeframe": result.timeframe.value,
+                    },
                     level="INFO",
                 )
                 continue
@@ -170,7 +201,9 @@ class AutoTrader:
                 continue
             correlated_positions = self._correlated_positions(signal.symbol, snapshot=snapshot)
             selected_leverage = self._select_leverage(signal, result)
-            selected_risk_fraction = self._risk_fraction_for_candidate(result, correlated_positions=correlated_positions)
+            selected_risk_fraction = self._risk_fraction_for_candidate(
+                result, correlated_positions=correlated_positions
+            )
             signal = signal.model_copy(
                 update={
                     "leverage": selected_leverage,
@@ -189,7 +222,9 @@ class AutoTrader:
                 correlated_positions=correlated_positions,
                 loss_streak=self._loss_streak(),
                 market_regime=result.regime,
-                atr_fraction=(result.indicators.atr / result.price) if result.indicators.atr else None,
+                atr_fraction=(result.indicators.atr / result.price)
+                if result.indicators.atr
+                else None,
                 data_age_seconds=max(0.0, (datetime.now(UTC) - result.scanned_at).total_seconds()),
                 safe_mode=self.state.safe_mode,
                 current_open_risk_fraction=self._current_open_risk_fraction(open_position_count),
@@ -224,7 +259,11 @@ class AutoTrader:
                 self.state.order_validator.validate(plan)
             except ValueError as exc:
                 self.rejected += 1
-                await self.state.storage.log("Auto-trader invalid plan", {"symbol": result.symbol, "error": str(exc)}, level="WARNING")
+                await self.state.storage.log(
+                    "Auto-trader invalid plan",
+                    {"symbol": result.symbol, "error": str(exc)},
+                    level="WARNING",
+                )
                 continue
 
             return await self._submit(plan)
@@ -235,7 +274,11 @@ class AutoTrader:
         self.last_status = "SUBMITTING"
         self.last_symbol = plan.symbol
         if self.state.trading_mode in {TradingMode.DEMO, TradingMode.LIVE}:
-            adapter = self.state.live_exchange if self.state.trading_mode == TradingMode.LIVE else self.state.demo_exchange
+            adapter = (
+                self.state.live_exchange
+                if self.state.trading_mode == TradingMode.LIVE
+                else self.state.demo_exchange
+            )
             try:
                 result = await adapter.submit_order_plan(plan)
             except (ExchangeCredentialsError, ExchangeError) as exc:
@@ -244,26 +287,38 @@ class AutoTrader:
             await self._persist_exchange_result(plan, result)
             if result.critical_alert:
                 self.state.enter_safe_mode(result.critical_alert)
-                await self.state.storage.log(result.critical_alert, result.model_dump(mode="json"), level="CRITICAL")
+                await self.state.storage.log(
+                    result.critical_alert, result.model_dump(mode="json"), level="CRITICAL"
+                )
             if result.accepted:
                 self.submitted += 1
                 self.last_action_at = datetime.now(UTC)
                 self.last_status = "ORDER_SUBMITTED"
-                self.last_reason = f"Đã vào {plan.symbol} {plan.side.value} trên {self.state.trading_mode.value}"
+                self.last_reason = (
+                    f"Đã vào {plan.symbol} {plan.side.value} trên {self.state.trading_mode.value}"
+                )
                 await self._notify_position_open(plan)
-                await self.state.storage.log("Auto-trader submitted order", result.model_dump(mode="json"), level="WARNING")
+                await self.state.storage.log(
+                    "Auto-trader submitted order", result.model_dump(mode="json"), level="WARNING"
+                )
                 return self.snapshot()
             self.rejected += 1
-            return await self._skip(result.status, result.critical_alert or "Exchange không accept order")
+            return await self._skip(
+                result.status, result.critical_alert or "Exchange không accept order"
+            )
 
         before_fills = len(self.state.execution.fills)
         before_trades = len(self.state.execution.trades)
         result = await self.state.execution.submit_order_plan(plan)
         await self.state.storage.save_order_bundle(
             order=result["order"],  # type: ignore[arg-type]
-            fills=[item.model_dump(mode="json") for item in self.state.execution.fills[before_fills:]],
+            fills=[
+                item.model_dump(mode="json") for item in self.state.execution.fills[before_fills:]
+            ],
             positions=[item.model_dump(mode="json") for item in self.state.execution.positions],
-            trades=[item.model_dump(mode="json") for item in self.state.execution.trades[before_trades:]],
+            trades=[
+                item.model_dump(mode="json") for item in self.state.execution.trades[before_trades:]
+            ],
             performance=self.state.execution.performance().model_dump(mode="json"),
         )
         self.submitted += 1
@@ -274,7 +329,9 @@ class AutoTrader:
         await self.state.storage.log("Auto-trader submitted paper order", result, level="WARNING")
         return self.snapshot()
 
-    async def _persist_exchange_result(self, plan: OrderPlan, result: ExchangeExecutionResult) -> None:
+    async def _persist_exchange_result(
+        self, plan: OrderPlan, result: ExchangeExecutionResult
+    ) -> None:
         if "DUPLICATE_ACK" in result.status:
             return
         await self.state.storage.save_order_bundle(
@@ -292,12 +349,16 @@ class AutoTrader:
             body=f"{plan.symbol} {plan.side.value}",
             data={"client_order_id": plan.client_order_id, "mode": self.state.trading_mode.value},
         )
-        await self.state.storage.log("APNs-ready notification", notification.model_dump(mode="json"), level="INFO")
+        await self.state.storage.log(
+            "APNs-ready notification", notification.model_dump(mode="json"), level="INFO"
+        )
 
     async def _skip(self, status: str, reason: str) -> dict[str, object]:
         self.last_status = status
         self.last_reason = reason
-        await self.state.storage.log("Auto-trader skip", {"status": status, "reason": reason}, level="INFO")
+        await self.state.storage.log(
+            "Auto-trader skip", {"status": status, "reason": reason}, level="INFO"
+        )
         return self.snapshot()
 
     async def _clean_exchange_orphans(self, adapter: Any, snapshot: Any) -> tuple[Any, list[str]]:
@@ -323,13 +384,19 @@ class AutoTrader:
 
     @staticmethod
     def _busy_exchange_symbols(snapshot: Any) -> set[str]:
-        return {position.symbol for position in snapshot.positions} | {order.symbol for order in snapshot.orders}
+        return {position.symbol for position in snapshot.positions} | {
+            order.symbol for order in snapshot.orders
+        }
 
     @staticmethod
     def _unprotected_exchange_positions(snapshot: Any) -> list[str]:
         stop_orders_by_symbol: dict[str, list[Any]] = {}
         for order in snapshot.orders:
-            if not order.stop_price or "STOP" not in order.order_type or "TAKE_PROFIT" in order.order_type:
+            if (
+                not order.stop_price
+                or "STOP" not in order.order_type
+                or "TAKE_PROFIT" in order.order_type
+            ):
                 continue
             stop_orders_by_symbol.setdefault(order.symbol, []).append(order)
 
@@ -341,9 +408,13 @@ class AutoTrader:
                 continue
             mark = position.mark_price or position.entry_price
             if position.side == "LONG":
-                protects = any(order.side == "SELL" and (order.stop_price or 0) < mark for order in stops)
+                protects = any(
+                    order.side == "SELL" and (order.stop_price or 0) < mark for order in stops
+                )
             else:
-                protects = any(order.side == "BUY" and (order.stop_price or 0) > mark for order in stops)
+                protects = any(
+                    order.side == "BUY" and (order.stop_price or 0) > mark for order in stops
+                )
             if not protects:
                 unprotected.append(position.symbol)
         return sorted(set(unprotected))
@@ -405,7 +476,8 @@ class AutoTrader:
     def _exchange_margin_fraction(self, snapshot: Any) -> float:
         equity = max(snapshot.balance.margin_balance or snapshot.balance.available, 1.0)
         margin = sum(
-            (position.quantity * (position.mark_price or position.entry_price)) / max(position.leverage or 1, 1)
+            (position.quantity * (position.mark_price or position.entry_price))
+            / max(position.leverage or 1, 1)
             for position in snapshot.positions
         )
         return margin / equity

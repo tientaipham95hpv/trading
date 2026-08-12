@@ -154,11 +154,11 @@ public final class TradingViewModel: ObservableObject {
 
     public func emergencyStop() async {
         do {
-            let allowed = try await biometricGate.authorizeSensitiveAction(reason: "Xác thực Face ID để Emergency Stop.")
+            let allowed = try await biometricGate.authorizeSensitiveAction(reason: "Xác thực Face ID để bật dừng khẩn cấp.")
             guard allowed else { return }
             _ = try await api.emergencyStop()
             await refreshAll()
-            errorMessage = "Emergency Stop đã bật."
+            errorMessage = "Dừng khẩn cấp đã bật."
         } catch {
             errorMessage = error.localizedDescription
         }

@@ -227,8 +227,15 @@ async def mark_position(symbol: str, price: float) -> dict[str, object]:
 async def trades() -> dict[str, object]:
     if state.trading_mode in {TradingMode.DEMO, TradingMode.LIVE}:
         adapter = _current_adapter()
-        rows = await adapter.income_history(income_type="REALIZED_PNL", limit=100)
-        rows = _income_since_reset(rows)
+        income_rows = await adapter.income_history(income_type="REALIZED_PNL", limit=1000)
+        symbols = sorted({str(row.get("symbol") or "") for row in income_rows if row.get("symbol")})
+        rows = []
+        for symbol in symbols:
+            rows.extend(await adapter.trade_history(symbol, limit=1000))
+        rows.sort(key=lambda row: int(_float(row.get("time"))), reverse=True)
+        if state.performance_reset_at is not None:
+            cutoff_ms = int(state.performance_reset_at.timestamp() * 1000)
+            rows = [row for row in rows if int(_float(row.get("time"))) >= cutoff_ms]
         return {"items": _exchange_trades_for_app(rows)}
     return {"items": [item.model_dump(mode="json") for item in state.execution.trades]}
 
@@ -773,29 +780,47 @@ def _exchange_positions_for_app(snapshot) -> list[dict[str, object]]:
     return rows
 
 
-def _exchange_trades_for_app(income_rows: list[dict[str, object]]) -> list[dict[str, object]]:
+def _exchange_trades_for_app(rows: list[dict[str, object]]) -> list[dict[str, object]]:
     trades: list[dict[str, object]] = []
-    for item in income_rows:
-        pnl = _float(item.get("income"))
+    for item in rows:
+        pnl = _float(item.get("realizedPnl", item.get("income")))
         if abs(pnl) <= 1e-12:
             continue
         timestamp = int(_float(item.get("time")))
+        quantity = _float(item.get("qty"))
+        exit_price = _float(item.get("price"))
+        order_side = str(item.get("side") or "")
+        side = "LONG" if order_side == "SELL" else "SHORT" if order_side == "BUY" else "CLOSED"
+        entry_price = 0.0
+        if quantity > 0 and exit_price > 0:
+            entry_price = (
+                exit_price - pnl / quantity if side == "LONG" else exit_price + pnl / quantity
+            )
+        client_id = str(item.get("clientOrderId") or "").lower()
+        reason = (
+            "Chạm Stop Loss"
+            if any(tag in client_id for tag in ("-sl-", "-be-", "-lock-", "-repair-"))
+            else "Chốt lời theo mục tiêu"
+            if "-tp-" in client_id
+            else "Đóng vị thế thủ công hoặc theo thị trường"
+        )
+        fee = abs(_float(item.get("commission")))
         trades.append(
             {
                 "id": str(
-                    item.get("tranId") or item.get("tradeId") or f"{item.get('symbol')}-{timestamp}"
+                    item.get("id") or item.get("tradeId") or f"{item.get('symbol')}-{timestamp}"
                 ),
                 "symbol": str(item.get("symbol") or "-"),
-                "side": "CLOSED",
-                "entry_price": 0.0,
-                "exit_price": 0.0,
-                "quantity": 0.0,
+                "side": side,
+                "entry_price": entry_price,
+                "exit_price": exit_price,
+                "quantity": quantity,
                 "gross_pnl": pnl,
-                "fee": 0.0,
+                "fee": fee,
                 "slippage": 0.0,
                 "funding": 0.0,
-                "net_pnl": pnl,
-                "reason": str(item.get("incomeType") or "REALIZED_PNL"),
+                "net_pnl": pnl - fee,
+                "reason": reason,
                 "created_at": datetime.fromtimestamp(timestamp / 1000, UTC).isoformat()
                 if timestamp
                 else datetime.now(UTC).isoformat(),

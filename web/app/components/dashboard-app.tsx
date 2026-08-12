@@ -1402,12 +1402,21 @@ function Trades({ trades }: { trades: Trade[] }) {
           trade.quantity > 0 ? number(trade.quantity) : "-",
           money(trade.net_pnl),
           money(trade.fee),
-          trade.reason,
+          viCloseReason(trade.reason),
           trade.net_pnl > 0 ? "Thắng" : "Thua",
         ])}
       />
     </DataPanel>
   );
+}
+
+function viCloseReason(reason: string): string {
+  const value = reason.toUpperCase();
+  if (value === "TP" || value.includes("TAKE_PROFIT")) return "Chốt lời theo mục tiêu";
+  if (value === "SL" || value.includes("STOP")) return "Chạm Stop Loss";
+  if (value === "LIQUIDATION") return "Thanh lý vị thế";
+  if (value === "REALIZED_PNL") return "Đóng vị thế đã khớp";
+  return reason || "Đóng vị thế thủ công hoặc theo thị trường";
 }
 
 function Strategies({ scanner }: { scanner: ScannerResult[] }) {

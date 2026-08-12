@@ -878,6 +878,15 @@ private struct TradeRowCard: View {
     }
 }
 
+private func viCloseReason(_ reason: String) -> String {
+    let value = reason.uppercased()
+    if value == "TP" || value.contains("TAKE_PROFIT") { return "Chốt lời theo mục tiêu" }
+    if value == "SL" || value.contains("STOP") { return "Chạm Stop Loss" }
+    if value == "LIQUIDATION" { return "Thanh lý vị thế" }
+    if value == "REALIZED_PNL" { return "Đóng vị thế đã khớp" }
+    return reason.isEmpty ? "Đóng vị thế thủ công hoặc theo thị trường" : reason
+}
+
 private struct TradeDetailView: View {
     let trade: LenhDaChot
 
@@ -886,7 +895,7 @@ private struct TradeDetailView: View {
             Section("Tổng quan") {
                 InfoRow(label: "Mã", value: trade.symbol)
                 InfoRow(label: "Hướng", value: viSide(trade.side))
-                InfoRow(label: "Lý do đóng", value: trade.reason)
+                InfoRow(label: "Lý do đóng", value: viCloseReason(trade.reason))
                 InfoRow(label: "Thời gian", value: trade.createdAt)
             }
             Section("Giá và khối lượng") {
@@ -895,11 +904,11 @@ private struct TradeDetailView: View {
                 InfoRow(label: "Khối lượng", value: number(trade.quantity))
             }
             Section("PNL") {
-                InfoRow(label: "Gross PNL", value: money(trade.grossPnl))
+                InfoRow(label: "Lãi/lỗ gộp", value: money(trade.grossPnl))
                 InfoRow(label: "Phí", value: money(trade.fee))
-                InfoRow(label: "Slippage", value: money(trade.slippage))
-                InfoRow(label: "Funding", value: money(trade.funding))
-                InfoRow(label: "Net PNL", value: money(trade.netPnl))
+                InfoRow(label: "Trượt giá", value: money(trade.slippage))
+                InfoRow(label: "Phí vốn", value: money(trade.funding))
+                InfoRow(label: "Lãi/lỗ ròng", value: money(trade.netPnl))
             }
         }
         .navigationTitle(trade.symbol)
