@@ -33,7 +33,9 @@ async def status() -> dict[str, object]:
         "emergency_stop": state.emergency_stop.active,
         "safe_mode": state.safe_mode,
         "safe_mode_reason": state.safe_mode_reason,
-        "exchange": (state.live_exchange if state.trading_mode == TradingMode.LIVE else state.demo_exchange).snapshot_cache.model_dump(mode="json"),
+        "exchange": (
+            state.live_exchange if state.trading_mode == TradingMode.LIVE else state.demo_exchange
+        ).snapshot_cache.model_dump(mode="json"),
         "risk": {
             "max_leverage": state.bot_settings.max_leverage,
             "risk_per_trade": state.bot_settings.risk_per_trade,
@@ -52,7 +54,9 @@ async def status() -> dict[str, object]:
         "live_readiness": _live_readiness(state.stability.last_report).model_dump(mode="json"),
         "auto_trader": state.auto_trader.snapshot(),
         "user_stream": state.user_stream.snapshot(),
-        "performance_reset_at": state.performance_reset_at.isoformat() if state.performance_reset_at else None,
+        "performance_reset_at": state.performance_reset_at.isoformat()
+        if state.performance_reset_at
+        else None,
     }
 
 
@@ -98,7 +102,9 @@ async def scanner(
 @router.get("/signals")
 async def signals(limit: int = Query(default=100, ge=1, le=500)) -> dict[str, object]:
     if state.scanner.last_results:
-        return {"items": [item.model_dump(mode="json") for item in state.scanner.last_results[:limit]]}
+        return {
+            "items": [item.model_dump(mode="json") for item in state.scanner.last_results[:limit]]
+        }
     return {"items": await state.storage.list_payloads("signals", limit)}
 
 
@@ -139,7 +145,9 @@ async def paper_from_signal(symbol: str) -> dict[str, object]:
             body=decision.reason or "Risk rejected",
             data={"symbol": signal.symbol},
         )
-        await state.storage.log("APNs-ready notification", notification.model_dump(mode="json"), level="WARNING")
+        await state.storage.log(
+            "APNs-ready notification", notification.model_dump(mode="json"), level="WARNING"
+        )
         return {"accepted": False, "reason": decision.reason}
     plan = OrderPlan(
         client_order_id=f"{state.trading_mode.value.lower()}-{signal.symbol}-{uuid4()}",
@@ -187,17 +195,27 @@ async def mark_position(symbol: str, price: float) -> dict[str, object]:
             fills=[item.model_dump(mode="json") for item in state.execution.fills],
             positions=[item.model_dump(mode="json") for item in state.execution.positions],
             trades=[item.model_dump(mode="json") for item in trades],
-            performance=state.execution.performance({symbol.upper(): price}).model_dump(mode="json"),
+            performance=state.execution.performance({symbol.upper(): price}).model_dump(
+                mode="json"
+            ),
         )
         for trade in trades:
-            event = NotificationEvent.TP if trade.reason == "TP" else NotificationEvent.SL if trade.reason == "SL" else NotificationEvent.POSITION_CLOSE
+            event = (
+                NotificationEvent.TP
+                if trade.reason == "TP"
+                else NotificationEvent.SL
+                if trade.reason == "SL"
+                else NotificationEvent.POSITION_CLOSE
+            )
             notification = state.notifications.build(
                 event,
                 title=event.value,
                 body=f"{trade.symbol} {trade.reason} {trade.net_pnl:.2f}",
                 data={"symbol": trade.symbol, "reason": trade.reason},
             )
-            await state.storage.log("APNs-ready notification", notification.model_dump(mode="json"), level="INFO")
+            await state.storage.log(
+                "APNs-ready notification", notification.model_dump(mode="json"), level="INFO"
+            )
     return {
         "closed_trades": [item.model_dump(mode="json") for item in trades],
         "positions": [item.model_dump(mode="json") for item in state.execution.positions],
@@ -254,7 +272,10 @@ async def reset_performance() -> dict[str, object]:
     state.save_runtime_config()
     await state.storage.log(
         "Reset mốc đo hiệu suất",
-        {"mode": state.trading_mode.value, "performance_reset_at": state.performance_reset_at.isoformat()},
+        {
+            "mode": state.trading_mode.value,
+            "performance_reset_at": state.performance_reset_at.isoformat(),
+        },
         level="WARNING",
     )
     return {"accepted": True, "performance_reset_at": state.performance_reset_at.isoformat()}
@@ -348,9 +369,9 @@ async def exchange_snapshot() -> dict[str, object]:
     try:
         return (await adapter.snapshot()).model_dump(mode="json")
     except ExchangeCredentialsError as exc:
-        return adapter.snapshot_cache.model_copy(
-            update={"safe_mode_reason": str(exc)}
-        ).model_dump(mode="json")
+        return adapter.snapshot_cache.model_copy(update={"safe_mode_reason": str(exc)}).model_dump(
+            mode="json"
+        )
     except ExchangeError as exc:
         await state.storage.log("Exchange DEMO disconnected", {"error": str(exc)}, level="WARNING")
         notification = state.notifications.build(
@@ -359,7 +380,9 @@ async def exchange_snapshot() -> dict[str, object]:
             body=str(exc),
             data={"mode": state.trading_mode.value},
         )
-        await state.storage.log("APNs-ready notification", notification.model_dump(mode="json"), level="WARNING")
+        await state.storage.log(
+            "APNs-ready notification", notification.model_dump(mode="json"), level="WARNING"
+        )
         return adapter.snapshot_cache.model_copy(
             update={"connection": "STALE", "safe_mode_reason": str(exc)}
         ).model_dump(mode="json")
@@ -418,13 +441,21 @@ async def exchange_manage_stops() -> dict[str, object]:
                 body=f"{action['symbol']} dời SL {action['old_stop']} -> {action['new_stop']}",
                 data={"symbol": str(action["symbol"]), "mode": state.trading_mode.value},
             )
-            await state.storage.log("APNs-ready notification", notification.model_dump(mode="json"), level="INFO")
+            await state.storage.log(
+                "APNs-ready notification", notification.model_dump(mode="json"), level="INFO"
+            )
     return {"accepted": True, "actions": actions}
 
 
 @router.get("/demo/stability")
 async def demo_stability() -> dict[str, object]:
-    return (await state.stability.report()).model_dump(mode="json")
+    report = await state.stability.report()
+    return {
+        **report.model_dump(mode="json"),
+        "incidents": await state.storage.list_incidents(limit=30),
+        "history": await state.storage.stability_history(limit=30),
+    }
+
 
 @router.get("/live/readiness")
 async def live_readiness() -> dict[str, object]:
@@ -444,7 +475,9 @@ async def update_live_config(update: LiveConfigUpdate) -> dict[str, object]:
     if not readiness.allowed and state.trading_mode == TradingMode.LIVE:
         state.trading_mode = TradingMode.DEMO
     state.save_runtime_config()
-    await state.storage.log("Cập nhật LIVE runtime config", readiness.model_dump(mode="json"), level="WARNING")
+    await state.storage.log(
+        "Cập nhật LIVE runtime config", readiness.model_dump(mode="json"), level="WARNING"
+    )
     return readiness.model_dump(mode="json")
 
 
@@ -472,7 +505,9 @@ async def prepare_live() -> dict[str, object]:
     state.live_trading_enabled = True
     readiness = _live_readiness(report)
     state.save_runtime_config()
-    await state.storage.log("Chuẩn bị LIVE sau auto-check", readiness.model_dump(mode="json"), level="WARNING")
+    await state.storage.log(
+        "Chuẩn bị LIVE sau auto-check", readiness.model_dump(mode="json"), level="WARNING"
+    )
     return {"accepted": readiness.allowed, "readiness": readiness.model_dump(mode="json")}
 
 
@@ -490,7 +525,9 @@ async def cancel_orders(symbol: str | None = None) -> dict[str, object]:
         orders = state.execution.cancel_open_orders()
         return {"accepted": True, "orders": [order.model_dump(mode="json") for order in orders]}
     orders = await adapter.cancel_all_orders(symbol.upper() if symbol else None)
-    await state.storage.log("Cancel Orders", {"symbol": symbol, "mode": state.trading_mode.value}, level="WARNING")
+    await state.storage.log(
+        "Cancel Orders", {"symbol": symbol, "mode": state.trading_mode.value}, level="WARNING"
+    )
     return {"accepted": True, "orders": [order.model_dump(mode="json") for order in orders]}
 
 
@@ -525,7 +562,9 @@ async def activate_emergency_stop(reason: str = "manual") -> dict[str, object]:
         body=reason,
         data={"mode": state.trading_mode.value},
     )
-    await state.storage.log("APNs-ready notification", notification.model_dump(mode="json"), level="CRITICAL")
+    await state.storage.log(
+        "APNs-ready notification", notification.model_dump(mode="json"), level="CRITICAL"
+    )
     return state.emergency_stop.model_dump()
 
 
@@ -560,7 +599,9 @@ async def _submit_order(plan: OrderPlan) -> dict[str, object]:
         if not readiness.allowed:
             return {"accepted": False, "reason": "; ".join(readiness.blockers)}
     if state.trading_mode in {TradingMode.DEMO, TradingMode.LIVE}:
-        adapter = state.live_exchange if state.trading_mode == TradingMode.LIVE else state.demo_exchange
+        adapter = (
+            state.live_exchange if state.trading_mode == TradingMode.LIVE else state.demo_exchange
+        )
         try:
             result = await adapter.submit_order_plan(plan)
         except ExchangeCredentialsError as exc:
@@ -577,14 +618,18 @@ async def _submit_order(plan: OrderPlan) -> dict[str, object]:
             )
         if result.critical_alert:
             state.enter_safe_mode(result.critical_alert)
-            await state.storage.log(result.critical_alert, result.model_dump(mode="json"), level="CRITICAL")
+            await state.storage.log(
+                result.critical_alert, result.model_dump(mode="json"), level="CRITICAL"
+            )
             notification = state.notifications.build(
                 NotificationEvent.SAFE_MODE,
                 title="SAFE_MODE",
                 body=result.critical_alert,
                 data={"client_order_id": result.client_order_id},
             )
-            await state.storage.log("APNs-ready notification", notification.model_dump(mode="json"), level="CRITICAL")
+            await state.storage.log(
+                "APNs-ready notification", notification.model_dump(mode="json"), level="CRITICAL"
+            )
         elif result.accepted:
             notification = state.notifications.build(
                 NotificationEvent.POSITION_OPEN,
@@ -592,7 +637,9 @@ async def _submit_order(plan: OrderPlan) -> dict[str, object]:
                 body=f"{plan.symbol} {plan.side.value}",
                 data={"client_order_id": plan.client_order_id, "mode": state.trading_mode.value},
             )
-            await state.storage.log("APNs-ready notification", notification.model_dump(mode="json"), level="INFO")
+            await state.storage.log(
+                "APNs-ready notification", notification.model_dump(mode="json"), level="INFO"
+            )
         return result.model_dump(mode="json")
 
     try:
@@ -616,13 +663,18 @@ async def _submit_order(plan: OrderPlan) -> dict[str, object]:
         body=f"{plan.symbol} {plan.side.value}",
         data={"client_order_id": plan.client_order_id, "mode": state.trading_mode.value},
     )
-    await state.storage.log("APNs-ready notification", notification.model_dump(mode="json"), level="INFO")
+    await state.storage.log(
+        "APNs-ready notification", notification.model_dump(mode="json"), level="INFO"
+    )
     return result
 
 
 async def _channel_payload(channel: str) -> dict[str, object]:
     if channel == "market":
-        return {"channel": channel, "items": [item.model_dump() for item in state.scanner.last_markets]}
+        return {
+            "channel": channel,
+            "items": [item.model_dump() for item in state.scanner.last_markets],
+        }
     if channel == "scanner":
         return {
             "channel": channel,
@@ -644,7 +696,10 @@ async def _channel_payload(channel: str) -> dict[str, object]:
             snapshot = await adapter.snapshot()
             income = await adapter.income_history(limit=200)
             income = _income_since_reset(income)
-            return {"channel": channel, "data": _exchange_performance(snapshot, income).model_dump(mode="json")}
+            return {
+                "channel": channel,
+                "data": _exchange_performance(snapshot, income).model_dump(mode="json"),
+            }
         return {"channel": channel, "data": state.execution.performance().model_dump(mode="json")}
     if channel == "system":
         return {"channel": channel, "data": await status()}
@@ -673,7 +728,9 @@ def _exchange_positions_for_app(snapshot) -> list[dict[str, object]]:
             (
                 order.stop_price
                 for order in orders
-                if order.stop_price and "STOP" in order.order_type and "TAKE_PROFIT" not in order.order_type
+                if order.stop_price
+                and "STOP" in order.order_type
+                and "TAKE_PROFIT" not in order.order_type
             ),
             0.0,
         )
@@ -725,7 +782,9 @@ def _exchange_trades_for_app(income_rows: list[dict[str, object]]) -> list[dict[
         timestamp = int(_float(item.get("time")))
         trades.append(
             {
-                "id": str(item.get("tranId") or item.get("tradeId") or f"{item.get('symbol')}-{timestamp}"),
+                "id": str(
+                    item.get("tranId") or item.get("tradeId") or f"{item.get('symbol')}-{timestamp}"
+                ),
                 "symbol": str(item.get("symbol") or "-"),
                 "side": "CLOSED",
                 "entry_price": 0.0,
@@ -737,7 +796,9 @@ def _exchange_trades_for_app(income_rows: list[dict[str, object]]) -> list[dict[
                 "funding": 0.0,
                 "net_pnl": pnl,
                 "reason": str(item.get("incomeType") or "REALIZED_PNL"),
-                "created_at": datetime.fromtimestamp(timestamp / 1000, UTC).isoformat() if timestamp else datetime.now(UTC).isoformat(),
+                "created_at": datetime.fromtimestamp(timestamp / 1000, UTC).isoformat()
+                if timestamp
+                else datetime.now(UTC).isoformat(),
             }
         )
     return trades
@@ -747,8 +808,16 @@ def _exchange_performance(snapshot, income_rows: list[dict[str, object]]) -> Per
     realized_rows = [row for row in income_rows if row.get("incomeType") == "REALIZED_PNL"]
     realized_values = [_float(row.get("income")) for row in realized_rows]
     realized = sum(realized_values)
-    fees = abs(sum(_float(row.get("income")) for row in income_rows if row.get("incomeType") == "COMMISSION"))
-    funding = sum(_float(row.get("income")) for row in income_rows if row.get("incomeType") == "FUNDING_FEE")
+    fees = abs(
+        sum(
+            _float(row.get("income"))
+            for row in income_rows
+            if row.get("incomeType") == "COMMISSION"
+        )
+    )
+    funding = sum(
+        _float(row.get("income")) for row in income_rows if row.get("incomeType") == "FUNDING_FEE"
+    )
     wins = sum(1 for value in realized_values if value > 0)
     losses = [value for value in realized_values if value <= 0]
     gains = [value for value in realized_values if value > 0]
@@ -810,14 +879,21 @@ def _weekly_drawdown_fraction() -> float:
 
 def _portfolio_exposure_fraction() -> float:
     equity = max(state.execution.performance().equity, 1.0)
-    exposure = sum(position.remaining_quantity * position.entry_price for position in state.execution.open_positions())
+    exposure = sum(
+        position.remaining_quantity * position.entry_price
+        for position in state.execution.open_positions()
+    )
     return exposure / equity
 
 
 def _correlated_positions(symbol: str) -> int:
     base = symbol.replace("USDT", "")
     bucket = "BTC_ETH" if base in {"BTC", "ETH"} else base[:3]
-    return sum(1 for position in state.execution.open_positions() if position.symbol.replace("USDT", "")[:3] == bucket[:3])
+    return sum(
+        1
+        for position in state.execution.open_positions()
+        if position.symbol.replace("USDT", "")[:3] == bucket[:3]
+    )
 
 
 def _loss_streak() -> int:
@@ -835,14 +911,17 @@ def _live_readiness(report: object | None = None) -> LiveReadiness:
     checks = dict(state.live_preflight)
     if report is not None:
         report_checks = report.checks
-        checks.update({
-            "all_tests_pass": checks["all_tests_pass"],
-            "demo_stable": report.verdict == "READY",
-            "sl_protection_pass": report_checks["sl_protection"].passed,
-            "reconnect_pass": report_checks["user_stream"].passed,
-            "reconciliation_pass": report_checks["reconciliation"].passed,
-            "duplicate_order_tests_pass": report_checks["duplicate_orders"].passed and report_checks["order_ownership"].passed,
-        })
+        checks.update(
+            {
+                "all_tests_pass": checks["all_tests_pass"],
+                "demo_stable": report.verdict == "READY",
+                "sl_protection_pass": report_checks["sl_protection"].passed,
+                "reconnect_pass": report_checks["user_stream"].passed,
+                "reconciliation_pass": report_checks["reconciliation"].passed,
+                "duplicate_order_tests_pass": report_checks["duplicate_orders"].passed
+                and report_checks["order_ownership"].passed,
+            }
+        )
     if not state.live_trading_enabled:
         blockers.append("LIVE mặc định OFF, cần bật thủ công bằng cấu hình")
     for key, value in checks.items():
@@ -851,4 +930,6 @@ def _live_readiness(report: object | None = None) -> LiveReadiness:
     if state.safe_mode:
         blockers.append(state.safe_mode_reason or "SAFE_MODE")
     allowed = state.live_trading_enabled and not blockers
-    return LiveReadiness(live_enabled=state.live_trading_enabled, allowed=allowed, blockers=blockers, **checks)
+    return LiveReadiness(
+        live_enabled=state.live_trading_enabled, allowed=allowed, blockers=blockers, **checks
+    )

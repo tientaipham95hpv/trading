@@ -1,5 +1,35 @@
 export type WsState = "LIVE" | "STALE" | "OFFLINE";
 
+export type StabilityCheck = {
+  passed: boolean;
+  value: number | string | boolean | null;
+  requirement: string;
+  detail: string;
+};
+export type StabilityIncident = {
+  id: number;
+  key: string;
+  severity: "WARNING" | "CRITICAL";
+  status: "OPEN" | "RESOLVED";
+  message: string;
+  payload: Record<string, unknown> | null;
+  opened_at: string;
+  resolved_at: string | null;
+  last_seen_at: string;
+};
+export type DemoStability = {
+  generated_at: string;
+  mode: "DEMO";
+  sample_started_at: string | null;
+  score: number;
+  verdict: "READY" | "COLLECTING_DATA" | "NOT_READY";
+  checks: Record<string, StabilityCheck>;
+  blockers: string[];
+  metrics: Record<string, number | string | boolean | null>;
+  incidents: StabilityIncident[];
+  history: Array<Omit<DemoStability, "incidents" | "history">>;
+};
+
 export type TradingMode = "DEMO" | "LIVE";
 
 export type StatusPayload = {
@@ -90,7 +120,8 @@ export type ExchangeSnapshot = {
   lifecycles?: Array<{
     symbol: string;
     group_id: string;
-    state: "OPENING" | "PROTECTED" | "TP1_HIT" | "TP2_HIT" | "CLOSING" | "CLOSED";
+    state:
+      "OPENING" | "PROTECTED" | "TP1_HIT" | "TP2_HIT" | "CLOSING" | "CLOSED";
     side: string | null;
     entry_price: number;
     current_quantity: number;

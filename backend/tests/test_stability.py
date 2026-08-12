@@ -33,6 +33,22 @@ class FakeAutoTrader:
         return [position.symbol for position in snapshot.positions if position.symbol not in stops]
 
 
+class FakeStorage:
+    def __init__(self):
+        self.snapshots = []
+        self.active = {}
+
+    async def save_stability_snapshot(self, payload):
+        self.snapshots.append(payload)
+
+    async def sync_incidents(self, active):
+        self.active = active
+        return []
+
+    async def log(self, message, payload=None, level="INFO"):
+        return None
+
+
 class FakeStream:
     def snapshot(self):
         return {"connected": True, "consecutive_failures": 0, "reconnects": 1, "events": 10}
@@ -44,20 +60,55 @@ def state_for(income, *, days=8):
         mode=TradingMode.DEMO,
         connection=ExchangeConnectionState.CONNECTED,
         positions=[ExchangePosition(symbol="BTCUSDT", side="LONG", quantity=1, entry_price=100)],
-        orders=[ExchangeOrder(symbol="BTCUSDT", order_id=1, client_order_id="a-demo-BTCUSDT-group-sl-0", side="SELL", order_type="STOP_MARKET", status="NEW")],
+        orders=[
+            ExchangeOrder(
+                symbol="BTCUSDT",
+                order_id=1,
+                client_order_id="a-demo-BTCUSDT-group-sl-0",
+                side="SELL",
+                order_type="STOP_MARKET",
+                status="NEW",
+            )
+        ],
         last_reconciled_at=now - timedelta(seconds=20),
     )
     return SimpleNamespace(
         demo_exchange=FakeAdapter(snapshot, income),
-        execution=SimpleNamespace(performance=lambda: PerformanceSnapshot(balance=0, equity=0, realized_pnl=0, unrealized_pnl=0, fees_paid=0, funding_paid=0, win_rate=0, total_trades=0, open_positions=0)),
+        execution=SimpleNamespace(
+            performance=lambda: PerformanceSnapshot(
+                balance=0,
+                equity=0,
+                realized_pnl=0,
+                unrealized_pnl=0,
+                fees_paid=0,
+                funding_paid=0,
+                win_rate=0,
+                total_trades=0,
+                open_positions=0,
+            )
+        ),
         performance_reset_at=now - timedelta(days=days),
-        user_stream=FakeStream(), auto_trader=FakeAutoTrader(), safe_mode=False,
+        user_stream=FakeStream(),
+        auto_trader=FakeAutoTrader(),
+        safe_mode=False,
+        storage=FakeStorage(),
     )
 
 
 @pytest.mark.asyncio
 async def test_stability_requires_enough_demo_evidence():
-    report = await DemoStabilityService(state_for([{"incomeType": "REALIZED_PNL", "income": "2", "time": int(datetime.now(UTC).timestamp() * 1000)}], days=1)).report()
+    report = await DemoStabilityService(
+        state_for(
+            [
+                {
+                    "incomeType": "REALIZED_PNL",
+                    "income": "2",
+                    "time": int(datetime.now(UTC).timestamp() * 1000),
+                }
+            ],
+            days=1,
+        )
+    ).report()
     assert report.verdict == "COLLECTING_DATA"
     assert report.checks["sample_size"].passed is False
     assert report.checks["sl_protection"].passed is True
