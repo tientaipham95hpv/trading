@@ -47,6 +47,7 @@ async def status() -> dict[str, object]:
         },
         "live_readiness": _live_readiness().model_dump(mode="json"),
         "auto_trader": state.auto_trader.snapshot(),
+        "performance_reset_at": state.performance_reset_at.isoformat() if state.performance_reset_at else None,
     }
 
 
@@ -207,6 +208,7 @@ async def trades() -> dict[str, object]:
     if state.trading_mode in {TradingMode.DEMO, TradingMode.LIVE}:
         adapter = _current_adapter()
         rows = await adapter.income_history(income_type="REALIZED_PNL", limit=100)
+        rows = _income_since_reset(rows)
         return {"items": _exchange_trades_for_app(rows)}
     return {"items": [item.model_dump(mode="json") for item in state.execution.trades]}
 
@@ -222,6 +224,7 @@ async def performance() -> dict[str, object]:
         adapter = _current_adapter()
         snapshot = await adapter.snapshot()
         income = await adapter.income_history(limit=200)
+        income = _income_since_reset(income)
         return _exchange_performance(snapshot, income).model_dump(mode="json")
     return state.execution.performance().model_dump(mode="json")
 
@@ -230,6 +233,18 @@ async def performance() -> dict[str, object]:
 async def backtest() -> dict[str, object]:
     metrics = state.backtest.metrics(state.execution.trades)
     return metrics.model_dump(mode="json")
+
+
+@router.post("/performance/reset")
+async def reset_performance() -> dict[str, object]:
+    state.performance_reset_at = datetime.now(UTC)
+    state.save_runtime_config()
+    await state.storage.log(
+        "Reset mốc đo hiệu suất",
+        {"mode": state.trading_mode.value, "performance_reset_at": state.performance_reset_at.isoformat()},
+        level="WARNING",
+    )
+    return {"accepted": True, "performance_reset_at": state.performance_reset_at.isoformat()}
 
 
 @router.get("/risk")
@@ -438,8 +453,13 @@ async def close_all() -> dict[str, object]:
             "positions": [item.model_dump(mode="json") for item in state.execution.positions],
         }
     orders = await adapter.close_all_positions()
+    canceled_orders = await adapter.cancel_all_orders()
     await state.storage.log("Close All", {"mode": state.trading_mode.value}, level="CRITICAL")
-    return {"accepted": True, "orders": [order.model_dump(mode="json") for order in orders]}
+    return {
+        "accepted": True,
+        "orders": [order.model_dump(mode="json") for order in orders],
+        "canceled_orders": [order.model_dump(mode="json") for order in canceled_orders],
+    }
 
 
 @router.post("/emergency-stop")
@@ -571,6 +591,7 @@ async def _channel_payload(channel: str) -> dict[str, object]:
             adapter = _current_adapter()
             snapshot = await adapter.snapshot()
             income = await adapter.income_history(limit=200)
+            income = _income_since_reset(income)
             return {"channel": channel, "data": _exchange_performance(snapshot, income).model_dump(mode="json")}
         return {"channel": channel, "data": state.execution.performance().model_dump(mode="json")}
     if channel == "system":
@@ -697,6 +718,13 @@ def _exchange_performance(snapshot, income_rows: list[dict[str, object]]) -> Per
         sortino=0.0,
         expectancy=expectancy,
     )
+
+
+def _income_since_reset(income_rows: list[dict[str, object]]) -> list[dict[str, object]]:
+    if state.performance_reset_at is None:
+        return income_rows
+    cutoff_ms = int(state.performance_reset_at.timestamp() * 1000)
+    return [row for row in income_rows if int(_float(row.get("time"))) >= cutoff_ms]
 
 
 def _float(value: object) -> float:

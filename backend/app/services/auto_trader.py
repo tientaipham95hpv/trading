@@ -6,9 +6,11 @@ from uuid import uuid4
 from app.domain.models import (
     BotState,
     ExchangeExecutionResult,
+    MarketRegime,
     NotificationEvent,
     OrderPlan,
     SignalAction,
+    Timeframe,
     TradingMode,
 )
 from app.services.exchange import ExchangeCredentialsError, ExchangeError
@@ -129,6 +131,15 @@ class AutoTrader:
 
         for result in candidates:
             if result.symbol in active_symbols:
+                continue
+            accepted, reason = self._candidate_has_enough_confirmation(result)
+            if not accepted:
+                self.rejected += 1
+                await self.state.storage.log(
+                    "Auto-trader weak signal skip",
+                    {"symbol": result.symbol, "reason": reason, "timeframe": result.timeframe.value},
+                    level="INFO",
+                )
                 continue
             if snapshot is not None and not await adapter.is_symbol_tradable(result.symbol):
                 await self.state.storage.log(
@@ -313,13 +324,31 @@ class AutoTrader:
         atr_fraction = (result.indicators.atr / result.price) if result.indicators.atr else 0.02
         risk_reward = result.risk_reward or 0.0
         confidence = signal.confidence
-        if confidence >= 0.78 and risk_reward >= 2.4 and atr_fraction <= 0.012:
+        if confidence >= 0.85 and risk_reward >= 2.6 and atr_fraction <= 0.01:
             chosen = 10
-        elif confidence >= 0.70 and risk_reward >= 2.0 and atr_fraction <= 0.02:
+        elif confidence >= 0.78 and risk_reward >= 2.2 and atr_fraction <= 0.015:
             chosen = 8
         else:
             chosen = 5
         return max(5, min(chosen, maximum))
+
+    def _candidate_has_enough_confirmation(self, result: Any) -> tuple[bool, str]:
+        score = max(result.long_score, result.short_score)
+        reasons = set(result.reasons)
+        if result.timeframe not in {Timeframe.M15, Timeframe.H1, Timeframe.H4}:
+            return False, "Bỏ qua khung nhiễu 1m/5m"
+        if score < 80:
+            return False, "Score dưới 80 sau reset"
+        if (result.risk_reward or 0.0) < 2.0:
+            return False, "RR dưới 2.0 sau reset"
+        if result.regime in {MarketRegime.HIGH_VOL, MarketRegime.PANIC}:
+            return False, "Tránh vùng biến động cao/panic"
+        if result.regime in {MarketRegime.TRENDING_UP, MarketRegime.TRENDING_DOWN}:
+            return True, "Trend rõ"
+        breakout = any(reason.startswith("Breakout") for reason in reasons)
+        if breakout and "Volume tăng" in reasons and "ADX xác nhận trend" in reasons:
+            return True, "Breakout có volume và ADX"
+        return False, "Chưa đủ xác nhận trend/breakout"
 
     def _loss_streak(self) -> int:
         streak = 0

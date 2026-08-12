@@ -1,4 +1,5 @@
 import json
+from datetime import UTC, datetime
 from pathlib import Path
 
 from app.core.settings import Settings
@@ -58,6 +59,7 @@ class AppState:
             "reconciliation_pass": settings.live_preflight_reconciliation_pass,
             "duplicate_order_tests_pass": settings.live_preflight_duplicate_order_tests_pass,
         }
+        self.performance_reset_at: datetime | None = None
         self.runtime_config_path = (Path(__file__).resolve().parents[3] / settings.runtime_config_path).resolve()
         self._load_runtime_config()
         self.bot_state = BotState.STOPPED
@@ -119,6 +121,7 @@ class AppState:
             "trading_mode": self.trading_mode.value,
             "live_trading_enabled": self.live_trading_enabled,
             "live_preflight": self.live_preflight,
+            "performance_reset_at": self.performance_reset_at.isoformat() if self.performance_reset_at else None,
         }
         self.runtime_config_path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
 
@@ -139,6 +142,14 @@ class AppState:
             for key in self.live_preflight:
                 if isinstance(preflight.get(key), bool):
                     self.live_preflight[key] = preflight[key]
+        reset_at = payload.get("performance_reset_at")
+        if isinstance(reset_at, str):
+            try:
+                self.performance_reset_at = datetime.fromisoformat(reset_at)
+                if self.performance_reset_at.tzinfo is None:
+                    self.performance_reset_at = self.performance_reset_at.replace(tzinfo=UTC)
+            except ValueError:
+                self.performance_reset_at = None
 
 
 state = AppState(Settings())
