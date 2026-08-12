@@ -55,7 +55,7 @@ export type PortfolioRisk = {
   positions: Array<{ symbol: string; side: string; quantity: number; entry_price: number; mark_price: number; stop_loss: number | null; notional: number; open_risk: number | null; protected: boolean; notional_fraction: number; risk_fraction: number | null }>;
 };
 export type PortfolioRiskAudit = { audit_id: string; created_at: string; event: "SNAPSHOT" | "PRE_TRADE"; symbol: string | null; side: string | null; decision: "OBSERVED" | "WOULD_ALLOW" | "WOULD_REJECT"; reasons: string[]; before: PortfolioRisk; after: PortfolioRisk | null; candidate: Record<string, string | number> | null; fingerprint: string };
-export type RiskPayload = { limits: StatusPayload["risk"]; portfolio: PortfolioRisk; audits: PortfolioRiskAudit[] };
+export type RiskPayload = { limits: StatusPayload["risk"]; portfolio: PortfolioRisk; audits: PortfolioRiskAudit[]; audit_summary: { total: number; snapshots: number; by_decision: Record<string, number> } };
 
 
 export type StatusPayload = {

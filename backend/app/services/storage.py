@@ -1,7 +1,7 @@
 from datetime import UTC, datetime
 from typing import Any
 
-from sqlalchemy import JSON, DateTime, Float, Integer, String, Text, select
+from sqlalchemy import JSON, DateTime, Float, Integer, String, Text, delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
@@ -214,7 +214,39 @@ class Storage:
                     payload=payload,
                 )
             )
+            await session.flush()
+            excess = (
+                await session.execute(select(func.count()).select_from(PortfolioRiskAuditRow))
+            ).scalar_one() - 5000
+            if excess > 0:
+                oldest_ids = (
+                    select(PortfolioRiskAuditRow.id)
+                    .order_by(PortfolioRiskAuditRow.id.asc())
+                    .limit(excess)
+                )
+                await session.execute(
+                    delete(PortfolioRiskAuditRow).where(PortfolioRiskAuditRow.id.in_(oldest_ids))
+                )
             await session.commit()
+
+    async def portfolio_risk_audit_summary(self) -> dict[str, Any]:
+        async with self.session_factory() as session:
+            rows = (
+                await session.execute(
+                    select(
+                        PortfolioRiskAuditRow.event,
+                        PortfolioRiskAuditRow.decision,
+                        func.count(PortfolioRiskAuditRow.id),
+                    ).group_by(PortfolioRiskAuditRow.event, PortfolioRiskAuditRow.decision)
+                )
+            ).all()
+            return {
+                "total": sum(count for _, _, count in rows),
+                "by_decision": {
+                    decision: count for event, decision, count in rows if event == "PRE_TRADE"
+                },
+                "snapshots": sum(count for event, _, count in rows if event == "SNAPSHOT"),
+            }
 
     async def portfolio_risk_audits(self, limit: int = 50) -> list[dict[str, Any]]:
         async with self.session_factory() as session:

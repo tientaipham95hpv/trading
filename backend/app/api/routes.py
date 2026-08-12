@@ -364,12 +364,16 @@ async def risk() -> dict[str, object]:
         "limits": (await status())["risk"],
         "portfolio": portfolio.model_dump(mode="json"),
         "audits": await state.storage.portfolio_risk_audits(25),
+        "audit_summary": await state.storage.portfolio_risk_audit_summary(),
     }
 
 
 @router.get("/risk/audits")
 async def risk_audits(limit: int = Query(default=50, ge=1, le=200)) -> dict[str, object]:
-    return {"items": await state.storage.portfolio_risk_audits(limit)}
+    return {
+        "items": await state.storage.portfolio_risk_audits(limit),
+        "summary": await state.storage.portfolio_risk_audit_summary(),
+    }
 
 
 @router.get("/settings")

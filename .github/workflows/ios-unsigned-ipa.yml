@@ -63,12 +63,16 @@ jobs:
             exit "$BUILD_STATUS"
           fi
 
-          APP_PATH="$DERIVED_DATA/Build/Products/Release-iphoneos/TradingControlApp.app"
-          test -d "$APP_PATH"
-          rm -rf Payload TradingControlApp-unsigned.ipa
+          APP_PATH="$DERIVED_DATA/Build/Products/Release-iphoneos/TradingBot.app"
+          if [ ! -d "$APP_PATH" ]; then
+            echo "::error title=Missing app bundle::Expected $APP_PATH after successful build"
+            find "$DERIVED_DATA/Build/Products/Release-iphoneos" -maxdepth 1 -type d -name '*.app' -print || true
+            exit 1
+          fi
+          rm -rf Payload TradingBot-unsigned.ipa
           mkdir -p Payload
           cp -R "$APP_PATH" Payload/
-          /usr/bin/zip -qry TradingControlApp-unsigned.ipa Payload
+          /usr/bin/zip -qry TradingBot-unsigned.ipa Payload
 
       - name: Upload Xcode build log
         if: always()
@@ -81,6 +85,6 @@ jobs:
       - name: Upload unsigned IPA
         uses: actions/upload-artifact@v4
         with:
-          name: TradingControlApp-unsigned-ipa
-          path: ios/TradingControlApp/TradingControlApp-unsigned.ipa
+          name: TradingBot-unsigned-ipa
+          path: ios/TradingControlApp/TradingBot-unsigned.ipa
           if-no-files-found: error

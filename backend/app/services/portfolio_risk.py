@@ -125,13 +125,44 @@ class PortfolioRiskEngine:
             would_reject_new_entries=bool(reasons),
         )
 
+    @staticmethod
+    def _decision_state(snapshot: PortfolioRiskSnapshot) -> dict[str, object]:
+        """Stable audit identity: ignore mark/equity noise, retain safety-relevant state."""
+        return {
+            "mode": snapshot.mode,
+            "enforcement_enabled": snapshot.enforcement_enabled,
+            "would_reject_new_entries": snapshot.would_reject_new_entries,
+            "reasons": snapshot.reasons,
+            "positions": [
+                {
+                    "symbol": item.symbol,
+                    "side": item.side,
+                    "quantity": item.quantity,
+                    "entry_price": item.entry_price,
+                    "stop_loss": item.stop_loss,
+                    "protected": item.protected,
+                }
+                for item in snapshot.positions
+            ],
+            "limits": {
+                "open_risk_fraction": snapshot.open_risk_limit / snapshot.equity
+                if snapshot.equity
+                else 0.0,
+                "exposure_fraction": snapshot.exposure_limit / snapshot.equity
+                if snapshot.equity
+                else 0.0,
+                "symbol_exposure_fraction": snapshot.max_symbol_exposure_fraction,
+                "directional_exposure_fraction": snapshot.max_directional_exposure_fraction,
+                "symbol_open_risk_fraction": snapshot.max_symbol_open_risk_fraction,
+            },
+        }
+
     def audit_snapshot(self, exchange: ExchangeSnapshot, **limits: float) -> PortfolioRiskAudit:
         before = self.snapshot(exchange, **limits)
         canonical = {
             "event": "SNAPSHOT",
             "decision": "OBSERVED",
-            "reasons": before.reasons,
-            "before": before.model_dump(mode="json", exclude={"generated_at"}),
+            "state": self._decision_state(before),
         }
         fingerprint = hashlib.sha256(json.dumps(canonical, sort_keys=True).encode()).hexdigest()
         return PortfolioRiskAudit(
@@ -192,8 +223,8 @@ class PortfolioRiskEngine:
             "side": plan.side.value,
             "decision": decision,
             "reasons": reasons,
-            "before": before.model_dump(mode="json", exclude={"generated_at"}),
-            "after": after.model_dump(mode="json", exclude={"generated_at"}),
+            "before": self._decision_state(before),
+            "after": self._decision_state(after),
             "candidate": candidate_payload,
         }
         fingerprint = hashlib.sha256(json.dumps(canonical, sort_keys=True).encode()).hexdigest()

@@ -117,3 +117,25 @@ def test_pretrade_audit_is_shadow_only_and_has_stable_fingerprint():
     assert first.after and first.after.enforcement_enabled is False
     assert first.fingerprint == second.fingerprint
     assert "BTCUSDT vượt giới hạn tập trung theo symbol" in first.reasons
+
+
+def test_snapshot_fingerprint_ignores_price_noise_but_tracks_protection_changes():
+    engine = PortfolioRiskEngine()
+    exchange = ExchangeSnapshot(
+        balance=ExchangeBalance(balance=1000, margin_balance=1000),
+        positions=[
+            ExchangePosition(
+                symbol="BTCUSDT", side="LONG", quantity=1, entry_price=100, mark_price=101
+            )
+        ],
+        orders=[stop("BTCUSDT", "SELL", 95)],
+    )
+    first = engine.audit_snapshot(exchange, **limits())
+    noisy = exchange.model_copy(deep=True)
+    noisy.balance.margin_balance = 1000.5
+    noisy.positions[0].mark_price = 101.05
+    assert first.fingerprint == engine.audit_snapshot(noisy, **limits()).fingerprint
+
+    changed = exchange.model_copy(deep=True)
+    changed.orders[0].stop_price = 96
+    assert first.fingerprint != engine.audit_snapshot(changed, **limits()).fingerprint
