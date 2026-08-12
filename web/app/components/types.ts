@@ -231,12 +231,20 @@ export type Trade = {
 export type Performance = {
   balance: number;
   equity: number;
+  initial_capital: number;
+  net_pnl: number;
+  equity_pnl: number;
+  return_percent: number;
+  equity_return_percent: number;
   realized_pnl: number;
   unrealized_pnl: number;
   fees_paid: number;
   funding_paid: number;
   win_rate: number;
   total_trades: number;
+  winning_trades: number;
+  losing_trades: number;
+  breakeven_trades: number;
   open_positions: number;
   profit_factor: number;
   max_drawdown: number;

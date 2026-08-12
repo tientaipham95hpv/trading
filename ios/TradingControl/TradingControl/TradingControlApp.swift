@@ -96,10 +96,15 @@ private struct AccountHero: View {
                     Spacer()
                     StatusChip(text: displayMode(model.status?.mode), color: model.status?.mode == "LIVE" ? .red : .cyan)
                 }
-                HStack(spacing: 10) {
-                    HeroMetric(title: "Đã chốt", value: money(model.performance?.realizedPnl), color: (model.performance?.realizedPnl ?? 0) >= 0 ? .green : .red)
-                    HeroMetric(title: "Đang mở", value: money(model.exchange?.balance.unrealizedPnl ?? model.performance?.unrealizedPnl), color: (model.exchange?.balance.unrealizedPnl ?? model.performance?.unrealizedPnl ?? 0) >= 0 ? .green : .red)
-                    HeroMetric(title: "Winrate", value: percent((model.performance?.winRate ?? 0) * 100), color: .cyan)
+                LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 10) {
+                    HeroMetric(title: "Vốn ban đầu", value: money(model.performance?.initialCapital), color: .white)
+                    HeroMetric(title: "Vốn hiện tại", value: money(model.performance?.balance), color: .cyan)
+                    HeroMetric(title: "Lãi/lỗ ròng", value: money(model.performance?.netPnl), color: (model.performance?.netPnl ?? 0) >= 0 ? .green : .red)
+                    HeroMetric(title: "Tăng/giảm", value: signedPercent(model.performance?.returnPercent), color: (model.performance?.returnPercent ?? 0) >= 0 ? .green : .red)
+                    HeroMetric(title: "Thắng / Thua", value: "\(model.performance?.winningTrades ?? 0) / \(model.performance?.losingTrades ?? 0)", color: .cyan)
+                    HeroMetric(title: "Tỷ lệ thắng", value: percent((model.performance?.winRate ?? 0) * 100), color: .cyan)
+                    HeroMetric(title: "Lãi/lỗ đang mở", value: money(model.exchange?.balance.unrealizedPnl ?? model.performance?.unrealizedPnl), color: (model.exchange?.balance.unrealizedPnl ?? model.performance?.unrealizedPnl ?? 0) >= 0 ? .green : .red)
+                    HeroMetric(title: "Tổng lệnh", value: "\(model.performance?.totalTrades ?? 0)", color: .white)
                 }
             }
         }

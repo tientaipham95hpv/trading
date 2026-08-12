@@ -514,19 +514,28 @@ function CriticalOverview({
             />
           </div>
         </div>
-        <div className="mt-5 grid gap-3 md:grid-cols-3">
+        <div className="mt-5 grid gap-3 md:grid-cols-4">
+          <Metric label="Vốn ban đầu" value={money(performance?.initial_capital)} />
           <Metric
-            label="PNL đã chốt"
-            value={money(realized)}
-            tone={realized >= 0 ? "good" : "bad"}
+            label="Lãi/lỗ ròng"
+            value={money(performance?.net_pnl)}
+            tone={(performance?.net_pnl ?? 0) >= 0 ? "good" : "bad"}
           />
           <Metric
-            label="PNL đang mở"
+            label="Tăng/giảm vốn"
+            value={signedPercent(performance?.return_percent)}
+            tone={(performance?.return_percent ?? 0) >= 0 ? "good" : "bad"}
+          />
+          <Metric
+            label="Lãi/lỗ đang mở"
             value={money(unrealized)}
             tone={unrealized >= 0 ? "good" : "bad"}
           />
+          <Metric label="Tổng lệnh" value={String(performance?.total_trades ?? 0)} />
+          <Metric label="Lệnh thắng" value={String(performance?.winning_trades ?? 0)} tone="good" />
+          <Metric label="Lệnh thua" value={String(performance?.losing_trades ?? 0)} tone="bad" />
           <Metric
-            label="Winrate sau reset"
+            label="Tỷ lệ thắng"
             value={percent((performance?.win_rate ?? 0) * 100)}
           />
         </div>
@@ -1497,7 +1506,11 @@ function Analytics({
 }) {
   return (
     <div className="grid gap-4 md:grid-cols-3">
-      <Metric label="PNL ròng" value={money(performance?.realized_pnl)} />
+      <Metric label="Vốn ban đầu" value={money(performance?.initial_capital)} />
+      <Metric label="Vốn hiện tại" value={money(performance?.balance)} />
+      <Metric label="Lãi/lỗ ròng" value={money(performance?.net_pnl)} />
+      <Metric label="Tăng/giảm vốn" value={signedPercent(performance?.return_percent)} />
+      <Metric label="Lãi/lỗ gồm vị thế mở" value={money(performance?.equity_pnl)} />
       <Metric label="Phí" value={money(performance?.fees_paid)} />
       <Metric label="Phí funding" value={money(performance?.funding_paid)} />
       <Metric label="Profit Factor" value={profitFactor(performance)} />
@@ -1506,9 +1519,12 @@ function Analytics({
       <Metric label="Sortino" value={number(performance?.sortino)} />
       <Metric label="Expectancy" value={money(performance?.expectancy)} />
       <Metric
-        label="Winrate"
+        label="Tỷ lệ thắng"
         value={percent((performance?.win_rate ?? 0) * 100)}
       />
+      <Metric label="Tổng lệnh" value={String(performance?.total_trades ?? 0)} />
+      <Metric label="Lệnh thắng" value={String(performance?.winning_trades ?? 0)} />
+      <Metric label="Lệnh thua" value={String(performance?.losing_trades ?? 0)} />
       <section className="rounded-lg border border-white/10 bg-[#0d1724] p-4 md:col-span-3">
         <h3 className="mb-3 font-bold">Phân bổ kết quả lệnh</h3>
         <Table

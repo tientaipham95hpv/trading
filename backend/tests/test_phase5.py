@@ -11,6 +11,7 @@ from app.domain.models import (
     TradingMode,
 )
 from app.services.auto_trader import AutoTrader
+from app.api.routes import _exchange_performance
 from app.services.backtest import BacktestService
 from app.services.risk_engine import RiskEngine
 
@@ -108,6 +109,36 @@ def test_backtest_metrics_include_required_costs_and_ratios():
     assert metrics.walk_forward_windows == 2
     assert metrics.out_of_sample_trades == 1
     assert metrics.no_lookahead_bias is True
+
+
+def test_exchange_performance_exposes_capital_return_and_trade_outcomes():
+    snapshot = ExchangeSnapshot(
+        mode=TradingMode.DEMO,
+        balance={
+            "asset": "USDT",
+            "balance": 10_075,
+            "available": 9_000,
+            "margin_balance": 10_095,
+            "unrealized_pnl": 20,
+        },
+    )
+    income = [
+        {"incomeType": "REALIZED_PNL", "income": "100"},
+        {"incomeType": "REALIZED_PNL", "income": "-20"},
+        {"incomeType": "COMMISSION", "income": "-5"},
+    ]
+
+    performance = _exchange_performance(snapshot, income)
+
+    assert performance.initial_capital == pytest.approx(10_000)
+    assert performance.net_pnl == pytest.approx(75)
+    assert performance.equity_pnl == pytest.approx(95)
+    assert performance.return_percent == pytest.approx(0.75)
+    assert performance.equity_return_percent == pytest.approx(0.95)
+    assert performance.total_trades == 2
+    assert performance.winning_trades == 1
+    assert performance.losing_trades == 1
+    assert performance.breakeven_trades == 0
 
 
 def test_exchange_watchdog_treats_open_orders_as_busy_symbols():

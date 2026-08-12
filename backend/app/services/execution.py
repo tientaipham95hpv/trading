@@ -101,7 +101,9 @@ class ExecutionService:
                         position.stop_loss = position.entry_price
                     if len(position.filled_take_profits) >= 2:
                         position.trailing_stop_active = True
-                        position.trailing_stop_distance = abs(take_profit - position.entry_price) * 0.35
+                        position.trailing_stop_distance = (
+                            abs(take_profit - position.entry_price) * 0.35
+                        )
             if position.trailing_stop_active and position.trailing_stop_distance:
                 self._move_trailing_stop(position, price)
         return closed
@@ -110,7 +112,8 @@ class ExecutionService:
         return [
             position
             for position in self.positions
-            if position.status == PositionStatus.OPEN and (symbol is None or position.symbol == symbol)
+            if position.status == PositionStatus.OPEN
+            and (symbol is None or position.symbol == symbol)
         ]
 
     def cancel_open_orders(self) -> list[PaperOrder]:
@@ -133,7 +136,9 @@ class ExecutionService:
         unrealized = 0.0
         for position in self.open_positions():
             mark = marks.get(position.symbol, position.entry_price)
-            unrealized += self._gross_pnl(position.side, position.entry_price, mark, position.remaining_quantity)
+            unrealized += self._gross_pnl(
+                position.side, position.entry_price, mark, position.remaining_quantity
+            )
         total_trades = len(self.trades)
         wins = sum(1 for trade in self.trades if trade.net_pnl > 0)
         gross_profit = sum(trade.net_pnl for trade in self.trades if trade.net_pnl > 0)
@@ -153,17 +158,29 @@ class ExecutionService:
             equity += trade.net_pnl
             peak = max(peak, equity)
             max_drawdown = max(max_drawdown, peak - equity)
+        equity_value = self.balance + unrealized
+        initial_capital = self.settings.paper_initial_balance
         return PerformanceSnapshot(
             balance=self.balance,
-            equity=self.balance + unrealized,
+            equity=equity_value,
+            initial_capital=initial_capital,
+            net_pnl=self.balance - initial_capital,
+            equity_pnl=equity_value - initial_capital,
+            return_percent=((self.balance - initial_capital) / initial_capital * 100),
+            equity_return_percent=((equity_value - initial_capital) / initial_capital * 100),
             realized_pnl=realized,
             unrealized_pnl=unrealized,
             fees_paid=fees,
             funding_paid=funding,
             win_rate=(wins / total_trades) if total_trades else 0.0,
             total_trades=total_trades,
+            winning_trades=wins,
+            losing_trades=sum(trade.net_pnl < 0 for trade in self.trades),
+            breakeven_trades=sum(trade.net_pnl == 0 for trade in self.trades),
             open_positions=len(self.open_positions()),
-            profit_factor=(gross_profit / gross_loss) if gross_loss > 0 else (999.0 if gross_profit > 0 else 0.0),
+            profit_factor=(gross_profit / gross_loss)
+            if gross_loss > 0
+            else (999.0 if gross_profit > 0 else 0.0),
             max_drawdown=max_drawdown,
             sharpe=(avg_return / volatility) if volatility > 0 else 0.0,
             sortino=(avg_return / downside_vol) if downside_vol > 0 else 0.0,

@@ -844,7 +844,9 @@ def _exchange_performance(snapshot, income_rows: list[dict[str, object]]) -> Per
         _float(row.get("income")) for row in income_rows if row.get("incomeType") == "FUNDING_FEE"
     )
     wins = sum(1 for value in realized_values if value > 0)
-    losses = [value for value in realized_values if value <= 0]
+    loss_count = sum(1 for value in realized_values if value < 0)
+    breakeven_count = sum(1 for value in realized_values if value == 0)
+    losses = [value for value in realized_values if value < 0]
     gains = [value for value in realized_values if value > 0]
     total = len(realized_values)
     gross_loss = abs(sum(losses))
@@ -856,15 +858,30 @@ def _exchange_performance(snapshot, income_rows: list[dict[str, object]]) -> Per
         peak = max(peak, equity_curve)
         max_drawdown = max(max_drawdown, peak - equity_curve)
     expectancy = realized / total if total else 0.0
+    balance = snapshot.balance.balance
+    equity = snapshot.balance.margin_balance or balance
+    net_pnl = sum(_float(row.get("income")) for row in income_rows)
+    initial_capital = balance - net_pnl
+    equity_pnl = equity - initial_capital
+    return_percent = (net_pnl / initial_capital * 100) if initial_capital else 0.0
+    equity_return_percent = (equity_pnl / initial_capital * 100) if initial_capital else 0.0
     return PerformanceSnapshot(
-        balance=snapshot.balance.balance,
-        equity=snapshot.balance.margin_balance or snapshot.balance.balance,
+        balance=balance,
+        equity=equity,
+        initial_capital=initial_capital,
+        net_pnl=net_pnl,
+        equity_pnl=equity_pnl,
+        return_percent=return_percent,
+        equity_return_percent=equity_return_percent,
         realized_pnl=realized,
         unrealized_pnl=snapshot.balance.unrealized_pnl,
         fees_paid=fees,
         funding_paid=funding,
         win_rate=(wins / total) if total else 0.0,
         total_trades=total,
+        winning_trades=wins,
+        losing_trades=loss_count,
+        breakeven_trades=breakeven_count,
         open_positions=len(snapshot.positions),
         profit_factor=(sum(gains) / gross_loss) if gross_loss > 0 else (999.0 if gains else 0.0),
         max_drawdown=max_drawdown,

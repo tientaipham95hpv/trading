@@ -432,12 +432,20 @@ public struct LenhDaChot: Codable, Identifiable, Equatable {
 public struct HieuSuat: Codable, Equatable {
     public let balance: Double
     public let equity: Double
+    public let initialCapital: Double
+    public let netPnl: Double
+    public let equityPnl: Double
+    public let returnPercent: Double
+    public let equityReturnPercent: Double
     public let realizedPnl: Double
     public let unrealizedPnl: Double
     public let feesPaid: Double
     public let fundingPaid: Double
     public let winRate: Double
     public let totalTrades: Int
+    public let winningTrades: Int
+    public let losingTrades: Int
+    public let breakevenTrades: Int
     public let openPositions: Int
     public let profitFactor: Double
     public let maxDrawdown: Double
@@ -448,12 +456,20 @@ public struct HieuSuat: Codable, Equatable {
     enum CodingKeys: String, CodingKey {
         case balance
         case equity
+        case initialCapital = "initial_capital"
+        case netPnl = "net_pnl"
+        case equityPnl = "equity_pnl"
+        case returnPercent = "return_percent"
+        case equityReturnPercent = "equity_return_percent"
         case realizedPnl = "realized_pnl"
         case unrealizedPnl = "unrealized_pnl"
         case feesPaid = "fees_paid"
         case fundingPaid = "funding_paid"
         case winRate = "win_rate"
         case totalTrades = "total_trades"
+        case winningTrades = "winning_trades"
+        case losingTrades = "losing_trades"
+        case breakevenTrades = "breakeven_trades"
         case openPositions = "open_positions"
         case profitFactor = "profit_factor"
         case maxDrawdown = "max_drawdown"

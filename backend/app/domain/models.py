@@ -279,12 +279,20 @@ class TradeRecord(BaseModel):
 class PerformanceSnapshot(BaseModel):
     balance: float
     equity: float
+    initial_capital: float = 0.0
+    net_pnl: float = 0.0
+    equity_pnl: float = 0.0
+    return_percent: float = 0.0
+    equity_return_percent: float = 0.0
     realized_pnl: float
     unrealized_pnl: float
     fees_paid: float
     funding_paid: float
     win_rate: float
     total_trades: int
+    winning_trades: int = 0
+    losing_trades: int = 0
+    breakeven_trades: int = 0
     open_positions: int
     profit_factor: float = 0.0
     max_drawdown: float = 0.0
@@ -440,6 +448,7 @@ class StabilityCheck(BaseModel):
     requirement: str
     detail: str
 
+
 class DemoStabilityReport(BaseModel):
     generated_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     mode: TradingMode = TradingMode.DEMO
@@ -449,6 +458,7 @@ class DemoStabilityReport(BaseModel):
     checks: dict[str, StabilityCheck] = Field(default_factory=dict)
     blockers: list[str] = Field(default_factory=list)
     metrics: dict[str, float | int | str | bool | None] = Field(default_factory=dict)
+
 
 class LiveConfigUpdate(BaseModel):
     live_enabled: bool | None = None
