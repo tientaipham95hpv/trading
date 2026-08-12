@@ -944,15 +944,18 @@ class BinanceFuturesAdapter(ExchangeAdapter):
         return response.json()
 
     async def _sync_time_if_needed(self, *, force: bool = False) -> None:
-        now_ms = int(time.time() * 1000)
-        if not force and now_ms - self._last_time_sync_ms < 30_000:
+        local_before = int(time.time() * 1000)
+        if not force and local_before - self._last_time_sync_ms < 30_000:
             return
         async with httpx.AsyncClient(timeout=5) as client:
             response = await client.get(f"{self.base_url}/fapi/v1/time")
+        local_after = int(time.time() * 1000)
         response.raise_for_status()
         server_time = int(response.json()["serverTime"])
-        self._time_offset_ms = server_time - now_ms
-        self._last_time_sync_ms = now_ms
+        # Midpoint removes most request latency from the estimated server offset.
+        local_midpoint = (local_before + local_after) // 2
+        self._time_offset_ms = server_time - local_midpoint
+        self._last_time_sync_ms = local_after
 
     def _timestamp_ms(self) -> int:
         return int(time.time() * 1000) + self._time_offset_ms

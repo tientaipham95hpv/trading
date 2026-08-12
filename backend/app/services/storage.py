@@ -105,6 +105,22 @@ class PortfolioRiskAuditRow(Base):
     )
 
 
+class LifecycleAnalyticsEventRow(Base):
+    __tablename__ = "lifecycle_analytics_events"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    event_key: Mapped[str] = mapped_column(String(160), unique=True, index=True)
+    mode: Mapped[str] = mapped_column(String(16), index=True)
+    lifecycle_id: Mapped[str] = mapped_column(String(96), index=True)
+    symbol: Mapped[str] = mapped_column(String(32), index=True)
+    event_type: Mapped[str] = mapped_column(String(32), index=True)
+    payload: Mapped[dict[str, Any]] = mapped_column(JSON)
+    event_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(UTC), index=True
+    )
+
+
 class IncidentRow(Base):
     __tablename__ = "incidents"
 
@@ -163,6 +179,68 @@ class Storage:
                 session, order, fills, positions, trades, performance
             )
             await session.commit()
+
+    async def save_lifecycle_analytics_event(self, payload: dict[str, Any]) -> bool:
+        """Persist an immutable lifecycle fact; duplicate stream events are ignored."""
+        async with self.session_factory() as session:
+            existing = (
+                await session.execute(
+                    select(LifecycleAnalyticsEventRow.id).where(
+                        LifecycleAnalyticsEventRow.event_key == payload["event_key"]
+                    )
+                )
+            ).scalar_one_or_none()
+            if existing is not None:
+                return False
+            event_at = payload.get("event_at")
+            if isinstance(event_at, str):
+                event_at = datetime.fromisoformat(event_at)
+            session.add(
+                LifecycleAnalyticsEventRow(
+                    event_key=str(payload["event_key"]),
+                    mode=str(payload["mode"]),
+                    lifecycle_id=str(payload["lifecycle_id"]),
+                    symbol=str(payload["symbol"]),
+                    event_type=str(payload["event_type"]),
+                    payload=payload,
+                    event_at=event_at or datetime.now(UTC),
+                )
+            )
+            count = (
+                await session.execute(select(func.count(LifecycleAnalyticsEventRow.id)))
+            ).scalar_one()
+            if count >= 20_000:
+                excess = count - 20_000 + 1
+                oldest_ids = list(
+                    (
+                        await session.execute(
+                            select(LifecycleAnalyticsEventRow.id)
+                            .order_by(LifecycleAnalyticsEventRow.id.asc())
+                            .limit(excess)
+                        )
+                    ).scalars()
+                )
+                await session.execute(
+                    delete(LifecycleAnalyticsEventRow).where(
+                        LifecycleAnalyticsEventRow.id.in_(oldest_ids)
+                    )
+                )
+            await session.commit()
+            return True
+
+    async def lifecycle_analytics_events(
+        self, *, mode: str | None = None, limit: int = 500
+    ) -> list[dict[str, Any]]:
+        async with self.session_factory() as session:
+            query = select(LifecycleAnalyticsEventRow)
+            if mode:
+                query = query.where(LifecycleAnalyticsEventRow.mode == mode)
+            rows = (
+                await session.execute(
+                    query.order_by(LifecycleAnalyticsEventRow.event_at.desc()).limit(limit)
+                )
+            ).scalars()
+            return [row.payload for row in rows]
 
     async def log(
         self, message: str, payload: dict[str, Any] | None = None, level: str = "INFO"

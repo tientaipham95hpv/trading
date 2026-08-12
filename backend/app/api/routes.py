@@ -259,7 +259,12 @@ async def exit_analytics() -> ExitAnalyticsResponse:
         if reset_at is not None:
             cutoff_ms = int(reset_at.timestamp() * 1000)
             rows = [row for row in rows if int(_float(row.get("time"))) >= cutoff_ms]
-        return ExitAnalyticsService().analyze(normalize_exchange_closes(rows), income)
+        lifecycle_events = await state.storage.lifecycle_analytics_events(
+            mode=state.trading_mode.value, limit=5000
+        )
+        return ExitAnalyticsService().analyze(
+            normalize_exchange_closes(rows), income, lifecycle_events=lifecycle_events
+        )
 
     paper_rows = [
         {
@@ -270,7 +275,15 @@ async def exit_analytics() -> ExitAnalyticsResponse:
         }
         for trade in state.execution.trades
     ]
-    return ExitAnalyticsService().analyze(paper_rows, [], source="Lịch sử paper execution hiện có")
+    lifecycle_events = await state.storage.lifecycle_analytics_events(
+        mode=state.trading_mode.value, limit=5000
+    )
+    return ExitAnalyticsService().analyze(
+        paper_rows,
+        [],
+        source="Lịch sử paper execution hiện có",
+        lifecycle_events=lifecycle_events,
+    )
 
 
 @router.get("/logs")

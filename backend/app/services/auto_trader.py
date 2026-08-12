@@ -334,6 +334,8 @@ class AutoTrader:
                 self.rejected += 1
                 return await self._skip("ORDER_ERROR", f"{plan.symbol}: {exc}")
             await self._persist_exchange_result(plan, result)
+            if result.accepted:
+                await self._record_lifecycle_open(plan, result)
             if result.critical_alert:
                 self.state.enter_safe_mode(result.critical_alert)
                 await self.state.storage.log(
@@ -389,6 +391,36 @@ class AutoTrader:
             positions=result.positions,
             trades=result.trades,
             performance=self.state.execution.performance().model_dump(mode="json"),
+        )
+
+    async def _record_lifecycle_open(
+        self, plan: OrderPlan, result: ExchangeExecutionResult
+    ) -> None:
+        now = datetime.now(UTC)
+        entry_price = float(
+            result.order.get("avg_price") or result.order.get("price") or plan.entry_price
+        )
+        initial_risk = abs(entry_price - plan.stop_loss) * plan.quantity
+        await self.state.storage.save_lifecycle_analytics_event(
+            {
+                "event_key": f"{self.state.trading_mode.value}:{plan.client_order_id}:OPEN",
+                "mode": self.state.trading_mode.value,
+                "lifecycle_id": plan.client_order_id,
+                "symbol": plan.symbol,
+                "event_type": "OPEN",
+                "event_at": now.isoformat(),
+                "side": plan.side.value,
+                "entry_price": entry_price,
+                "initial_quantity": plan.quantity,
+                "initial_stop_loss": plan.stop_loss,
+                "initial_risk": initial_risk,
+                "risk_verifiable": initial_risk > 0,
+                "timeframe": None,
+                "take_profits": plan.take_profits,
+                "entry_order_id": result.order.get("order_id"),
+                "entry_client_order_id": plan.client_order_id,
+                "source": "ORDER_PLAN_ACCEPTED",
+            }
         )
 
     async def _notify_position_open(self, plan: OrderPlan) -> None:

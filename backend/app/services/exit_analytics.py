@@ -17,6 +17,7 @@ class ExitAnalyticsService:
         income: Iterable[dict[str, object]],
         *,
         source: str = "Binance trade/order/income history",
+        lifecycle_events: Iterable[dict[str, object]] = (),
     ) -> ExitAnalyticsResponse:
         closed = [row for row in trades if abs(_number(row.get("realizedPnl"))) > 1e-12]
         income_rows = list(income)
@@ -27,6 +28,25 @@ class ExitAnalyticsService:
             _number(r.get("income")) for r in income_rows if r.get("incomeType") == "FUNDING_FEE"
         )
         realized = sum(_number(row.get("realizedPnl")) for row in closed)
+        events = list(lifecycle_events)
+        opens = {
+            str(row.get("lifecycle_id")): row
+            for row in events
+            if row.get("event_type") == "OPEN" and row.get("risk_verifiable") is True
+        }
+        closes_by_lifecycle: dict[str, float] = {}
+        for row in events:
+            if row.get("event_type") not in {"CLOSE_FILL", "PARTIAL_CLOSE"}:
+                continue
+            lifecycle_id = str(row.get("lifecycle_id") or "")
+            closes_by_lifecycle[lifecycle_id] = closes_by_lifecycle.get(
+                lifecycle_id, 0.0
+            ) + _number(row.get("realized_pnl"))
+        matched = [key for key in closes_by_lifecycle if key in opens]
+        covered_risk = sum(_number(opens[key].get("initial_risk")) for key in matched)
+        covered_pnl = sum(closes_by_lifecycle[key] for key in matched)
+        realized_r = covered_pnl / covered_risk if covered_risk > 0 else None
+        coverage = len(matched) / len(closes_by_lifecycle) if closes_by_lifecycle else 0.0
 
         return ExitAnalyticsResponse(
             source=source,
@@ -40,10 +60,13 @@ class ExitAnalyticsService:
             by_close_reason=self._breakdown(closed, "reason"),
             by_side=self._breakdown(closed, "position_side"),
             by_symbol=self._breakdown(closed, "symbol"),
+            realized_r=realized_r,
             realized_r_availability=ExitAnalyticsAvailability(
-                available=False,
-                coverage=0,
-                reason="Lịch sử hiện có không xác minh được initial risk tại thời điểm mở lệnh.",
+                available=realized_r is not None,
+                coverage=coverage,
+                reason=None
+                if realized_r is not None
+                else "Recorder chưa có lifecycle đóng khớp với initial risk đã xác minh.",
             ),
             mae_availability=self._excursion_unavailable(),
             mfe_availability=self._excursion_unavailable(),

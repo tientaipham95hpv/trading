@@ -37,3 +37,20 @@ def test_unverifiable_r_and_excursions_are_explicitly_unavailable():
     assert result.mae_availability.available is False
     assert result.mfe_availability.available is False
     assert result.missed_r_availability.available is False
+
+
+def test_realized_r_uses_only_matched_verifiable_lifecycle_evidence():
+    events = [
+        {
+            "event_type": "OPEN",
+            "lifecycle_id": "a-demo-BTC-1",
+            "risk_verifiable": True,
+            "initial_risk": 20,
+        },
+        {"event_type": "CLOSE_FILL", "lifecycle_id": "a-demo-BTC-1", "realized_pnl": 10},
+        {"event_type": "CLOSE_FILL", "lifecycle_id": "legacy", "realized_pnl": 100},
+    ]
+    result = ExitAnalyticsService().analyze([], [], lifecycle_events=events)
+    assert result.realized_r == pytest.approx(0.5)
+    assert result.realized_r_availability.available is True
+    assert result.realized_r_availability.coverage == pytest.approx(0.5)
