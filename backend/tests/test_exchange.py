@@ -90,9 +90,10 @@ class FakeBinanceAdapter(BinanceFuturesAdapter):
 async def test_binance_demo_places_entry_sl_and_reduce_only_take_profits():
     adapter = FakeBinanceAdapter()
 
-    result = await adapter.submit_order_plan(plan())
+    result = await adapter.submit_order_plan(plan(leverage=5))
 
     assert result.accepted is True
+    assert ("POST", "/fapi/v1/leverage", {"symbol": "BTCUSDT", "leverage": 5}) in adapter.calls
     order_types = [
         params.get("type")
         for _, path, params in adapter.calls

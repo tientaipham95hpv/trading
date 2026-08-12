@@ -20,8 +20,8 @@ class OrderValidator:
             raise ValueError("Entry price không hợp lệ")
         if plan.leverage <= 0:
             raise ValueError("Leverage không hợp lệ")
-        if plan.leverage > 5:
-            raise ValueError("Đòn bẩy tối đa là 5x")
+        if plan.leverage > 10:
+            raise ValueError("Đòn bẩy tối đa là 10x")
         if plan.margin_type != MarginType.ISOLATED:
             raise ValueError("Chỉ cho phép isolated margin")
         if plan.risk_fraction > 0.01:

@@ -3,7 +3,7 @@ import hmac
 import time
 from abc import ABC, abstractmethod
 from datetime import UTC, datetime
-from decimal import Decimal, ROUND_DOWN
+from decimal import ROUND_DOWN, Decimal
 from typing import Any
 from urllib.parse import urlencode
 

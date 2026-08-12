@@ -134,6 +134,7 @@ class FuturesScanner:
             stop_loss=result.stop_loss,
             take_profit=result.take_profits[-1] if result.take_profits else None,
             take_profits=result.take_profits,
+            leverage=max(1, min(self.settings.max_leverage, 10)),
             strategy=result.strategy or "scanner",
             timeframe=result.timeframe,
             metadata={"regime": result.regime.value},

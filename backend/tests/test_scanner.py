@@ -94,3 +94,21 @@ async def test_scanner_scores_multi_timeframe_long_signal():
     assert results[0].long_score > results[0].short_score
     assert results[0].action == SignalAction.LONG
     assert results[0].take_profits
+
+
+async def test_signal_uses_configured_leverage():
+    scanner = FuturesScanner(
+        FakeClient(),
+        BotSettings(
+            min_quote_volume=1,
+            min_listing_age_days=0,
+            min_score_to_trade=50,
+            scan_timeframes=[Timeframe.M15],
+            max_leverage=10,
+        ),
+    )
+    results = await scanner.scan(limit=1)
+    signal = scanner.signal_from_result(results[0])
+
+    assert signal is not None
+    assert signal.leverage == 10

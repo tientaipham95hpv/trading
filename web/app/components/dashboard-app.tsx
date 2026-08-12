@@ -159,21 +159,21 @@ export function DashboardApp({ page }: { page: PageKey }) {
 
   return (
     <main className="grid min-h-screen grid-cols-1 bg-[#eef3f6] text-slate-900 lg:grid-cols-[264px_1fr]">
-      <aside className="border-r border-slate-200 bg-[#0f1720] text-white lg:sticky lg:top-0 lg:h-screen">
-        <div className="flex items-center justify-between border-b border-white/10 px-5 py-4 lg:block lg:py-5">
+      <aside className="min-w-0 border-r border-slate-200 bg-[#0f1720] text-white lg:sticky lg:top-0 lg:h-screen">
+        <div className="flex items-center justify-between border-b border-white/10 px-4 py-3 lg:block lg:px-5 lg:py-5">
           <div>
             <p className="text-xs font-bold uppercase text-cyan-300">USD-M Futures</p>
-            <h1 className="mt-1 text-xl font-bold">Trading Cockpit</h1>
+            <h1 className="mt-1 text-lg font-bold lg:text-xl">Trading Cockpit</h1>
           </div>
           <StatusBadge value={wsState} />
         </div>
-        <nav className="grid max-h-[42vh] grid-cols-2 gap-1 overflow-y-auto p-3 lg:max-h-none lg:grid-cols-1">
+        <nav className="scrollbar-none flex gap-1 overflow-x-auto px-3 py-2 lg:grid lg:max-h-none lg:grid-cols-1 lg:overflow-y-auto lg:p-3">
           {nav.map((item) => {
             const Icon = item.icon;
             const active = item.href === pathname || (item.href !== "/" && pathname.startsWith(item.href));
             return (
               <Link
-                className={`flex min-h-10 items-center gap-3 rounded-md px-3 text-sm font-semibold transition ${
+                className={`flex min-h-10 shrink-0 items-center gap-2 rounded-md px-3 text-sm font-semibold transition lg:gap-3 ${
                   active ? "bg-cyan-400 text-slate-950 shadow-sm" : "text-slate-300 hover:bg-white/10 hover:text-white"
                 }`}
                 href={item.href}
@@ -188,13 +188,13 @@ export function DashboardApp({ page }: { page: PageKey }) {
       </aside>
 
       <section className="min-w-0">
-        <header className="sticky top-0 z-10 flex flex-col gap-4 border-b border-slate-200 bg-white/95 px-4 py-4 shadow-sm backdrop-blur md:px-5 xl:flex-row xl:items-center xl:justify-between">
+        <header className="sticky top-0 z-10 flex flex-col gap-3 border-b border-slate-200 bg-white/95 px-4 py-3 shadow-sm backdrop-blur md:px-5 md:py-4 xl:flex-row xl:items-center xl:justify-between">
           <div className="min-w-0">
             <p className="text-xs font-bold uppercase text-slate-500">Control Surface</p>
-            <h2 className="text-2xl font-bold">{currentPage.label}</h2>
+            <h2 className="text-xl font-bold md:text-2xl">{currentPage.label}</h2>
             <StatusLine exchange={exchange ?? status?.exchange ?? null} isRefreshing={isRefreshing} lastLiveAt={lastLiveAt} status={status} wsState={wsState} />
           </div>
-          <div className="flex flex-wrap items-center gap-2 xl:justify-end">
+          <div className="hidden flex-wrap items-center gap-2 md:flex xl:justify-end">
             <ModeSelector current={normalizeMode(status?.mode)} liveAllowed={status?.live_readiness.allowed ?? false} onDone={refresh} />
             <BotControls onDone={refresh} />
             <Pill label="Chế độ" value={normalizeMode(status?.mode)} tone="neutral" />
@@ -233,9 +233,10 @@ function Dashboard({ exchange, markets, onDone, performance, positions, scanner,
   return (
     <div className="grid gap-4">
       <ActivitySummary exchange={exchange} status={status} />
+      <MobileTradingOverview exchange={exchange} performance={performance} status={status} />
       <CommandCenter exchange={exchange} onDone={onDone} status={status} />
       <MarketChart symbol={chartSymbol} />
-      <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+      <div className="grid grid-cols-2 gap-3 md:gap-4 xl:grid-cols-4">
         <Metric label="Vốn hiện tại" value={money(performance?.equity)} />
         <Metric label="PNL hôm nay" value={money(performance?.realized_pnl)} tone={(performance?.realized_pnl ?? 0) >= 0 ? "good" : "bad"} />
         <Metric label="Tổng PNL" value={money(performance?.realized_pnl)} tone={(performance?.realized_pnl ?? 0) >= 0 ? "good" : "bad"} />
@@ -264,6 +265,66 @@ function Dashboard({ exchange, markets, onDone, performance, positions, scanner,
         <ExchangePositions positions={exchange?.positions ?? []} />
       </div>
       <LiveReadinessPanel onDone={onDone} status={status} />
+    </div>
+  );
+}
+
+function MobileTradingOverview({ exchange, performance, status }: { exchange: ExchangeSnapshot | null; performance: Performance | null; status: StatusPayload | null }) {
+  const activePosition = exchange?.positions[0] ?? null;
+  const protectiveOrders = exchange?.orders.filter((order) => order.reduce_only || order.order_type.includes("STOP") || order.order_type.includes("TAKE_PROFIT")) ?? [];
+  const pnl = activePosition?.unrealized_pnl ?? exchange?.balance.unrealized_pnl ?? performance?.unrealized_pnl ?? 0;
+  const leverage = activePosition?.leverage ? `${activePosition.leverage}x` : `${status?.risk.max_leverage ?? "-"}x`;
+  return (
+    <section className="grid gap-3 rounded-lg border border-slate-200 bg-white p-3 shadow-sm md:hidden">
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0">
+          <p className="text-xs font-black uppercase text-slate-500">Theo dõi nhanh</p>
+          <h3 className="mt-1 truncate text-lg font-black">{activePosition?.symbol ?? status?.auto_trader?.last_symbol ?? "Chưa có vị thế"}</h3>
+        </div>
+        <span className={`shrink-0 rounded-full px-3 py-1 text-xs font-black ${status?.mode === "LIVE" ? "bg-red-100 text-red-700" : "bg-cyan-50 text-cyan-700"}`}>
+          {normalizeMode(status?.mode)}
+        </span>
+      </div>
+
+      <div className="grid grid-cols-[minmax(0,1fr)_minmax(0,1fr)] gap-2">
+        <MobileStat label="PNL mở" value={money(pnl)} tone={pnl >= 0 ? "good" : "bad"} />
+        <MobileStat label="Đòn bẩy" value={leverage} />
+        <MobileStat label="Balance" value={money(exchange?.balance.balance ?? performance?.balance)} />
+        <MobileStat label="Available" value={money(exchange?.balance.available)} />
+        <MobileStat label="Vị thế" value={String(exchange?.positions.length ?? 0)} />
+        <MobileStat label="Order bảo vệ" value={String(protectiveOrders.length)} />
+      </div>
+
+      {activePosition ? (
+        <div className="grid gap-2 rounded-md border border-slate-200 bg-slate-50 p-3 text-sm">
+          <div>
+            <span className="font-bold text-slate-500">Hướng</span>
+            <strong className={`mt-1 block break-words ${activePosition.side === "LONG" ? "text-emerald-700" : "text-red-700"}`}>{viSide(activePosition.side)}</strong>
+          </div>
+          <div>
+            <span className="font-bold text-slate-500">Entry / Mark</span>
+            <strong className="mt-1 block break-words">{money(activePosition.entry_price)} / {money(activePosition.mark_price)}</strong>
+          </div>
+          <div>
+            <span className="font-bold text-slate-500">Thanh lý</span>
+            <strong className="mt-1 block break-words">{money(activePosition.liquidation_price)}</strong>
+          </div>
+        </div>
+      ) : (
+        <p className="rounded-md border border-dashed border-slate-300 bg-slate-50 px-3 py-3 text-sm font-semibold text-slate-500">
+          {status?.auto_trader?.last_reason ?? "Auto loop đang chờ signal đủ điều kiện."}
+        </p>
+      )}
+    </section>
+  );
+}
+
+function MobileStat({ label, tone = "neutral", value }: { label: string; value: string; tone?: "neutral" | "good" | "bad" }) {
+  const color = tone === "good" ? "text-emerald-700" : tone === "bad" ? "text-red-700" : "text-slate-950";
+  return (
+    <div className="min-w-0 rounded-md border border-slate-200 bg-slate-50 p-3">
+      <p className="text-[11px] font-black uppercase text-slate-500">{label}</p>
+      <strong className={`mt-1 block truncate text-base leading-tight ${color}`} title={value}>{value}</strong>
     </div>
   );
 }
@@ -380,16 +441,16 @@ function MarketChart({ symbol }: { symbol: string }) {
             <span className={`text-sm font-bold ${(change ?? 0) >= 0 ? "text-emerald-700" : "text-red-700"}`}>{change === null ? "-" : signedPercent(change)}</span>
           </div>
         </div>
-        <div className="flex flex-wrap gap-2">
+        <div className="grid grid-cols-5 gap-1 md:flex md:flex-wrap md:gap-2">
           {(["1m", "5m", "15m", "1h", "4h"] as const).map((value) => (
-            <button className={`rounded-md px-3 py-2 text-xs font-black transition ${interval === value ? "bg-slate-950 text-white" : "bg-slate-100 text-slate-600 hover:bg-slate-200"}`} key={value} onClick={() => setInterval(value)} type="button">
+            <button className={`rounded-md px-2 py-2 text-xs font-black transition md:px-3 ${interval === value ? "bg-slate-950 text-white" : "bg-slate-100 text-slate-600 hover:bg-slate-200"}`} key={value} onClick={() => setInterval(value)} type="button">
               {value}
             </button>
           ))}
         </div>
       </div>
       <div className="relative p-2 md:p-4">
-        <div className="h-[320px] w-full md:h-[420px]" ref={containerRef} />
+        <div className="h-[300px] w-full md:h-[420px]" ref={containerRef} />
         {busy && <div className="absolute right-5 top-5 rounded-full bg-white/90 px-3 py-1 text-xs font-bold text-slate-500 shadow">Đang tải</div>}
         {error && <div className="absolute inset-x-5 bottom-5 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm font-semibold text-red-700">{error}</div>}
       </div>
@@ -888,7 +949,7 @@ function LiveQuickActions({ onDone, status }: { onDone: () => Promise<void>; sta
 function StatusLine({ exchange, isRefreshing, lastLiveAt, status, wsState }: { exchange: ExchangeSnapshot | null; isRefreshing: boolean; lastLiveAt: number; status: StatusPayload | null; wsState: WsState }) {
   const parts = [
     status ? `Mode ${status.mode}` : "Đang tải trạng thái",
-    `Realtime ${wsState}`,
+    `Realtime ${viWsState(wsState)}`,
     exchange ? `Exchange ${viExchangeConnection(exchange.connection)}` : "Exchange -",
     lastLiveAt > 0 ? `Cập nhật ${new Date(lastLiveAt).toLocaleTimeString("vi-VN")}` : null,
   ].filter(Boolean);
@@ -946,11 +1007,11 @@ function ModeSelector({ current, liveAllowed, onDone }: { current: "DEMO" | "LIV
 function DataPanel({ children, controls, title }: { children: React.ReactNode; controls?: React.ReactNode; title: string }) {
   return (
     <section className="rounded-lg border border-slate-200 bg-white shadow-sm">
-      <div className="flex flex-col gap-3 border-b border-slate-200 p-4 xl:flex-row xl:items-center xl:justify-between">
+      <div className="flex flex-col gap-3 border-b border-slate-200 p-3 md:p-4 xl:flex-row xl:items-center xl:justify-between">
         <h3 className="text-base font-bold">{title}</h3>
         {controls}
       </div>
-      <div className="overflow-x-auto p-4">{children}</div>
+      <div className="overflow-x-auto p-3 md:p-4">{children}</div>
     </section>
   );
 }
@@ -960,24 +1021,44 @@ function Table({ columns, rows }: { columns: string[]; rows: string[][] }) {
     return <EmptyState message="Không có dòng nào ở trạng thái hiện tại." title="Trống" />;
   }
   return (
-    <table className="w-full min-w-[880px] border-collapse text-sm">
-      <thead>
-        <tr className="border-b border-slate-200 bg-white text-left text-xs uppercase text-slate-500">
-          {columns.map((column) => (
-            <th className="px-3 py-3 font-bold" key={column}>{column}</th>
-          ))}
-        </tr>
-      </thead>
-      <tbody>
+    <>
+      <div className="grid gap-3 sm:hidden">
         {rows.map((row, rowIndex) => (
-          <tr className="border-b border-slate-100 transition hover:bg-slate-50 last:border-0" key={`${row[0]}-${rowIndex}`}>
-            {row.map((cell, cellIndex) => (
-              <td className="whitespace-nowrap px-3 py-3" key={`${cell}-${cellIndex}`}>{cell}</td>
+          <article className="rounded-md border border-slate-200 bg-slate-50 p-3" key={`${row[0]}-${rowIndex}`}>
+            <div className="mb-2 flex items-center justify-between gap-3">
+              <strong className="truncate text-base text-slate-950">{row[0]}</strong>
+              {row[1] ? <span className="shrink-0 rounded bg-white px-2 py-1 text-xs font-black text-slate-600">{row[1]}</span> : null}
+            </div>
+            <div className="grid gap-2">
+              {row.slice(2).map((cell, index) => (
+                <div className="flex items-start justify-between gap-3 text-sm" key={`${columns[index + 2]}-${cell}-${index}`}>
+                  <span className="font-bold text-slate-500">{columns[index + 2]}</span>
+                  <span className="max-w-[58%] break-words text-right font-semibold text-slate-900">{cell}</span>
+                </div>
+              ))}
+            </div>
+          </article>
+        ))}
+      </div>
+      <table className="hidden w-full min-w-[880px] border-collapse text-sm sm:table">
+        <thead>
+          <tr className="border-b border-slate-200 bg-white text-left text-xs uppercase text-slate-500">
+            {columns.map((column) => (
+              <th className="px-3 py-3 font-bold" key={column}>{column}</th>
             ))}
           </tr>
-        ))}
-      </tbody>
-    </table>
+        </thead>
+        <tbody>
+          {rows.map((row, rowIndex) => (
+            <tr className="border-b border-slate-100 transition hover:bg-slate-50 last:border-0" key={`${row[0]}-${rowIndex}`}>
+              {row.map((cell, cellIndex) => (
+                <td className="whitespace-nowrap px-3 py-3" key={`${cell}-${cellIndex}`}>{cell}</td>
+              ))}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </>
   );
 }
 
@@ -1008,9 +1089,9 @@ function SearchBox({ query, setQuery }: { query: string; setQuery: (value: strin
 function Metric({ label, value, tone = "neutral" }: { label: string; value: string; tone?: "neutral" | "good" | "bad" }) {
   const color = tone === "good" ? "text-emerald-700" : tone === "bad" ? "text-red-700" : "text-slate-950";
   return (
-    <section className="rounded-lg border border-slate-200 bg-white p-4 shadow-sm transition hover:border-slate-300">
+    <section className="rounded-lg border border-slate-200 bg-white p-3 shadow-sm transition hover:border-slate-300 md:p-4">
       <p className="text-xs font-bold uppercase text-slate-500">{label}</p>
-      <strong className={`mt-2 block break-words text-2xl leading-tight ${color}`}>{value}</strong>
+      <strong className={`mt-2 block break-words text-xl leading-tight md:text-2xl ${color}`}>{value}</strong>
     </section>
   );
 }
@@ -1026,12 +1107,12 @@ function NumberField({ label, onChange, step = 1, value }: { label: string; onCh
 
 function StatusBadge({ value }: { value: WsState }) {
   const className = value === "LIVE" ? "bg-emerald-100 text-emerald-800" : value === "STALE" ? "bg-amber-100 text-amber-800" : "bg-red-100 text-red-800";
-  return <span className={`rounded-full px-3 py-1 text-xs font-black ${className}`}>{value}</span>;
+  return <span className={`rounded-full px-3 py-1 text-xs font-black ${className}`}>{viWsState(value)}</span>;
 }
 
 function Pill({ label, tone, value }: { label: string; value: string; tone: "neutral" | "safe" | "danger" }) {
   const color = tone === "safe" ? "text-emerald-700" : tone === "danger" ? "text-red-700" : "text-slate-700";
-  return <span className="rounded-full border border-slate-300 bg-white px-3 py-1 text-xs font-bold"><span className="text-slate-400">{label}</span> <span className={color}>{value}</span></span>;
+  return <span className="max-w-full truncate rounded-full border border-slate-300 bg-white px-3 py-1 text-xs font-bold"><span className="text-slate-400">{label}</span> <span className={color}>{value}</span></span>;
 }
 
 function EquityChart({ values }: { values: number[] }) {
@@ -1127,6 +1208,12 @@ function viAutoStatus(value: string | undefined) {
     ERROR: "Lỗi worker",
   };
   return labels[value ?? ""] ?? "Đang chờ";
+}
+
+function viWsState(value: WsState) {
+  if (value === "LIVE") return "RT";
+  if (value === "STALE") return "Chậm";
+  return "Offline";
 }
 
 function viOrderType(value: string) {

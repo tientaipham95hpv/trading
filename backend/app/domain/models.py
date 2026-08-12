@@ -314,7 +314,7 @@ class BotSettings(BaseModel):
     maker_fee_rate: float = 0.0002
     slippage_bps: float = 2.0
     funding_rate_per_8h: float = 0.0001
-    max_leverage: int = Field(default=5, ge=1, le=5)
+    max_leverage: int = Field(default=5, ge=1, le=10)
     risk_per_trade: float = Field(default=0.005, gt=0, le=0.005)
     max_risk_per_trade: float = Field(default=0.01, gt=0, le=0.01)
     max_daily_loss: float = Field(default=0.04, gt=0, le=0.04)
