@@ -82,6 +82,8 @@ class BinanceFuturesAdapter(ExchangeAdapter):
         self._listen_key: str | None = None
         self.snapshot_cache = ExchangeSnapshot(mode=mode)
         self._symbol_filters: dict[str, dict[str, Decimal]] = {}
+        self._time_offset_ms = 0
+        self._last_time_sync_ms = 0
 
     @property
     def configured(self) -> bool:
@@ -433,6 +435,7 @@ class BinanceFuturesAdapter(ExchangeAdapter):
         return any(order.client_order_id == client_id and order.order_type == "STOP_MARKET" for order in orders)
 
     async def _signed(self, method: str, path: str, params: dict[str, Any]) -> Any:
+        await self._sync_time_if_needed()
         return await self._request(method, path, params=params, signed=True)
 
     async def _request(
@@ -446,7 +449,7 @@ class BinanceFuturesAdapter(ExchangeAdapter):
         self._require_credentials()
         params = dict(params or {})
         if signed:
-            params["timestamp"] = int(time.time() * 1000)
+            params["timestamp"] = self._timestamp_ms()
             params["recvWindow"] = self.recv_window
             params["signature"] = self._signature(params)
         headers = {"X-MBX-APIKEY": self.api_key}
@@ -461,6 +464,20 @@ class BinanceFuturesAdapter(ExchangeAdapter):
         if response.status_code >= 400:
             raise ExchangeError(f"Binance {response.status_code}: {response.text}")
         return response.json()
+
+    async def _sync_time_if_needed(self) -> None:
+        now_ms = int(time.time() * 1000)
+        if now_ms - self._last_time_sync_ms < 60_000:
+            return
+        async with httpx.AsyncClient(timeout=5) as client:
+            response = await client.get(f"{self.base_url}/fapi/v1/time")
+        response.raise_for_status()
+        server_time = int(response.json()["serverTime"])
+        self._time_offset_ms = server_time - now_ms
+        self._last_time_sync_ms = now_ms
+
+    def _timestamp_ms(self) -> int:
+        return int(time.time() * 1000) + self._time_offset_ms
 
     def _signature(self, params: dict[str, Any]) -> str:
         query = urlencode(params, doseq=True)

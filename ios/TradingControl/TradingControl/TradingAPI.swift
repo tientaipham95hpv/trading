@@ -86,6 +86,11 @@ public actor TradingAPI {
         try await send("/api/live/config", method: "PUT", body: update)
     }
 
+    @discardableResult
+    public func prepareLive() async throws -> PrepareLiveResponse {
+        try await post("/api/live/prepare")
+    }
+
     public func websocketURL(channel: String) -> URL {
         var components = URLComponents(url: baseURL, resolvingAgainstBaseURL: false)!
         components.path = "/api/ws/\(channel)"
@@ -204,6 +209,12 @@ public struct ModeResponse: Codable {
     public let accepted: Bool
     public let mode: String?
     public let reason: String?
+}
+
+public struct PrepareLiveResponse: Codable {
+    public let accepted: Bool
+    public let reason: String?
+    public let readiness: LiveReadiness?
 }
 
 public enum TradingAPIError: Error, LocalizedError {

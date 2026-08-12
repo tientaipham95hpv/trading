@@ -1,5 +1,6 @@
 import type {
   BotSettings,
+  Candle,
   Market,
   LogItem,
   Performance,
@@ -39,11 +40,13 @@ export const api = {
   performance: () => request<Performance>("/api/performance"),
   exchange: () => request<ExchangeSnapshot>("/api/exchange"),
   settings: () => request<BotSettings>("/api/settings"),
+  klines: (symbol: string, interval = "15m", limit = 180) =>
+    request<{ symbol: string; interval: string; items: Candle[] }>(`/api/klines/${symbol}?interval=${interval}&limit=${limit}`),
   updateSettings: (settings: BotSettings) =>
     request<BotSettings>("/api/settings", { method: "PUT", body: JSON.stringify(settings) }),
   bot: (action: "start" | "pause" | "stop") =>
     request<{ bot_state: StatusPayload["bot_state"] }>(`/api/bot/${action}`, { method: "POST" }),
-  mode: (mode: "PAPER" | "DEMO" | "LIVE") =>
+  mode: (mode: "DEMO" | "LIVE") =>
     request<{ accepted: boolean; mode?: string; reason?: string }>(`/api/mode/${mode}`, { method: "POST" }),
   control: (action: "pause-new-trades" | "cancel-orders" | "close-all") =>
     request<{ accepted: boolean; reason?: string }>(`/api/controls/${action}`, { method: "POST" }),
@@ -51,6 +54,8 @@ export const api = {
     request<{ active: boolean; reason: string | null }>("/api/emergency-stop", { method: "POST" }),
   liveConfig: (update: Partial<StatusPayload["live_readiness"]>) =>
     request<StatusPayload["live_readiness"]>("/api/live/config", { method: "PUT", body: JSON.stringify(update) }),
+  prepareLive: () =>
+    request<{ accepted: boolean; reason?: string; readiness?: StatusPayload["live_readiness"] }>("/api/live/prepare", { method: "POST" }),
 };
 
 export function wsUrl(channel: string): string {

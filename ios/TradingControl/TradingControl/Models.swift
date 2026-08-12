@@ -16,6 +16,7 @@ public struct TrangThaiBot: Codable, Equatable {
     public let exchange: ExchangeSnapshot
     public let risk: RuiRo
     public let liveReadiness: LiveReadiness
+    public let autoTrader: AutoTraderStatus?
 
     enum CodingKeys: String, CodingKey {
         case mode
@@ -27,6 +28,33 @@ public struct TrangThaiBot: Codable, Equatable {
         case exchange
         case risk
         case liveReadiness = "live_readiness"
+        case autoTrader = "auto_trader"
+    }
+}
+
+public struct AutoTraderStatus: Codable, Equatable {
+    public let running: Bool
+    public let intervalSeconds: Int
+    public let lastRunAt: String?
+    public let lastActionAt: String?
+    public let lastStatus: String
+    public let lastReason: String
+    public let lastSymbol: String?
+    public let cycles: Int
+    public let submitted: Int
+    public let rejected: Int
+
+    enum CodingKeys: String, CodingKey {
+        case running
+        case intervalSeconds = "interval_seconds"
+        case lastRunAt = "last_run_at"
+        case lastActionAt = "last_action_at"
+        case lastStatus = "last_status"
+        case lastReason = "last_reason"
+        case lastSymbol = "last_symbol"
+        case cycles
+        case submitted
+        case rejected
     }
 }
 

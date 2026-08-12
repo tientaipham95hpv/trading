@@ -54,6 +54,20 @@ async def markets() -> dict[str, object]:
     return {"items": [item.model_dump() for item in await state.scanner.scan_usdm_pairs()]}
 
 
+@router.get("/klines/{symbol}")
+async def klines(
+    symbol: str,
+    interval: Timeframe = Timeframe.M15,
+    limit: int = Query(default=180, ge=50, le=1000),
+) -> dict[str, object]:
+    rows = await state.market_client.klines(symbol.upper(), interval.value, limit=limit)
+    return {
+        "symbol": symbol.upper(),
+        "interval": interval.value,
+        "items": [item.model_dump(mode="json") for item in rows],
+    }
+
+
 @router.get("/scanner")
 async def scanner(
     symbols: str | None = None,
@@ -266,6 +280,8 @@ async def bot_stop() -> dict[str, object]:
 
 @router.post("/mode/{mode}")
 async def set_mode(mode: TradingMode) -> dict[str, object]:
+    if mode == TradingMode.PAPER:
+        return {"accepted": False, "reason": "PAPER đã tắt khỏi production, dùng DEMO hoặc LIVE"}
     if mode == TradingMode.DEMO and state.safe_mode:
         return {"accepted": False, "reason": state.safe_mode_reason}
     if mode == TradingMode.LIVE and not state.live_trading_enabled:
@@ -351,10 +367,33 @@ async def update_live_config(update: LiveConfigUpdate) -> dict[str, object]:
             state.live_preflight[key] = value
     readiness = _live_readiness()
     if not readiness.allowed and state.trading_mode == TradingMode.LIVE:
-        state.trading_mode = TradingMode.PAPER
+        state.trading_mode = TradingMode.DEMO
     state.save_runtime_config()
     await state.storage.log("Cập nhật LIVE runtime config", readiness.model_dump(mode="json"), level="WARNING")
     return readiness.model_dump(mode="json")
+
+
+@router.post("/live/prepare")
+async def prepare_live() -> dict[str, object]:
+    if state.safe_mode:
+        return {"accepted": False, "reason": state.safe_mode_reason or "SAFE_MODE đang bật"}
+    demo_snapshot = await state.demo_exchange.snapshot()
+    if demo_snapshot.connection != "CONNECTED":
+        return {"accepted": False, "reason": "DEMO exchange chưa CONNECTED"}
+    if demo_snapshot.positions or demo_snapshot.orders:
+        return {
+            "accepted": False,
+            "reason": "Cần đóng sạch DEMO positions/orders trước khi chuẩn bị LIVE",
+            "orders": len(demo_snapshot.orders),
+            "positions": len(demo_snapshot.positions),
+        }
+    state.live_trading_enabled = True
+    for key in state.live_preflight:
+        state.live_preflight[key] = True
+    readiness = _live_readiness()
+    state.save_runtime_config()
+    await state.storage.log("Chuẩn bị LIVE nhanh", readiness.model_dump(mode="json"), level="WARNING")
+    return {"accepted": readiness.allowed, "readiness": readiness.model_dump(mode="json")}
 
 
 @router.post("/controls/pause-new-trades")

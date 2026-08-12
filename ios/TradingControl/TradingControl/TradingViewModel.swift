@@ -125,6 +125,10 @@ public final class TradingViewModel: ObservableObject {
 
     public func setMode(_ mode: String) async {
         do {
+            guard mode == "DEMO" || mode == "LIVE" else {
+                errorMessage = "PAPER đã tắt khỏi production."
+                return
+            }
             let response = try await api.setMode(mode)
             if response.accepted {
                 await refreshAll()
@@ -164,6 +168,16 @@ public final class TradingViewModel: ObservableObject {
         do {
             _ = try await api.updateLiveConfig(update)
             await refreshAll()
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+
+    public func prepareLive() async {
+        do {
+            let response = try await api.prepareLive()
+            await refreshAll()
+            errorMessage = response.accepted ? "LIVE đã sẵn sàng. Kiểm tra lại rồi mới chuyển LIVE." : (response.reason ?? "Chưa chuẩn bị được LIVE")
         } catch {
             errorMessage = error.localizedDescription
         }

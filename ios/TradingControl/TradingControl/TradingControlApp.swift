@@ -61,8 +61,9 @@ private struct HomeView: View {
 
                 LazyVGrid(columns: [GridItem(.adaptive(minimum: 156), spacing: 12)], spacing: 12) {
                     MetricTile(title: "Trạng thái bot", value: viBotState(model.status?.botState), tint: .blue)
-                    MetricTile(title: "Chế độ", value: model.status?.mode ?? "PAPER", tint: .green)
+                    MetricTile(title: "Chế độ", value: displayMode(model.status?.mode), tint: .green)
                     MetricTile(title: "LIVE", value: model.status?.liveEnabled == true ? "Bật" : "Tắt", tint: model.status?.liveEnabled == true ? .red : .green)
+                    MetricTile(title: "Auto loop", value: viAutoStatus(model.status?.autoTrader?.lastStatus), tint: model.status?.autoTrader?.lastStatus == "ORDER_SUBMITTED" ? .green : .orange)
                     MetricTile(title: "Vốn hiện tại", value: money(model.performance?.equity), tint: .primary)
                     MetricTile(title: "PNL hôm nay", value: money(model.performance?.realizedPnl), tint: (model.performance?.realizedPnl ?? 0) >= 0 ? .green : .red)
                     MetricTile(title: "Sụt giảm vốn", value: percent(drawdown(model.performance)), tint: .red)
@@ -125,13 +126,12 @@ private struct ModeControlPanel: View {
                     .foregroundStyle(model.status?.liveReadiness.allowed == true ? .orange : .green)
             }
             Picker("Chế độ", selection: Binding(
-                get: { model.status?.mode ?? "PAPER" },
+                get: { displayMode(model.status?.mode) },
                 set: { mode in
                     guard mode != "LIVE" || liveAllowed else { return }
                     Task { await model.setMode(mode) }
                 }
             )) {
-                Text("PAPER").tag("PAPER")
                 Text("DEMO").tag("DEMO")
                 Text("LIVE").tag("LIVE")
             }
@@ -140,6 +140,24 @@ private struct ModeControlPanel: View {
                 Label("LIVE đang khóa bởi preflight", systemImage: "lock.shield")
                     .font(.caption.bold())
                     .foregroundStyle(.secondary)
+            }
+            HStack(spacing: 10) {
+                Button {
+                    Task { await model.prepareLive() }
+                } label: {
+                    Label("Chuẩn bị LIVE", systemImage: "checkmark.shield")
+                }
+                .buttonStyle(.bordered)
+                .tint(.orange)
+                .disabled(model.isRefreshing)
+
+                Button(role: .destructive) {
+                    Task { await model.setMode("LIVE") }
+                } label: {
+                    Label("LIVE", systemImage: "bolt.fill")
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(!liveAllowed || model.isRefreshing)
             }
             HStack(spacing: 10) {
                 Button {
@@ -210,7 +228,7 @@ private struct SystemStateBanner: View {
         if orders > 0 || positions > 0 {
             return "Có \(orders) order và \(positions) vị thế trên \(model.status?.mode ?? "mode hiện tại")."
         }
-        return "Backend chạy, exchange \(viExchangeConnection(model.exchange?.connection)), hiện chưa có lệnh/vị thế mở."
+        return model.status?.autoTrader?.lastReason ?? "Backend chạy, exchange \(viExchangeConnection(model.exchange?.connection)), hiện chưa có lệnh/vị thế mở."
     }
 }
 
@@ -331,7 +349,7 @@ private struct PositionsView: View {
             }
             .navigationTitle("Vị thế")
             .toolbar { RefreshToolbarItem(model: model) }
-            .overlay { if model.positions.isEmpty { EmptyContent("Chưa có vị thế PAPER đang mở.") } }
+            .overlay { if model.positions.isEmpty { EmptyContent("Chưa có vị thế đang mở.") } }
         }
     }
 }
@@ -425,7 +443,7 @@ private struct TradesView: View {
                     }
                 }
             }
-            .overlay { if rows.isEmpty { EmptyContent("Chưa có lịch sử lệnh PAPER.") } }
+            .overlay { if rows.isEmpty { EmptyContent("Chưa có lịch sử lệnh.") } }
         }
     }
 }
@@ -439,10 +457,9 @@ private struct MoreView: View {
             List {
                 Section("Chế độ giao dịch") {
                     Picker("Chế độ", selection: Binding(
-                        get: { model.status?.mode ?? "PAPER" },
+                        get: { displayMode(model.status?.mode) },
                         set: { mode in Task { await model.setMode(mode) } }
                     )) {
-                        Text("PAPER").tag("PAPER")
                         Text("DEMO").tag("DEMO")
                         Text("LIVE").tag("LIVE")
                     }
@@ -475,10 +492,9 @@ private struct MoreView: View {
                     }
                 }
                 Section("LIVE readiness") {
-                    Toggle("Runtime LIVE gate", isOn: Binding(
-                        get: { model.status?.liveReadiness.liveEnabled == true },
-                        set: { value in Task { await model.updateLiveConfig(LiveConfigUpdate(liveEnabled: value)) } }
-                    ))
+                    Button("Chuẩn bị LIVE nhanh") {
+                        Task { await model.prepareLive() }
+                    }
                     InfoRow(label: "All tests", value: model.status?.liveReadiness.allTestsPass == true ? "PASS" : "BLOCK")
                     InfoRow(label: "Demo stable", value: model.status?.liveReadiness.demoStable == true ? "PASS" : "BLOCK")
                     InfoRow(label: "SL protection", value: model.status?.liveReadiness.slProtectionPass == true ? "PASS" : "BLOCK")
@@ -757,6 +773,23 @@ public func viBotState(_ value: String?) -> String {
     case "PAUSED": return "Tạm dừng"
     case "STOPPED": return "Đã dừng"
     default: return "Đã dừng"
+    }
+}
+
+private func displayMode(_ value: String?) -> String {
+    value == "LIVE" ? "LIVE" : "DEMO"
+}
+
+private func viAutoStatus(_ value: String?) -> String {
+    switch value {
+    case "SCANNING": return "Đang quét"
+    case "ORDER_SUBMITTED": return "Đã vào lệnh"
+    case "WAITING_POSITION": return "Đang giữ lệnh"
+    case "CLEANED_ORPHAN_ORDERS": return "Đã dọn order"
+    case "NO_SIGNAL": return "Chưa có tín hiệu"
+    case "BLOCKED": return "Bị chặn"
+    case "ORDER_ERROR", "ERROR": return "Lỗi"
+    default: return "Đang chờ"
     }
 }
 

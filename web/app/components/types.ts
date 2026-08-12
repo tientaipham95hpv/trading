@@ -1,7 +1,9 @@
 export type WsState = "LIVE" | "STALE" | "OFFLINE";
 
+export type TradingMode = "DEMO" | "LIVE";
+
 export type StatusPayload = {
-  mode: "PAPER" | "DEMO" | "LIVE";
+  mode: TradingMode | "PAPER";
   live_enabled: boolean;
   bot_state: "STOPPED" | "RUNNING" | "PAUSED" | "SAFE_MODE";
   emergency_stop: boolean;
@@ -46,7 +48,7 @@ export type StatusPayload = {
 };
 
 export type ExchangeSnapshot = {
-  mode: "PAPER" | "DEMO" | "LIVE";
+  mode: TradingMode | "PAPER";
   connection: "DISCONNECTED" | "CONNECTED" | "STALE" | "SAFE_MODE";
   safe_mode: boolean;
   safe_mode_reason: string | null;
@@ -83,6 +85,17 @@ export type ExchangeSnapshot = {
   }>;
   last_reconciled_at: string | null;
   last_user_stream_at: string | null;
+};
+
+export type Candle = {
+  open_time: number;
+  open: number;
+  high: number;
+  low: number;
+  close: number;
+  volume: number;
+  close_time: number;
+  quote_volume: number;
 };
 
 export type Market = {

@@ -23,12 +23,13 @@ import {
   XCircle,
   Zap,
 } from "lucide-react";
+import { CandlestickSeries, createChart, type IChartApi, type ISeriesApi, type Time } from "lightweight-charts";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useEffect, useMemo, useRef, useState } from "react";
 
 import { api, wsUrl } from "./api";
-import type { BotSettings, ExchangeSnapshot, LogItem, Market, Performance, Position, ScannerResult, StatusPayload, Trade, WsState } from "./types";
+import type { BotSettings, Candle, ExchangeSnapshot, LogItem, Market, Performance, Position, ScannerResult, StatusPayload, Trade, WsState } from "./types";
 
 type PageKey =
   | "dashboard"
@@ -194,9 +195,9 @@ export function DashboardApp({ page }: { page: PageKey }) {
             <StatusLine exchange={exchange ?? status?.exchange ?? null} isRefreshing={isRefreshing} lastLiveAt={lastLiveAt} status={status} wsState={wsState} />
           </div>
           <div className="flex flex-wrap items-center gap-2 xl:justify-end">
-            <ModeSelector current={status?.mode ?? "PAPER"} liveAllowed={status?.live_readiness.allowed ?? false} onDone={refresh} />
+            <ModeSelector current={normalizeMode(status?.mode)} liveAllowed={status?.live_readiness.allowed ?? false} onDone={refresh} />
             <BotControls onDone={refresh} />
-            <Pill label="Chế độ" value={status?.mode ?? "PAPER"} tone="neutral" />
+            <Pill label="Chế độ" value={normalizeMode(status?.mode)} tone="neutral" />
             <Pill label="LIVE" value={status?.live_enabled ? "ON" : "OFF"} tone={status?.live_enabled ? "danger" : "safe"} />
             <Pill label="Bot" value={viBotState(status?.bot_state)} tone={status?.safe_mode ? "danger" : "neutral"} />
             <Pill label="Exchange" value={viExchangeConnection(exchange?.connection ?? status?.exchange.connection)} tone={(exchange?.connection ?? status?.exchange.connection) === "CONNECTED" ? "safe" : "danger"} />
@@ -210,7 +211,7 @@ export function DashboardApp({ page }: { page: PageKey }) {
         <div className="p-4 md:p-5">
           {error && <div className="mb-4 rounded-md border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">{error}</div>}
           {!hasLoaded && <LoadingGrid />}
-          {page === "dashboard" && <Dashboard exchange={exchange ?? status?.exchange ?? null} onDone={refresh} performance={performance} positions={positions} status={status} />}
+          {page === "dashboard" && <Dashboard exchange={exchange ?? status?.exchange ?? null} markets={markets} onDone={refresh} performance={performance} positions={positions} scanner={scanner} status={status} />}
           {page === "markets" && <Markets markets={markets} />}
           {page === "scanner" && <Scanner scanner={scanner} />}
           {page === "positions" && <Positions markets={markets} positions={positions} />}
@@ -226,12 +227,14 @@ export function DashboardApp({ page }: { page: PageKey }) {
   );
 }
 
-function Dashboard({ exchange, onDone, performance, positions, status }: { exchange: ExchangeSnapshot | null; onDone: () => Promise<void>; performance: Performance | null; positions: Position[]; status: StatusPayload | null }) {
+function Dashboard({ exchange, markets, onDone, performance, positions, scanner, status }: { exchange: ExchangeSnapshot | null; markets: Market[]; onDone: () => Promise<void>; performance: Performance | null; positions: Position[]; scanner: ScannerResult[]; status: StatusPayload | null }) {
   const equitySeries = useMemo(() => buildEquitySeries(performance), [performance]);
+  const chartSymbol = exchange?.positions[0]?.symbol ?? status?.auto_trader?.last_symbol ?? scanner.find((item) => item.action !== "NO_TRADE")?.symbol ?? markets[0]?.symbol ?? "BTCUSDT";
   return (
     <div className="grid gap-4">
       <ActivitySummary exchange={exchange} status={status} />
       <CommandCenter exchange={exchange} onDone={onDone} status={status} />
+      <MarketChart symbol={chartSymbol} />
       <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
         <Metric label="Vốn hiện tại" value={money(performance?.equity)} />
         <Metric label="PNL hôm nay" value={money(performance?.realized_pnl)} tone={(performance?.realized_pnl ?? 0) >= 0 ? "good" : "bad"} />
@@ -269,7 +272,7 @@ function CommandCenter({ exchange, onDone, status }: { exchange: ExchangeSnapsho
   return (
     <section className="grid gap-4 rounded-lg border border-slate-200 bg-white p-4 shadow-sm xl:grid-cols-[1.2fr_1fr]">
       <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
-        <ModeCard label="Trading mode" value={status?.mode ?? "PAPER"} tone={status?.mode === "LIVE" ? "danger" : status?.mode === "DEMO" ? "warning" : "safe"} />
+        <ModeCard label="Trading mode" value={normalizeMode(status?.mode)} tone={status?.mode === "LIVE" ? "danger" : "warning"} />
         <ModeCard label="Exchange" value={viExchangeConnection(exchange?.connection)} tone={exchange?.connection === "CONNECTED" ? "safe" : "danger"} />
         <ModeCard label="LIVE gate" value={status?.live_readiness.allowed ? "READY" : "LOCKED"} tone={status?.live_readiness.allowed ? "warning" : "safe"} />
         <ModeCard label="Auto loop" value={viAutoStatus(status?.auto_trader?.last_status)} tone={status?.auto_trader?.last_status === "ORDER_SUBMITTED" ? "safe" : "warning"} />
@@ -279,9 +282,116 @@ function CommandCenter({ exchange, onDone, status }: { exchange: ExchangeSnapsho
           {status?.mode === "LIVE" ? "LIVE đang dùng tiền thật. Kiểm tra lệnh và rủi ro trước mọi thao tác." : "Đang ở môi trường an toàn. Có thể kiểm tra kết nối, signal và lệnh demo tại đây."}
         </p>
         <div className="flex flex-wrap items-center justify-start gap-2 xl:justify-end">
-        <ModeSelector current={status?.mode ?? "PAPER"} liveAllowed={status?.live_readiness.allowed ?? false} onDone={onDone} />
+        <ModeSelector current={normalizeMode(status?.mode)} liveAllowed={status?.live_readiness.allowed ?? false} onDone={onDone} />
+        <LiveQuickActions onDone={onDone} status={status} />
         <BotControls onDone={onDone} />
         </div>
+      </div>
+    </section>
+  );
+}
+
+function MarketChart({ symbol }: { symbol: string }) {
+  const containerRef = useRef<HTMLDivElement | null>(null);
+  const chartRef = useRef<IChartApi | null>(null);
+  const seriesRef = useRef<ISeriesApi<"Candlestick"> | null>(null);
+  const [candles, setCandles] = useState<Candle[]>([]);
+  const [interval, setInterval] = useState("15m");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let alive = true;
+    async function load() {
+      setBusy(true);
+      try {
+        const response = await api.klines(symbol, interval, 220);
+        if (!alive) return;
+        setCandles(response.items);
+        setError(null);
+      } catch (reason) {
+        if (!alive) return;
+        setError(reason instanceof Error ? reason.message : "Không tải được biểu đồ");
+      } finally {
+        if (alive) setBusy(false);
+      }
+    }
+    void load();
+    const timer = window.setInterval(() => void load(), 30_000);
+    return () => {
+      alive = false;
+      window.clearInterval(timer);
+    };
+  }, [symbol, interval]);
+
+  useEffect(() => {
+    if (!containerRef.current || chartRef.current) return;
+    const chart = createChart(containerRef.current, {
+      autoSize: true,
+      height: 360,
+      layout: { background: { color: "#ffffff" }, textColor: "#334155" },
+      grid: { vertLines: { color: "#edf2f7" }, horzLines: { color: "#edf2f7" } },
+      rightPriceScale: { borderColor: "#e2e8f0" },
+      timeScale: { borderColor: "#e2e8f0", timeVisible: true, secondsVisible: false },
+      crosshair: { mode: 1 },
+    });
+    const series = chart.addSeries(CandlestickSeries, {
+      upColor: "#059669",
+      downColor: "#dc2626",
+      borderVisible: false,
+      wickUpColor: "#059669",
+      wickDownColor: "#dc2626",
+    });
+    chartRef.current = chart;
+    seriesRef.current = series;
+    return () => {
+      chart.remove();
+      chartRef.current = null;
+      seriesRef.current = null;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!seriesRef.current || !candles.length) return;
+    seriesRef.current.setData(
+      candles.map((item) => ({
+        time: Math.floor(item.open_time / 1000) as Time,
+        open: item.open,
+        high: item.high,
+        low: item.low,
+        close: item.close,
+      })),
+    );
+    chartRef.current?.timeScale().fitContent();
+  }, [candles]);
+
+  const last = candles.at(-1);
+  const first = candles.at(0);
+  const change = last && first ? ((last.close - first.open) / first.open) * 100 : null;
+
+  return (
+    <section className="rounded-lg border border-slate-200 bg-white shadow-sm">
+      <div className="flex flex-col gap-3 border-b border-slate-200 p-4 md:flex-row md:items-center md:justify-between">
+        <div>
+          <p className="text-xs font-bold uppercase text-slate-500">Biểu đồ coin</p>
+          <div className="mt-1 flex flex-wrap items-end gap-3">
+            <h3 className="text-xl font-black">{symbol}</h3>
+            <span className="text-sm font-bold text-slate-500">{last ? money(last.close) : "-"}</span>
+            <span className={`text-sm font-bold ${(change ?? 0) >= 0 ? "text-emerald-700" : "text-red-700"}`}>{change === null ? "-" : signedPercent(change)}</span>
+          </div>
+        </div>
+        <div className="flex flex-wrap gap-2">
+          {(["1m", "5m", "15m", "1h", "4h"] as const).map((value) => (
+            <button className={`rounded-md px-3 py-2 text-xs font-black transition ${interval === value ? "bg-slate-950 text-white" : "bg-slate-100 text-slate-600 hover:bg-slate-200"}`} key={value} onClick={() => setInterval(value)} type="button">
+              {value}
+            </button>
+          ))}
+        </div>
+      </div>
+      <div className="relative p-2 md:p-4">
+        <div className="h-[320px] w-full md:h-[420px]" ref={containerRef} />
+        {busy && <div className="absolute right-5 top-5 rounded-full bg-white/90 px-3 py-1 text-xs font-bold text-slate-500 shadow">Đang tải</div>}
+        {error && <div className="absolute inset-x-5 bottom-5 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm font-semibold text-red-700">{error}</div>}
       </div>
     </section>
   );
@@ -736,6 +846,45 @@ function ActionIcon({ busy, children, disabled, label, onClick, tone }: { busy: 
   );
 }
 
+function LiveQuickActions({ onDone, status }: { onDone: () => Promise<void>; status: StatusPayload | null }) {
+  const [busy, setBusy] = useState(false);
+  async function prepare() {
+    setBusy(true);
+    try {
+      const response = await api.prepareLive();
+      if (!response.accepted && response.reason) {
+        window.alert(response.reason);
+      }
+      await onDone();
+    } finally {
+      setBusy(false);
+    }
+  }
+  async function goLive() {
+    if (!window.confirm("Chuyển sang LIVE sẽ cho bot dùng tài khoản thật. Chỉ tiếp tục khi Boss đã kiểm tra rủi ro.")) return;
+    setBusy(true);
+    try {
+      await api.mode("LIVE");
+      await onDone();
+    } finally {
+      setBusy(false);
+    }
+  }
+  if (status?.mode === "LIVE") {
+    return <Pill label="LIVE" value="Đang chạy tiền thật" tone="danger" />;
+  }
+  return (
+    <div className="flex rounded-md border border-amber-300 bg-amber-50 p-1 shadow-sm">
+      <button className="min-h-9 rounded px-3 text-xs font-black text-amber-800 transition hover:bg-amber-100 disabled:opacity-50" disabled={busy} onClick={() => void prepare()} type="button">
+        {busy ? "Đang kiểm tra" : "Chuẩn bị LIVE"}
+      </button>
+      <button className="min-h-9 rounded bg-red-700 px-3 text-xs font-black text-white transition hover:bg-red-800 disabled:opacity-50" disabled={busy || !status?.live_readiness.allowed} onClick={() => void goLive()} title={!status?.live_readiness.allowed ? "Cần chuẩn bị LIVE trước" : "Chuyển sang LIVE"} type="button">
+        LIVE
+      </button>
+    </div>
+  );
+}
+
 function StatusLine({ exchange, isRefreshing, lastLiveAt, status, wsState }: { exchange: ExchangeSnapshot | null; isRefreshing: boolean; lastLiveAt: number; status: StatusPayload | null; wsState: WsState }) {
   const parts = [
     status ? `Mode ${status.mode}` : "Đang tải trạng thái",
@@ -763,10 +912,11 @@ function LoadingGrid() {
   );
 }
 
-function ModeSelector({ current, liveAllowed, onDone }: { current: "PAPER" | "DEMO" | "LIVE"; liveAllowed: boolean; onDone: () => Promise<void> }) {
+function ModeSelector({ current, liveAllowed, onDone }: { current: "DEMO" | "LIVE"; liveAllowed: boolean; onDone: () => Promise<void> }) {
   const [busy, setBusy] = useState(false);
-  async function change(mode: "PAPER" | "DEMO" | "LIVE") {
+  async function change(mode: "DEMO" | "LIVE") {
     if (mode === current) return;
+    if (mode === "LIVE" && !window.confirm("Chuyển sang LIVE sẽ dùng tài khoản thật. Boss xác nhận tiếp tục?")) return;
     setBusy(true);
     try {
       await api.mode(mode);
@@ -777,7 +927,7 @@ function ModeSelector({ current, liveAllowed, onDone }: { current: "PAPER" | "DE
   }
   return (
     <div className="flex rounded-md border border-slate-300 bg-white p-1 shadow-sm">
-      {(["PAPER", "DEMO", "LIVE"] as const).map((mode) => (
+      {(["DEMO", "LIVE"] as const).map((mode) => (
         <button
           className={`min-h-8 rounded px-3 py-1 text-xs font-black transition ${current === mode ? "bg-slate-950 text-white" : "text-slate-600 hover:bg-slate-100 disabled:text-slate-300 disabled:hover:bg-transparent"}`}
           disabled={busy || (mode === "LIVE" && !liveAllowed)}
@@ -934,6 +1084,10 @@ function viBotState(value: StatusPayload["bot_state"] | undefined) {
   if (value === "SAFE_MODE") return "SAFE_MODE";
   if (value === "STOPPED") return "Đã dừng";
   return "Đã dừng";
+}
+
+function normalizeMode(value: StatusPayload["mode"] | undefined): "DEMO" | "LIVE" {
+  return value === "LIVE" ? "LIVE" : "DEMO";
 }
 
 function viRegime(value: string) {

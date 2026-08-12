@@ -94,13 +94,21 @@ class AutoTrader:
             except (ExchangeCredentialsError, ExchangeError) as exc:
                 self.rejected += 1
                 return await self._skip("BLOCKED", f"Exchange snapshot lỗi: {exc}")
-            if snapshot.orders or snapshot.positions:
+            if snapshot.orders and not snapshot.positions:
+                symbols = sorted({order.symbol for order in snapshot.orders})
+                for symbol in symbols:
+                    await adapter.cancel_all_orders(symbol)
+                return await self._skip(
+                    "CLEANED_ORPHAN_ORDERS",
+                    f"Đã hủy {len(snapshot.orders)} order mồ côi, không có vị thế mở",
+                )
+            if snapshot.positions:
                 return await self._skip(
                     "WAITING_POSITION",
                     f"Đang có {len(snapshot.orders)} order và {len(snapshot.positions)} vị thế trên exchange",
                 )
         elif self.state.execution.open_positions():
-            return await self._skip("WAITING_POSITION", "PAPER đang có vị thế mở")
+            return await self._skip("WAITING_POSITION", "Đang có vị thế mô phỏng mở")
 
         self.last_status = "SCANNING"
         results = await self.state.scanner.scan(limit=40)
@@ -206,7 +214,7 @@ class AutoTrader:
         self.submitted += 1
         self.last_action_at = datetime.now(UTC)
         self.last_status = "ORDER_SUBMITTED"
-        self.last_reason = f"Đã vào {plan.symbol} {plan.side.value} trên PAPER"
+        self.last_reason = f"Đã vào {plan.symbol} {plan.side.value} trên mô phỏng"
         await self._notify_position_open(plan)
         await self.state.storage.log("Auto-trader submitted paper order", result, level="WARNING")
         return self.snapshot()
