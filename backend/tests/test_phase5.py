@@ -1,5 +1,6 @@
 import pytest
 
+from app.api.routes import _exchange_performance
 from app.domain.models import (
     EmergencyStopState,
     ExchangeOrder,
@@ -11,7 +12,6 @@ from app.domain.models import (
     TradingMode,
 )
 from app.services.auto_trader import AutoTrader
-from app.api.routes import _exchange_performance
 from app.services.backtest import BacktestService
 from app.services.risk_engine import RiskEngine
 
@@ -139,6 +139,29 @@ def test_exchange_performance_exposes_capital_return_and_trade_outcomes():
     assert performance.winning_trades == 1
     assert performance.losing_trades == 1
     assert performance.breakeven_trades == 0
+
+
+def test_exchange_performance_keeps_snapshotted_initial_capital():
+    snapshot = ExchangeSnapshot(
+        mode=TradingMode.LIVE,
+        balance={
+            "asset": "USDT",
+            "balance": 1_025,
+            "available": 1_025,
+            "margin_balance": 1_025,
+            "unrealized_pnl": 0,
+        },
+    )
+
+    performance = _exchange_performance(
+        snapshot,
+        [{"incomeType": "REALIZED_PNL", "income": "25"}],
+        initial_capital=1_000,
+    )
+
+    assert performance.initial_capital == 1_000
+    assert performance.net_pnl == 25
+    assert performance.return_percent == pytest.approx(2.5)
 
 
 def test_exchange_watchdog_treats_open_orders_as_busy_symbols():

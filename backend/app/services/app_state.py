@@ -63,8 +63,17 @@ class AppState:
             "reconciliation_pass": settings.live_preflight_reconciliation_pass,
             "duplicate_order_tests_pass": settings.live_preflight_duplicate_order_tests_pass,
         }
-        self.performance_reset_at: datetime | None = None
-        self.runtime_config_path = (Path(__file__).resolve().parents[3] / settings.runtime_config_path).resolve()
+        self.performance_reset_at_by_mode: dict[TradingMode, datetime | None] = {
+            TradingMode.DEMO: None,
+            TradingMode.LIVE: None,
+        }
+        self.performance_initial_capital_by_mode: dict[TradingMode, float | None] = {
+            TradingMode.DEMO: None,
+            TradingMode.LIVE: None,
+        }
+        self.runtime_config_path = (
+            Path(__file__).resolve().parents[3] / settings.runtime_config_path
+        ).resolve()
         self._load_runtime_config()
         self.bot_state = BotState.STOPPED
         self.emergency_stop = EmergencyStopState(active=False, reason=None)
@@ -124,14 +133,36 @@ class AppState:
         self.demo_exchange.snapshot_cache.safe_mode = True
         self.demo_exchange.snapshot_cache.safe_mode_reason = reason
 
+    def performance_reset_at_for(self, mode: TradingMode | None = None) -> datetime | None:
+        return self.performance_reset_at_by_mode.get(mode or self.trading_mode)
+
+    def performance_initial_capital_for(self, mode: TradingMode | None = None) -> float | None:
+        return self.performance_initial_capital_by_mode.get(mode or self.trading_mode)
+
+    def set_performance_baseline(
+        self, mode: TradingMode, reset_at: datetime, initial_capital: float
+    ) -> None:
+        self.performance_reset_at_by_mode[mode] = reset_at
+        self.performance_initial_capital_by_mode[mode] = initial_capital
+
     def save_runtime_config(self) -> None:
         payload = {
             "trading_mode": self.trading_mode.value,
             "live_trading_enabled": self.live_trading_enabled,
             "live_preflight": self.live_preflight,
-            "performance_reset_at": self.performance_reset_at.isoformat() if self.performance_reset_at else None,
+            "performance": {
+                mode.value: {
+                    "reset_at": self.performance_reset_at_for(mode).isoformat()
+                    if self.performance_reset_at_for(mode)
+                    else None,
+                    "initial_capital": self.performance_initial_capital_for(mode),
+                }
+                for mode in (TradingMode.DEMO, TradingMode.LIVE)
+            },
         }
-        self.runtime_config_path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
+        self.runtime_config_path.write_text(
+            json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8"
+        )
 
     def _load_runtime_config(self) -> None:
         if not self.runtime_config_path.exists():
@@ -150,14 +181,37 @@ class AppState:
             for key in self.live_preflight:
                 if isinstance(preflight.get(key), bool):
                     self.live_preflight[key] = preflight[key]
-        reset_at = payload.get("performance_reset_at")
-        if isinstance(reset_at, str):
-            try:
-                self.performance_reset_at = datetime.fromisoformat(reset_at)
-                if self.performance_reset_at.tzinfo is None:
-                    self.performance_reset_at = self.performance_reset_at.replace(tzinfo=UTC)
-            except ValueError:
-                self.performance_reset_at = None
+        performance = payload.get("performance")
+        if isinstance(performance, dict):
+            for performance_mode in (TradingMode.DEMO, TradingMode.LIVE):
+                item = performance.get(performance_mode.value)
+                if not isinstance(item, dict):
+                    continue
+                reset_at = item.get("reset_at")
+                if isinstance(reset_at, str):
+                    try:
+                        parsed = datetime.fromisoformat(reset_at)
+                        self.performance_reset_at_by_mode[performance_mode] = (
+                            parsed if parsed.tzinfo else parsed.replace(tzinfo=UTC)
+                        )
+                    except ValueError:
+                        pass
+                initial_capital = item.get("initial_capital")
+                if isinstance(initial_capital, (int, float)):
+                    self.performance_initial_capital_by_mode[performance_mode] = float(
+                        initial_capital
+                    )
+        else:
+            # Legacy timestamp belonged to the active environment only.
+            reset_at = payload.get("performance_reset_at")
+            if isinstance(reset_at, str):
+                try:
+                    parsed = datetime.fromisoformat(reset_at)
+                    self.performance_reset_at_by_mode[self.trading_mode] = (
+                        parsed if parsed.tzinfo else parsed.replace(tzinfo=UTC)
+                    )
+                except ValueError:
+                    pass
 
 
 state = AppState(Settings())

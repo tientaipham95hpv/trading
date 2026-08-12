@@ -54,8 +54,8 @@ async def status() -> dict[str, object]:
         "live_readiness": _live_readiness(state.stability.last_report).model_dump(mode="json"),
         "auto_trader": state.auto_trader.snapshot(),
         "user_stream": state.user_stream.snapshot(),
-        "performance_reset_at": state.performance_reset_at.isoformat()
-        if state.performance_reset_at
+        "performance_reset_at": state.performance_reset_at_for().isoformat()
+        if state.performance_reset_at_for()
         else None,
     }
 
@@ -233,8 +233,9 @@ async def trades() -> dict[str, object]:
         for symbol in symbols:
             rows.extend(await adapter.trade_history(symbol, limit=1000))
         rows.sort(key=lambda row: int(_float(row.get("time"))), reverse=True)
-        if state.performance_reset_at is not None:
-            cutoff_ms = int(state.performance_reset_at.timestamp() * 1000)
+        reset_at = state.performance_reset_at_for()
+        if reset_at is not None:
+            cutoff_ms = int(reset_at.timestamp() * 1000)
             rows = [row for row in rows if int(_float(row.get("time"))) >= cutoff_ms]
         return {"items": _exchange_trades_for_app(rows)}
     return {"items": [item.model_dump(mode="json") for item in state.execution.trades]}
@@ -263,7 +264,15 @@ async def performance() -> dict[str, object]:
         snapshot = await adapter.snapshot()
         income = await adapter.income_history(limit=200)
         income = _income_since_reset(income)
-        return _exchange_performance(snapshot, income).model_dump(mode="json")
+        performance = _exchange_performance(
+            snapshot, income, initial_capital=state.performance_initial_capital_for()
+        )
+        if state.performance_initial_capital_for() is None:
+            state.performance_initial_capital_by_mode[state.trading_mode] = (
+                performance.initial_capital
+            )
+            state.save_runtime_config()
+        return performance.model_dump(mode="json")
     return state.execution.performance().model_dump(mode="json")
 
 
@@ -275,17 +284,29 @@ async def backtest() -> dict[str, object]:
 
 @router.post("/performance/reset")
 async def reset_performance() -> dict[str, object]:
-    state.performance_reset_at = datetime.now(UTC)
+    if state.trading_mode in {TradingMode.DEMO, TradingMode.LIVE}:
+        snapshot = await _current_adapter().snapshot()
+        initial_capital = snapshot.balance.balance
+    else:
+        initial_capital = state.execution.performance().balance
+    reset_at = datetime.now(UTC)
+    state.set_performance_baseline(state.trading_mode, reset_at, initial_capital)
     state.save_runtime_config()
     await state.storage.log(
         "Reset mốc đo hiệu suất",
         {
             "mode": state.trading_mode.value,
-            "performance_reset_at": state.performance_reset_at.isoformat(),
+            "performance_reset_at": reset_at.isoformat(),
+            "initial_capital": initial_capital,
         },
         level="WARNING",
     )
-    return {"accepted": True, "performance_reset_at": state.performance_reset_at.isoformat()}
+    return {
+        "accepted": True,
+        "mode": state.trading_mode.value,
+        "performance_reset_at": reset_at.isoformat(),
+        "initial_capital": initial_capital,
+    }
 
 
 @router.get("/risk")
@@ -362,6 +383,11 @@ async def set_mode(mode: TradingMode) -> dict[str, object]:
         readiness = _live_readiness()
         if not readiness.allowed:
             return {"accepted": False, "reason": "; ".join(readiness.blockers)}
+        if state.performance_reset_at_for(TradingMode.LIVE) is None:
+            snapshot = await state.live_exchange.snapshot()
+            state.set_performance_baseline(
+                TradingMode.LIVE, datetime.now(UTC), snapshot.balance.balance
+            )
     state.trading_mode = mode
     state.save_runtime_config()
     await state.storage.log("Đổi trading mode", {"mode": mode.value})
@@ -829,7 +855,12 @@ def _exchange_trades_for_app(rows: list[dict[str, object]]) -> list[dict[str, ob
     return trades
 
 
-def _exchange_performance(snapshot, income_rows: list[dict[str, object]]) -> PerformanceSnapshot:
+def _exchange_performance(
+    snapshot,
+    income_rows: list[dict[str, object]],
+    *,
+    initial_capital: float | None = None,
+) -> PerformanceSnapshot:
     realized_rows = [row for row in income_rows if row.get("incomeType") == "REALIZED_PNL"]
     realized_values = [_float(row.get("income")) for row in realized_rows]
     realized = sum(realized_values)
@@ -861,7 +892,7 @@ def _exchange_performance(snapshot, income_rows: list[dict[str, object]]) -> Per
     balance = snapshot.balance.balance
     equity = snapshot.balance.margin_balance or balance
     net_pnl = sum(_float(row.get("income")) for row in income_rows)
-    initial_capital = balance - net_pnl
+    initial_capital = initial_capital if initial_capital is not None else balance - net_pnl
     equity_pnl = equity - initial_capital
     return_percent = (net_pnl / initial_capital * 100) if initial_capital else 0.0
     equity_return_percent = (equity_pnl / initial_capital * 100) if initial_capital else 0.0
@@ -892,9 +923,10 @@ def _exchange_performance(snapshot, income_rows: list[dict[str, object]]) -> Per
 
 
 def _income_since_reset(income_rows: list[dict[str, object]]) -> list[dict[str, object]]:
-    if state.performance_reset_at is None:
+    reset_at = state.performance_reset_at_for()
+    if reset_at is None:
         return income_rows
-    cutoff_ms = int(state.performance_reset_at.timestamp() * 1000)
+    cutoff_ms = int(reset_at.timestamp() * 1000)
     return [row for row in income_rows if int(_float(row.get("time"))) >= cutoff_ms]
 
 

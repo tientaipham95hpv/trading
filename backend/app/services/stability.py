@@ -46,6 +46,12 @@ class DemoStabilityService:
                 )
             await asyncio.sleep(45)
 
+    def _demo_reset_at(self) -> datetime | None:
+        getter = getattr(self.state, "performance_reset_at_for", None)
+        if callable(getter):
+            return getter(TradingMode.DEMO)
+        return getattr(self.state, "performance_reset_at", None)
+
     async def report(self) -> DemoStabilityReport:
         adapter = self.state.demo_exchange
         snapshot = adapter.snapshot_cache
@@ -53,8 +59,9 @@ class DemoStabilityService:
         try:
             snapshot = await adapter.snapshot()
             income = await adapter.income_history(limit=1000)
-            if self.state.performance_reset_at:
-                reset_ms = int(self.state.performance_reset_at.timestamp() * 1000)
+            reset_at = self._demo_reset_at()
+            if reset_at:
+                reset_ms = int(reset_at.timestamp() * 1000)
                 income = [row for row in income if int(row.get("time") or 0) >= reset_ms]
             values = [
                 float(row.get("income") or 0)
@@ -80,7 +87,7 @@ class DemoStabilityService:
             profit_factor = performance.profit_factor
 
         now = datetime.now(UTC)
-        started_at = self.state.performance_reset_at
+        started_at = self._demo_reset_at()
         sample_days = max(0.0, (now - started_at).total_seconds() / 86400) if started_at else 0.0
         stream = self.state.user_stream.snapshot()
         order_ids = [order.client_order_id for order in snapshot.orders if order.client_order_id]
