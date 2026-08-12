@@ -1,30 +1,119 @@
-from app.domain.models import ExchangeBalance, ExchangeOrder, ExchangePosition, ExchangeSnapshot
+import pytest
+
+from app.domain.models import (
+    ExchangeBalance,
+    ExchangeOrder,
+    ExchangePosition,
+    ExchangeSnapshot,
+    OrderPlan,
+    Side,
+)
 from app.services.portfolio_risk import PortfolioRiskEngine
 
 
-def test_portfolio_risk_accounts_long_short_and_verified_stops():
+def limits() -> dict[str, float]:
+    return {
+        "max_open_risk_fraction": 0.03,
+        "max_exposure_fraction": 0.50,
+        "max_symbol_exposure_fraction": 0.20,
+        "max_directional_exposure_fraction": 0.40,
+        "max_symbol_open_risk_fraction": 0.015,
+    }
+
+
+def stop(symbol: str, side: str, price: float, order_id: int = 1) -> ExchangeOrder:
+    return ExchangeOrder(
+        symbol=symbol,
+        order_id=order_id,
+        client_order_id=f"sl-{order_id}",
+        side=side,
+        order_type="STOP_MARKET",
+        status="NEW",
+        quantity=1,
+        stop_price=price,
+    )
+
+
+def test_accounts_long_short_and_current_partial_quantity():
     exchange = ExchangeSnapshot(
         balance=ExchangeBalance(balance=1000, margin_balance=1000),
         positions=[
-            ExchangePosition(symbol="BTCUSDT", side="LONG", quantity=1, entry_price=100, mark_price=110),
-            ExchangePosition(symbol="ETHUSDT", side="SHORT", quantity=2, entry_price=50, mark_price=45),
+            ExchangePosition(
+                symbol="BTCUSDT", side="LONG", quantity=0.5, entry_price=100, mark_price=110
+            ),
+            ExchangePosition(
+                symbol="ETHUSDT", side="SHORT", quantity=2, entry_price=50, mark_price=45
+            ),
         ],
-        orders=[
-            ExchangeOrder(symbol="BTCUSDT", order_id=1, client_order_id="sl", side="SELL", order_type="STOP_MARKET", status="NEW", quantity=1, stop_price=95),
-            ExchangeOrder(symbol="ETHUSDT", order_id=2, client_order_id="sl", side="BUY", order_type="STOP_MARKET", status="NEW", quantity=2, stop_price=55),
-        ],
+        orders=[stop("BTCUSDT", "SELL", 95), stop("ETHUSDT", "BUY", 55, 2)],
     )
-    result = PortfolioRiskEngine().snapshot(exchange, max_open_risk_fraction=.03, max_exposure_fraction=.30)
-    assert result.gross_exposure == 200
-    assert result.net_exposure == 20
-    assert result.open_risk == 15
-    assert result.open_risk_remaining == 15
+    result = PortfolioRiskEngine().snapshot(exchange, **limits())
+    assert result.gross_exposure == 145
+    assert result.net_exposure == -35
+    assert result.open_risk == 12.5
+    assert result.positions[0].quantity == 0.5
     assert not result.would_reject_new_entries
 
 
-def test_portfolio_risk_shadow_fails_closed_when_stop_missing():
-    exchange = ExchangeSnapshot(balance=ExchangeBalance(balance=1000), positions=[ExchangePosition(symbol="BTCUSDT", side="LONG", quantity=1, entry_price=100, mark_price=100)])
-    result = PortfolioRiskEngine().snapshot(exchange, max_open_risk_fraction=.03, max_exposure_fraction=.30)
-    assert result.would_reject_new_entries
-    assert result.enforcement_enabled is False
-    assert "chưa có Stop Loss hợp lệ" in result.reasons[0]
+def test_missing_duplicate_and_wrong_side_stops_fail_closed():
+    engine = PortfolioRiskEngine()
+    base = {
+        "balance": ExchangeBalance(balance=1000),
+        "positions": [
+            ExchangePosition(
+                symbol="BTCUSDT", side="LONG", quantity=1, entry_price=100, mark_price=100
+            )
+        ],
+    }
+    missing = engine.snapshot(ExchangeSnapshot(**base), **limits())
+    wrong = engine.snapshot(
+        ExchangeSnapshot(**base, orders=[stop("BTCUSDT", "SELL", 105)]), **limits()
+    )
+    duplicate = engine.snapshot(
+        ExchangeSnapshot(
+            **base, orders=[stop("BTCUSDT", "SELL", 95), stop("BTCUSDT", "SELL", 94, 2)]
+        ),
+        **limits(),
+    )
+    assert all(item.would_reject_new_entries for item in (missing, wrong, duplicate))
+    assert "nhiều Stop Loss" in duplicate.reasons[0]
+
+
+def test_symbol_direction_and_boundary_concentration_are_deterministic():
+    exchange = ExchangeSnapshot(
+        balance=ExchangeBalance(balance=1000),
+        positions=[
+            ExchangePosition(
+                symbol="BTCUSDT", side="LONG", quantity=2.01, entry_price=100, mark_price=100
+            )
+        ],
+        orders=[stop("BTCUSDT", "SELL", 95)],
+    )
+    result = PortfolioRiskEngine().snapshot(exchange, **limits())
+    assert "BTCUSDT vượt giới hạn tập trung theo symbol" in result.reasons
+    assert result.positions[0].notional_fraction == pytest.approx(0.201)
+    boundary = exchange.model_copy(deep=True)
+    boundary.positions[0].quantity = 2
+    exact = PortfolioRiskEngine().snapshot(boundary, **limits())
+    assert "BTCUSDT vượt giới hạn tập trung theo symbol" not in exact.reasons
+
+
+def test_pretrade_audit_is_shadow_only_and_has_stable_fingerprint():
+    exchange = ExchangeSnapshot(balance=ExchangeBalance(balance=1000))
+    plan = OrderPlan(
+        client_order_id="candidate",
+        symbol="BTCUSDT",
+        side=Side.LONG,
+        quantity=3,
+        entry_price=100,
+        stop_loss=95,
+        leverage=5,
+        take_profits=[110],
+    )
+    first = PortfolioRiskEngine().evaluate_plan(exchange, plan, **limits())
+    second = PortfolioRiskEngine().evaluate_plan(exchange, plan, **limits())
+    assert first.decision == "WOULD_REJECT"
+    assert first.before.enforcement_enabled is False
+    assert first.after and first.after.enforcement_enabled is False
+    assert first.fingerprint == second.fingerprint
+    assert "BTCUSDT vượt giới hạn tập trung theo symbol" in first.reasons

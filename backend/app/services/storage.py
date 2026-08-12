@@ -90,6 +90,21 @@ class StabilitySnapshotRow(Base):
     )
 
 
+class PortfolioRiskAuditRow(Base):
+    __tablename__ = "portfolio_risk_audits"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    audit_id: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    event: Mapped[str] = mapped_column(String(32), index=True)
+    symbol: Mapped[str | None] = mapped_column(String(32), nullable=True, index=True)
+    decision: Mapped[str] = mapped_column(String(32), index=True)
+    fingerprint: Mapped[str] = mapped_column(String(64), index=True)
+    payload: Mapped[dict[str, Any]] = mapped_column(JSON)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(UTC), index=True
+    )
+
+
 class IncidentRow(Base):
     __tablename__ = "incidents"
 
@@ -175,6 +190,42 @@ class Storage:
                 )
             )
             await session.commit()
+
+    async def save_portfolio_risk_audit(self, payload: dict[str, Any]) -> None:
+        async with self.session_factory() as session:
+            if payload["event"] == "SNAPSHOT":
+                latest = (
+                    await session.execute(
+                        select(PortfolioRiskAuditRow)
+                        .where(PortfolioRiskAuditRow.event == "SNAPSHOT")
+                        .order_by(PortfolioRiskAuditRow.id.desc())
+                        .limit(1)
+                    )
+                ).scalar_one_or_none()
+                if latest and latest.fingerprint == payload["fingerprint"]:
+                    return
+            session.add(
+                PortfolioRiskAuditRow(
+                    audit_id=str(payload["audit_id"]),
+                    event=str(payload["event"]),
+                    symbol=payload.get("symbol"),
+                    decision=str(payload["decision"]),
+                    fingerprint=str(payload["fingerprint"]),
+                    payload=payload,
+                )
+            )
+            await session.commit()
+
+    async def portfolio_risk_audits(self, limit: int = 50) -> list[dict[str, Any]]:
+        async with self.session_factory() as session:
+            rows = (
+                await session.execute(
+                    select(PortfolioRiskAuditRow)
+                    .order_by(PortfolioRiskAuditRow.id.desc())
+                    .limit(limit)
+                )
+            ).scalars()
+            return [row.payload for row in rows]
 
     async def sync_incidents(self, active: dict[str, dict[str, Any]]) -> list[dict[str, Any]]:
         now = datetime.now(UTC)

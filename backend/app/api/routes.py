@@ -314,11 +314,13 @@ async def optimize_backtest(request: BacktestOptimizerRequest) -> dict[str, obje
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     return report.model_dump(mode="json")
 
+
 @router.get("/backtests/optimizer/latest")
 async def latest_backtest_optimizer() -> dict[str, object]:
     if state.backtest.latest_optimizer is None:
         raise HTTPException(status_code=404, detail="Chưa có kết quả optimizer")
     return state.backtest.latest_optimizer.model_dump(mode="json")
+
 
 @router.post("/performance/reset")
 async def reset_performance() -> dict[str, object]:
@@ -354,11 +356,20 @@ async def risk() -> dict[str, object]:
         adapter.snapshot_cache,
         max_open_risk_fraction=state.bot_settings.max_total_open_risk,
         max_exposure_fraction=state.bot_settings.max_portfolio_exposure,
+        max_symbol_exposure_fraction=state.bot_settings.max_symbol_exposure,
+        max_directional_exposure_fraction=state.bot_settings.max_directional_exposure,
+        max_symbol_open_risk_fraction=state.bot_settings.max_symbol_open_risk,
     )
     return {
         "limits": (await status())["risk"],
         "portfolio": portfolio.model_dump(mode="json"),
+        "audits": await state.storage.portfolio_risk_audits(25),
     }
+
+
+@router.get("/risk/audits")
+async def risk_audits(limit: int = Query(default=50, ge=1, le=200)) -> dict[str, object]:
+    return {"items": await state.storage.portfolio_risk_audits(limit)}
 
 
 @router.get("/settings")

@@ -202,6 +202,8 @@ class PortfolioRiskPosition(BaseModel):
     notional: float
     open_risk: float | None = None
     protected: bool = False
+    notional_fraction: float = 0.0
+    risk_fraction: float | None = None
 
 
 class PortfolioRiskSnapshot(BaseModel):
@@ -220,9 +222,26 @@ class PortfolioRiskSnapshot(BaseModel):
     open_risk_limit: float = 0.0
     open_risk_remaining: float = 0.0
     exposure_limit: float = 0.0
+    max_symbol_exposure_fraction: float = 0.20
+    max_directional_exposure_fraction: float = 0.30
+    max_symbol_open_risk_fraction: float = 0.015
     would_reject_new_entries: bool = False
     reasons: list[str] = Field(default_factory=list)
     positions: list[PortfolioRiskPosition] = Field(default_factory=list)
+
+
+class PortfolioRiskAudit(BaseModel):
+    audit_id: str
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    event: str
+    symbol: str | None = None
+    side: str | None = None
+    decision: str
+    reasons: list[str] = Field(default_factory=list)
+    before: PortfolioRiskSnapshot
+    after: PortfolioRiskSnapshot | None = None
+    candidate: dict[str, object] | None = None
+    fingerprint: str
 
 
 class EmergencyStopState(BaseModel):
@@ -365,6 +384,9 @@ class BotSettings(BaseModel):
     max_weekly_drawdown: float = Field(default=0.08, gt=0, le=0.08)
     max_open_positions: int = Field(default=3, ge=1, le=4)
     max_portfolio_exposure: float = Field(default=0.30, gt=0, le=1.0)
+    max_symbol_exposure: float = Field(default=0.20, gt=0, le=1.0)
+    max_directional_exposure: float = Field(default=0.30, gt=0, le=1.0)
+    max_symbol_open_risk: float = Field(default=0.015, gt=0, le=0.10)
     max_correlated_positions: int = Field(default=2, ge=1, le=2)
     max_loss_streak: int = Field(default=3, ge=1, le=3)
     loss_streak_cooldown_minutes: int = Field(default=60, ge=1, le=1440)
@@ -630,14 +652,17 @@ class BacktestOptimizerRequest(BaseModel):
             raise ValueError("ATR Stop phải nằm trong khoảng (0, 10]")
         if any(value <= 0 or value > 0.01 for value in self.risk_fractions):
             raise ValueError("Risk fraction phải nằm trong khoảng (0, 0.01]")
-        combinations = len(set(self.min_scores)) * len(set(self.stop_atr_multipliers)) * len(
-            set(self.risk_fractions)
+        combinations = (
+            len(set(self.min_scores))
+            * len(set(self.stop_atr_multipliers))
+            * len(set(self.risk_fractions))
         )
         if combinations > self.max_candidates:
             raise ValueError(
                 f"Lưới có {combinations} Candidate, vượt giới hạn {self.max_candidates}"
             )
         return self
+
 
 class BacktestOptimizerCandidate(BaseModel):
     rank: int
@@ -646,6 +671,7 @@ class BacktestOptimizerCandidate(BaseModel):
     rejection_reasons: list[str] = Field(default_factory=list)
     profitable_walk_forward_ratio: float = 0.0
     report: BacktestStrategyReport
+
 
 class BacktestOptimizerReport(BaseModel):
     id: str
@@ -659,6 +685,7 @@ class BacktestOptimizerReport(BaseModel):
     selection_policy: str = "VALIDATION_OOS_STABILITY_V1"
     candidates: list[BacktestOptimizerCandidate] = Field(default_factory=list)
     candidate_applied: bool = False
+
 
 class NotificationPayload(BaseModel):
     event: NotificationEvent

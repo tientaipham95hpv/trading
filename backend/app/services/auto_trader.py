@@ -144,6 +144,17 @@ class AutoTrader:
                 return await self._skip("BLOCKED", reason)
 
             self._mark_exchange_reconciled(adapter, snapshot)
+            snapshot_audit = self.state.portfolio_risk.audit_snapshot(
+                snapshot,
+                max_open_risk_fraction=self.state.bot_settings.max_total_open_risk,
+                max_exposure_fraction=self.state.bot_settings.max_portfolio_exposure,
+                max_symbol_exposure_fraction=self.state.bot_settings.max_symbol_exposure,
+                max_directional_exposure_fraction=self.state.bot_settings.max_directional_exposure,
+                max_symbol_open_risk_fraction=self.state.bot_settings.max_symbol_open_risk,
+            )
+            await self.state.storage.save_portfolio_risk_audit(
+                snapshot_audit.model_dump(mode="json")
+            )
             open_position_count = len(snapshot.positions)
             active_symbols = self._busy_exchange_symbols(snapshot)
             portfolio_exposure_fraction = self._exchange_portfolio_exposure_fraction(snapshot)
@@ -277,6 +288,29 @@ class AutoTrader:
                     level="WARNING",
                 )
                 continue
+
+            if snapshot is not None:
+                audit = self.state.portfolio_risk.evaluate_plan(
+                    snapshot,
+                    plan,
+                    max_open_risk_fraction=self.state.bot_settings.max_total_open_risk,
+                    max_exposure_fraction=self.state.bot_settings.max_portfolio_exposure,
+                    max_symbol_exposure_fraction=self.state.bot_settings.max_symbol_exposure,
+                    max_directional_exposure_fraction=self.state.bot_settings.max_directional_exposure,
+                    max_symbol_open_risk_fraction=self.state.bot_settings.max_symbol_open_risk,
+                )
+                await self.state.storage.save_portfolio_risk_audit(audit.model_dump(mode="json"))
+                await self.state.storage.log(
+                    "Portfolio risk shadow pre-trade",
+                    {
+                        "symbol": plan.symbol,
+                        "decision": audit.decision,
+                        "reasons": audit.reasons,
+                        "fingerprint": audit.fingerprint,
+                        "enforcement_enabled": False,
+                    },
+                    level="WARNING" if audit.decision == "WOULD_REJECT" else "INFO",
+                )
 
             return await self._submit(plan)
 
