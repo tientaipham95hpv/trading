@@ -414,3 +414,78 @@ async def test_user_stream_event_marks_adapter_and_snapshot():
     assert watchdog.events == 1
     assert watchdog.last_event_at is not None
     assert adapter.snapshot_cache.last_user_stream_at == watchdog.last_event_at
+
+
+async def test_manage_stops_serializes_concurrent_calls_per_symbol():
+    import asyncio
+
+    adapter = FakeBinanceAdapter()
+    adapter.position_risk = [
+        {
+            "symbol": "BTCUSDT",
+            "positionAmt": "0.006",
+            "entryPrice": "100",
+            "markPrice": "107",
+            "unRealizedProfit": "0.042",
+            "liquidationPrice": "80",
+            "leverage": "5",
+            "marginType": "isolated",
+        }
+    ]
+    adapter.open_algo_orders = [
+        {
+            "symbol": "BTCUSDT",
+            "algoId": 1,
+            "clientAlgoId": "demo-BTCUSDT-1-sl-0",
+            "side": "SELL",
+            "orderType": "STOP_MARKET",
+            "algoStatus": "NEW",
+            "quantity": "0",
+            "actualQty": "0",
+            "reduceOnly": False,
+            "triggerPrice": "95",
+        },
+        {
+            "symbol": "BTCUSDT",
+            "algoId": 2,
+            "clientAlgoId": "demo-BTCUSDT-1-tp-1",
+            "side": "SELL",
+            "orderType": "TAKE_PROFIT_MARKET",
+            "algoStatus": "NEW",
+            "quantity": "0.003",
+            "actualQty": "0",
+            "reduceOnly": True,
+            "triggerPrice": "110",
+        },
+        {
+            "symbol": "BTCUSDT",
+            "algoId": 3,
+            "clientAlgoId": "demo-BTCUSDT-1-tp-2",
+            "side": "SELL",
+            "orderType": "TAKE_PROFIT_MARKET",
+            "algoStatus": "NEW",
+            "quantity": "0.003",
+            "actualQty": "0",
+            "reduceOnly": True,
+            "triggerPrice": "115",
+        },
+    ]
+    original_place = adapter._place_managed_stop_loss
+
+    async def delayed_place(plan, client_id):
+        await asyncio.sleep(0.01)
+        return await original_place(plan, client_id)
+
+    adapter._place_managed_stop_loss = delayed_place  # type: ignore[method-assign]
+    results = await asyncio.gather(
+        adapter.manage_open_position_stops(), adapter.manage_open_position_stops()
+    )
+
+    posts = [
+        params
+        for method, path, params in adapter.calls
+        if method == "POST" and path == "/fapi/v1/algoOrder" and params.get("type") == "STOP_MARKET"
+    ]
+    assert len(posts) == 1
+    assert posts[0]["quantity"] == "0.006"
+    assert sum(len(result) for result in results) == 1

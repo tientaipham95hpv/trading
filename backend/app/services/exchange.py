@@ -89,6 +89,7 @@ class BinanceFuturesAdapter(ExchangeAdapter):
         self._time_offset_ms = 0
         self._last_time_sync_ms = 0
         self._stop_repair_attempts: dict[str, int] = {}
+        self._stop_management_symbols: set[str] = set()
 
     @property
     def configured(self) -> bool:
@@ -288,70 +289,81 @@ class BinanceFuturesAdapter(ExchangeAdapter):
             orders_by_symbol.setdefault(order.symbol, []).append(order)
 
         for position in snapshot.positions:
-            orders = orders_by_symbol.get(position.symbol, [])
-            group_id = self._managed_group_id(position.symbol, orders)
-            if group_id is None:
-                self._set_lifecycle_state(
-                    position, orders, ExchangePositionLifecycleState.PROTECTED
+            if position.symbol in self._stop_management_symbols:
+                continue
+            self._stop_management_symbols.add(position.symbol)
+            try:
+                action = await self._manage_position_stop(
+                    position, orders_by_symbol.get(position.symbol, [])
                 )
-                continue
-            managed_orders = [
-                order for order in orders if self._order_group_id(order.client_order_id) == group_id
-            ]
-            stop_orders = [
-                order
-                for order in managed_orders
-                if order.stop_price
-                and "STOP" in order.order_type
-                and "TAKE_PROFIT" not in order.order_type
-            ]
-            take_profit_orders = [
-                order
-                for order in managed_orders
-                if order.stop_price and "TAKE_PROFIT" in order.order_type
-            ]
-            self._sync_lifecycle(position, managed_orders, group_id=group_id)
-            target = self._managed_stop_target(position, take_profit_orders)
-            if target is None:
-                continue
-            current = self._active_stop_price(position, stop_orders)
-            if not self._stop_improves(position, current, target):
-                continue
-            client_id = _client_order_id(
-                group_id,
-                "be" if self._remaining_tp_count(take_profit_orders) >= 2 else "lock",
-                int(time.time() * 1000),
-            )
-            plan = OrderPlan(
-                client_order_id=client_id,
-                symbol=position.symbol,
-                side=Side.LONG if position.side == "LONG" else Side.SHORT,
-                quantity=position.quantity,
-                entry_price=position.entry_price,
-                stop_loss=target,
-                leverage=min(position.leverage or 1, 10),
-            )
-            order = await self._place_managed_stop_loss(plan, client_id)
-            if not await self._stop_loss_exists(position.symbol, client_id):
-                raise StopLossProtectionError(f"Không xác nhận được SL mới cho {position.symbol}")
-            for old_stop in stop_orders:
-                if old_stop.client_order_id != client_id:
-                    await self.cancel_algo_order(
-                        position.symbol, old_stop.client_order_id, old_stop.order_id
-                    )
-            action = {
-                "symbol": position.symbol,
-                "group_id": group_id,
-                "lifecycle_state": self._lifecycle_state_for(position, take_profit_orders).value,
-                "side": position.side,
-                "old_stop": current,
-                "new_stop": target,
-                "remaining_take_profits": self._remaining_tp_count(take_profit_orders),
-                "client_order_id": client_id,
-                "order": self._normalize_algo_order(order).model_dump(mode="json"),
-            }
-            actions.append(action)
+                if action is not None:
+                    actions.append(action)
+            finally:
+                self._stop_management_symbols.discard(position.symbol)
         return actions
+
+    async def _manage_position_stop(
+        self, position: ExchangePosition, orders: list[ExchangeOrder]
+    ) -> dict[str, object] | None:
+        group_id = self._managed_group_id(position.symbol, orders)
+        if group_id is None:
+            self._set_lifecycle_state(position, orders, ExchangePositionLifecycleState.PROTECTED)
+            return None
+        managed_orders = [
+            order for order in orders if self._order_group_id(order.client_order_id) == group_id
+        ]
+        stop_orders = [
+            order
+            for order in managed_orders
+            if order.stop_price
+            and "STOP" in order.order_type
+            and "TAKE_PROFIT" not in order.order_type
+        ]
+        take_profit_orders = [
+            order
+            for order in managed_orders
+            if order.stop_price and "TAKE_PROFIT" in order.order_type
+        ]
+        self._sync_lifecycle(position, managed_orders, group_id=group_id)
+        target = self._managed_stop_target(position, take_profit_orders)
+        if target is None:
+            return None
+        current = self._active_stop_price(position, stop_orders)
+        if not self._stop_improves(position, current, target):
+            return None
+        client_id = _client_order_id(
+            group_id,
+            "be" if self._remaining_tp_count(take_profit_orders) >= 2 else "lock",
+            int(time.time() * 1000),
+        )
+        plan = OrderPlan(
+            client_order_id=client_id,
+            symbol=position.symbol,
+            side=Side.LONG if position.side == "LONG" else Side.SHORT,
+            quantity=position.quantity,
+            entry_price=position.entry_price,
+            stop_loss=target,
+            leverage=min(position.leverage or 1, 10),
+        )
+        order = await self._place_managed_stop_loss(plan, client_id)
+        if not await self._stop_loss_exists(position.symbol, client_id):
+            raise StopLossProtectionError(f"Không xác nhận được SL mới cho {position.symbol}")
+        for old_stop in stop_orders:
+            if old_stop.client_order_id != client_id:
+                await self.cancel_algo_order(
+                    position.symbol, old_stop.client_order_id, old_stop.order_id
+                )
+        return {
+            "symbol": position.symbol,
+            "group_id": group_id,
+            "lifecycle_state": self._lifecycle_state_for(position, take_profit_orders).value,
+            "side": position.side,
+            "old_stop": current,
+            "new_stop": target,
+            "remaining_take_profits": self._remaining_tp_count(take_profit_orders),
+            "client_order_id": client_id,
+            "order": self._normalize_algo_order(order).model_dump(mode="json"),
+        }
 
     async def handle_user_stream_event(self, event: dict[str, Any]) -> list[dict[str, object]]:
         order = event.get("o")
