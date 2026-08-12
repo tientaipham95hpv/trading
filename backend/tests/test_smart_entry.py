@@ -43,3 +43,51 @@ def test_smart_entry_fails_safe_without_initial_risk():
     assert item["decision"] == "WOULD_SKIP"
     assert item["available"] is False
     assert any("Stop Loss" in reason for reason in item["reasons"])
+
+
+from app.domain.models import Candle
+from app.services.smart_entry import SmartEntryOutcomeAnalytics
+
+
+def candles(count: int, *, start: int = 1_767_225_600_000, step: int = 900_000):
+    return [
+        Candle(
+            open_time=start + index * step,
+            open=100 + index,
+            high=102 + index,
+            low=99 + index,
+            close=101 + index,
+            volume=1,
+            close_time=start + (index + 1) * step - 1,
+        )
+        for index in range(count)
+    ]
+
+
+def test_outcomes_only_publish_complete_horizons_without_lookahead():
+    decision = SmartEntryAnalytics.evaluate(result(), mode="DEMO")
+    outcomes = SmartEntryOutcomeAnalytics.evaluate(decision, candles(12))
+    assert [item["horizon"] for item in outcomes] == [4, 12]
+    assert all(item["candle_count"] == item["horizon"] for item in outcomes)
+    assert all(item["coverage"] == 1 for item in outcomes)
+
+
+def test_outcomes_are_deterministic_for_long_and_short():
+    long_decision = SmartEntryAnalytics.evaluate(result(), mode="DEMO")
+    short_decision = SmartEntryAnalytics.evaluate(
+        result(action=SignalAction.SHORT, long_score=10, short_score=80, stop_loss=102), mode="DEMO"
+    )
+    first = SmartEntryOutcomeAnalytics.evaluate(long_decision, candles(24))
+    assert first == SmartEntryOutcomeAnalytics.evaluate(long_decision, candles(24))
+    assert first[-1]["return_fraction"] > 0
+    assert SmartEntryOutcomeAnalytics.evaluate(short_decision, candles(4))[0]["return_fraction"] < 0
+
+
+def test_outcomes_reject_gaps_and_forming_candles():
+    decision = SmartEntryAnalytics.evaluate(result(), mode="DEMO")
+    broken = candles(4)
+    broken[2] = broken[2].model_copy(update={"open_time": broken[2].open_time + 1})
+    import pytest
+
+    with pytest.raises(ValueError, match="không liên tục"):
+        SmartEntryOutcomeAnalytics.evaluate(decision, broken)

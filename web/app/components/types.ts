@@ -440,5 +440,5 @@ export type LogItem = {
   created_at: string;
 };
 
-export type SmartEntryItem = { event_key: string; symbol: string; timeframe: string; side: string; decision: "WOULD_ENTER" | "WOULD_SKIP"; available: boolean; quality_score: number; reasons: string[]; decision_at: string; entry_price: number; stop_loss: number | null; risk_reward: number | null; outcomes: Record<string, null | { return_fraction: number }>; outcome_note: string; shadow_only: true };
-export type SmartEntryPayload = { mode: string; shadow_only: true; read_only: true; items: SmartEntryItem[]; summary: { total: number; WOULD_ENTER: number; WOULD_SKIP: number }; note: string };
+export type SmartEntryItem = { event_key: string; symbol: string; timeframe: string; side: string; decision: "WOULD_ENTER" | "WOULD_SKIP"; available: boolean; quality_score: number; reasons: string[]; decision_at: string; entry_price: number; stop_loss: number | null; risk_reward: number | null; outcomes: Record<string, null | { return_fraction: number; mfe_fraction: number; mae_fraction: number; horizon: number; last_close_time: number }>; outcome_note: string; shadow_only: true };
+export type SmartEntryPayload = { mode: string; shadow_only: true; read_only: true; items: SmartEntryItem[]; summary: { total: number; WOULD_ENTER: number; WOULD_SKIP: number; outcomes_available: number }; note: string };
