@@ -2,6 +2,7 @@ from typing import Any
 
 from app.domain.models import MarginType, OrderPlan, Side
 from app.services.exchange import BinanceFuturesAdapter
+from app.services.user_stream import UserStreamWatchdog
 
 
 def plan(**overrides):
@@ -106,6 +107,11 @@ class FakeBinanceAdapter(BinanceFuturesAdapter):
                 }
             ]
         return {}
+
+
+class FakeStorage:
+    async def log(self, *args, **kwargs):
+        return None
 
 
 async def test_binance_demo_places_entry_sl_and_reduce_only_take_profits():
@@ -242,3 +248,18 @@ async def test_manage_stops_moves_to_break_even_after_tp1_missing():
         and params.get("clientAlgoId") == "demo-BTCUSDT-1-sl-0"
         for method, path, params in adapter.calls
     )
+
+
+async def test_user_stream_event_marks_adapter_and_snapshot():
+    adapter = FakeBinanceAdapter()
+    state = type("State", (), {"trading_mode": adapter.mode, "storage": FakeStorage()})()
+    watchdog = UserStreamWatchdog(state)
+
+    await watchdog._handle_event(
+        adapter,
+        {"e": "ACCOUNT_UPDATE", "a": {"m": "ORDER"}},
+    )
+
+    assert watchdog.events == 1
+    assert watchdog.last_event_at is not None
+    assert adapter.snapshot_cache.last_user_stream_at == watchdog.last_event_at

@@ -14,6 +14,7 @@ from app.services.order_pipeline import OrderValidator, PositionSizer
 from app.services.risk_engine import RiskEngine
 from app.services.scanner import FuturesScanner
 from app.services.storage import Storage
+from app.services.user_stream import UserStreamWatchdog
 
 
 def bot_settings_from_env(settings: Settings) -> BotSettings:
@@ -106,6 +107,7 @@ class AppState:
         )
         self.storage = Storage(settings.database_url)
         self.auto_trader = AutoTrader(self)
+        self.user_stream = UserStreamWatchdog(self)
 
     @property
     def safe_mode(self) -> bool:

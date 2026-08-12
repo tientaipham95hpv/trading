@@ -11,10 +11,12 @@ app.include_router(router)
 async def startup() -> None:
     await state.storage.init()
     state.auto_trader.start()
+    state.user_stream.start()
 
 
 @app.on_event("shutdown")
 async def shutdown() -> None:
+    await state.user_stream.stop()
     await state.auto_trader.stop()
 
 

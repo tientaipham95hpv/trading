@@ -51,6 +51,7 @@ async def status() -> dict[str, object]:
         },
         "live_readiness": _live_readiness().model_dump(mode="json"),
         "auto_trader": state.auto_trader.snapshot(),
+        "user_stream": state.user_stream.snapshot(),
         "performance_reset_at": state.performance_reset_at.isoformat() if state.performance_reset_at else None,
     }
 

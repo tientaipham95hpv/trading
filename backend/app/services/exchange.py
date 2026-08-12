@@ -317,6 +317,9 @@ class BinanceFuturesAdapter(ExchangeAdapter):
             await self._request("PUT", "/fapi/v1/listenKey", params={"listenKey": self._listen_key}, signed=False)
             self.snapshot_cache.last_user_stream_at = datetime.now(UTC)
 
+    def mark_user_stream_event(self, received_at: datetime | None = None) -> None:
+        self.snapshot_cache.last_user_stream_at = received_at or datetime.now(UTC)
+
     async def cancel_algo_order(
         self,
         symbol: str,
