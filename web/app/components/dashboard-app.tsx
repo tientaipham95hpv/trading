@@ -109,7 +109,7 @@ export function DashboardApp({ page }: { page: PageKey }) {
 
   useEffect(() => {
     const firstLoad = window.setTimeout(() => void refresh(), 0);
-    const timer = window.setInterval(() => void refresh(), 30_000);
+    const timer = window.setInterval(() => void refresh(), 60_000);
     return () => {
       window.clearTimeout(firstLoad);
       window.clearInterval(timer);
@@ -117,42 +117,82 @@ export function DashboardApp({ page }: { page: PageKey }) {
   }, []);
 
   useEffect(() => {
-    let socket: WebSocket | null = null;
-    let reconnect: number | undefined;
-    let staleTimer: number | undefined;
+    const sockets: WebSocket[] = [];
+    const reconnects: number[] = [];
+    let closed = false;
 
-    function connect() {
-      socket = new WebSocket(wsUrl("system"));
+    type RealtimePayload = {
+      channel?: string;
+      data?: StatusPayload | ExchangeSnapshot | Performance;
+      items?: Position[];
+    };
+
+    function markLive() {
+      setWsState("LIVE");
+      lastLiveAtRef.current = Date.now();
+      setLastLiveAt(lastLiveAtRef.current);
+    }
+
+    function connect(channel: "system" | "exchange" | "positions" | "performance") {
+      const socket = new WebSocket(wsUrl(channel));
+      sockets.push(socket);
       socket.onopen = () => {
-        setWsState("LIVE");
-        lastLiveAtRef.current = Date.now();
-        setLastLiveAt(lastLiveAtRef.current);
+        markLive();
       };
       socket.onmessage = (event) => {
-        setWsState("LIVE");
-        lastLiveAtRef.current = Date.now();
-        setLastLiveAt(lastLiveAtRef.current);
-        const payload = JSON.parse(event.data) as { data?: StatusPayload };
-        if (payload.data) {
-          setStatus(payload.data);
+        markLive();
+        const payload = JSON.parse(event.data) as RealtimePayload;
+        if (channel === "system" && payload.data) {
+          const nextStatus = payload.data as StatusPayload;
+          setStatus(nextStatus);
+          setExchange(nextStatus.exchange);
+        }
+        if (channel === "exchange" && payload.data) {
+          setExchange(payload.data as ExchangeSnapshot);
+        }
+        if (channel === "positions" && payload.items) {
+          setPositions(payload.items);
+        }
+        if (channel === "performance" && payload.data) {
+          setPerformance(payload.data as Performance);
         }
       };
       socket.onerror = () => setWsState("STALE");
       socket.onclose = () => {
+        if (closed) return;
         setWsState("OFFLINE");
-        reconnect = window.setTimeout(connect, 2500);
+        reconnects.push(window.setTimeout(() => connect(channel), 2500));
       };
-      staleTimer = window.setInterval(() => {
-        setWsState(Date.now() - lastLiveAtRef.current > 7000 ? "STALE" : "LIVE");
-      }, 3000);
     }
 
-    connect();
+    (["system", "exchange", "positions", "performance"] as const).forEach(connect);
+    const staleTimer = window.setInterval(() => {
+      setWsState(Date.now() - lastLiveAtRef.current > 7000 ? "STALE" : "LIVE");
+    }, 3000);
     return () => {
-      if (reconnect) window.clearTimeout(reconnect);
-      if (staleTimer) window.clearInterval(staleTimer);
-      socket?.close();
+      closed = true;
+      reconnects.forEach((reconnect) => window.clearTimeout(reconnect));
+      window.clearInterval(staleTimer);
+      sockets.forEach((socket) => socket.close());
     };
+  }, []);
+
+  useEffect(() => {
+    const timer = window.setInterval(async () => {
+      try {
+        const [nextTrades, nextLogs, nextScanner] = await Promise.all([
+          api.trades(),
+          api.logs(),
+          api.scanner(40, "15m"),
+        ]);
+        setTrades(nextTrades.items);
+        setLogs(nextLogs.items);
+        setScanner(nextScanner.items);
+      } catch {
+        setWsState((current) => (current === "LIVE" ? "STALE" : current));
+      }
+    }, 10_000);
+    return () => window.clearInterval(timer);
   }, []);
 
   const currentPage = nav.find((item) => item.key === page) ?? nav[0];
@@ -384,7 +424,7 @@ function MarketChart({ symbol, symbols }: { symbol: string; symbols: string[] })
       }
     }
     void load();
-    const timer = window.setInterval(() => void load(), 30_000);
+    const timer = window.setInterval(() => void load(), 5_000);
     return () => {
       alive = false;
       window.clearInterval(timer);
@@ -445,6 +485,7 @@ function MarketChart({ symbol, symbols }: { symbol: string; symbols: string[] })
             <h3 className="text-xl font-black">{effectiveSymbol}</h3>
             <span className="text-sm font-bold text-slate-500">{last ? money(last.close) : "-"}</span>
             <span className={`text-sm font-bold ${(change ?? 0) >= 0 ? "text-emerald-700" : "text-red-700"}`}>{change === null ? "-" : signedPercent(change)}</span>
+            <span className="rounded-full bg-emerald-50 px-2 py-1 text-[11px] font-black uppercase text-emerald-700">Realtime 5s</span>
           </div>
         </div>
         <div className="grid gap-2 md:flex md:flex-wrap md:items-center md:justify-end">

@@ -45,6 +45,7 @@ export type StatusPayload = {
     submitted: number;
     rejected: number;
   };
+  performance_reset_at?: string | null;
 };
 
 export type ExchangeSnapshot = {
