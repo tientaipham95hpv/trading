@@ -577,6 +577,56 @@ class BacktestRunReport(BaseModel):
     candidate_applied: bool = False
 
 
+class BacktestOptimizerRequest(BaseModel):
+    """Bounded experiment grid; results are advisory and never mutate runtime settings."""
+
+    run: BacktestRunRequest = Field(default_factory=BacktestRunRequest)
+    min_scores: list[int] = Field(default_factory=lambda: [65, 70, 75])
+    stop_atr_multipliers: list[float] = Field(default_factory=lambda: [1.0, 1.2, 1.5])
+    risk_fractions: list[float] = Field(default_factory=lambda: [0.003, 0.005])
+    minimum_oos_trades: int = Field(default=3, ge=1, le=100)
+    max_candidates: int = Field(default=12, ge=1, le=24)
+
+    @model_validator(mode="after")
+    def validate_grid(self) -> "BacktestOptimizerRequest":
+        if not self.min_scores or not self.stop_atr_multipliers or not self.risk_fractions:
+            raise ValueError("Lưới optimizer không được để trống")
+        if any(score < 0 or score > 100 for score in self.min_scores):
+            raise ValueError("Signal Score phải nằm trong khoảng 0-100")
+        if any(value <= 0 or value > 10 for value in self.stop_atr_multipliers):
+            raise ValueError("ATR Stop phải nằm trong khoảng (0, 10]")
+        if any(value <= 0 or value > 0.01 for value in self.risk_fractions):
+            raise ValueError("Risk fraction phải nằm trong khoảng (0, 0.01]")
+        combinations = len(set(self.min_scores)) * len(set(self.stop_atr_multipliers)) * len(
+            set(self.risk_fractions)
+        )
+        if combinations > self.max_candidates:
+            raise ValueError(
+                f"Lưới có {combinations} Candidate, vượt giới hạn {self.max_candidates}"
+            )
+        return self
+
+class BacktestOptimizerCandidate(BaseModel):
+    rank: int
+    score: float
+    eligible: bool
+    rejection_reasons: list[str] = Field(default_factory=list)
+    profitable_walk_forward_ratio: float = 0.0
+    report: BacktestStrategyReport
+
+class BacktestOptimizerReport(BaseModel):
+    id: str
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    symbol: str
+    interval: Timeframe
+    dataset_fingerprint: str
+    evaluated_candidates: int
+    eligible_candidates: int
+    minimum_oos_trades: int
+    selection_policy: str = "VALIDATION_OOS_STABILITY_V1"
+    candidates: list[BacktestOptimizerCandidate] = Field(default_factory=list)
+    candidate_applied: bool = False
+
 class NotificationPayload(BaseModel):
     event: NotificationEvent
     title: str

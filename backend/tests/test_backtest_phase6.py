@@ -88,3 +88,39 @@ def test_costs_reduce_net_pnl():
     result = BacktestService()._close(trade, 105, trade.entry_time + 28_800_000, "test", request)
     assert result.fees > 0 and result.funding > 0 and result.slippage > 0
     assert result.net_pnl < result.gross_pnl
+
+
+def test_optimizer_is_bounded_ranked_and_never_applied(monkeypatch):
+    from app.domain.models import BacktestOptimizerRequest
+
+    rows = [candle(i, open_=100, high=103, low=99, close=102) for i in range(280)]
+    monkeypatch.setattr("app.services.backtest.score_market", lambda *_: (80, 0, []))
+    request = BacktestOptimizerRequest(
+        run=BacktestRunRequest(slippage_bps=0),
+        min_scores=[70, 75],
+        stop_atr_multipliers=[1.0],
+        risk_fractions=[0.003],
+        minimum_oos_trades=1,
+        max_candidates=2,
+    )
+    report = BacktestService().optimize(rows, request)
+    assert report.evaluated_candidates == 2
+    assert report.candidate_applied is False
+    assert [item.rank for item in report.candidates] == [1, 2]
+    assert all(item.report.config.name.startswith("Candidate") for item in report.candidates)
+
+
+def test_optimizer_rejects_oversized_grid():
+    from app.domain.models import BacktestOptimizerRequest
+
+    try:
+        BacktestOptimizerRequest(
+            min_scores=[60, 65, 70],
+            stop_atr_multipliers=[1.0, 1.2, 1.5],
+            risk_fractions=[0.003, 0.005],
+            max_candidates=10,
+        )
+    except ValueError as exc:
+        assert "vượt giới hạn" in str(exc)
+    else:
+        raise AssertionError("Optimizer phải từ chối lưới vượt giới hạn")

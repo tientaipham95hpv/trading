@@ -5,6 +5,7 @@ from uuid import uuid4
 from fastapi import APIRouter, HTTPException, Query, WebSocket, WebSocketDisconnect
 
 from app.domain.models import (
+    BacktestOptimizerRequest,
     BacktestRunRequest,
     BotSettings,
     BotState,
@@ -301,6 +302,23 @@ async def latest_backtest() -> dict[str, object]:
         raise HTTPException(status_code=404, detail="Chưa có kết quả backtest")
     return state.backtest.latest.model_dump(mode="json")
 
+
+@router.post("/backtests/optimize")
+async def optimize_backtest(request: BacktestOptimizerRequest) -> dict[str, object]:
+    candles = await state.market_client.klines(
+        request.run.symbol.upper(), request.run.interval.value, limit=request.run.limit
+    )
+    try:
+        report = await asyncio.to_thread(state.backtest.optimize, candles, request)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return report.model_dump(mode="json")
+
+@router.get("/backtests/optimizer/latest")
+async def latest_backtest_optimizer() -> dict[str, object]:
+    if state.backtest.latest_optimizer is None:
+        raise HTTPException(status_code=404, detail="Chưa có kết quả optimizer")
+    return state.backtest.latest_optimizer.model_dump(mode="json")
 
 @router.post("/performance/reset")
 async def reset_performance() -> dict[str, object]:

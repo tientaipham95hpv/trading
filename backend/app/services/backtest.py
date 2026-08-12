@@ -2,11 +2,15 @@ import hashlib
 import json
 import math
 from dataclasses import dataclass
+from itertools import product
 from statistics import mean, pstdev
 from uuid import uuid4
 
 from app.domain.models import (
     BacktestMetrics,
+    BacktestOptimizerCandidate,
+    BacktestOptimizerReport,
+    BacktestOptimizerRequest,
     BacktestPoint,
     BacktestRunReport,
     BacktestRunRequest,
@@ -47,6 +51,7 @@ class _Position:
 class BacktestService:
     def __init__(self) -> None:
         self.latest: BacktestRunReport | None = None
+        self.latest_optimizer: BacktestOptimizerReport | None = None
 
     def run(self, candles: list[Candle], request: BacktestRunRequest) -> BacktestRunReport:
         if len(candles) < 250:
@@ -74,6 +79,86 @@ class BacktestService:
         )
         self.latest = report
         return report
+
+    def optimize(
+        self, candles: list[Candle], request: BacktestOptimizerRequest
+    ) -> BacktestOptimizerReport:
+        if len(candles) < 250:
+            raise ValueError("Cần ít nhất 250 nến đã đóng để tối ưu")
+        ordered = sorted(candles, key=lambda row: row.open_time)
+        dataset_hash = hashlib.sha256(
+            json.dumps(
+                [[c.open_time, c.open, c.high, c.low, c.close, c.volume] for c in ordered],
+                separators=(",", ":"),
+            ).encode()
+        ).hexdigest()
+        scored: list[tuple[float, bool, list[str], float, BacktestStrategyReport]] = []
+        baseline = request.run.baseline
+        for min_score, stop_atr, risk in product(
+            sorted(set(request.min_scores)),
+            sorted(set(request.stop_atr_multipliers)),
+            sorted(set(request.risk_fractions)),
+        ):
+            config = baseline.model_copy(
+                update={
+                    "name": f"Candidate S{min_score}-ATR{stop_atr:g}-R{risk:.3%}",
+                    "min_score": min_score,
+                    "stop_atr_multiplier": stop_atr,
+                    "risk_fraction": risk,
+                }
+            )
+            report = self._simulate(ordered, request.run, config)
+            validation = next(item for item in report.segments if item.name == "VALIDATION")
+            oos = next(item for item in report.segments if item.name == "OUT_OF_SAMPLE")
+            profitable_windows = sum(item.metrics.pnl > 0 for item in report.walk_forward)
+            window_ratio = profitable_windows / len(report.walk_forward) if report.walk_forward else 0
+            reasons = []
+            if oos.metrics.trades < request.minimum_oos_trades:
+                reasons.append(
+                    f"OOS chỉ có {oos.metrics.trades}/{request.minimum_oos_trades} giao dịch"
+                )
+            if validation.metrics.pnl <= 0:
+                reasons.append("Validation PNL không dương")
+            if oos.metrics.pnl <= 0:
+                reasons.append("OOS PNL không dương")
+            if window_ratio < 0.5:
+                reasons.append("Dưới 50% cửa sổ walk-forward có lãi")
+            eligible = not reasons
+            score = (
+                oos.average_r * 35
+                + validation.average_r * 25
+                + min(oos.metrics.profit_factor, 5) * 8
+                + min(validation.metrics.profit_factor, 5) * 5
+                + window_ratio * 20
+                - oos.max_drawdown_percent * 2
+                - validation.max_drawdown_percent
+            )
+            scored.append((score, eligible, reasons, window_ratio, report))
+        scored.sort(key=lambda item: (item[1], item[0]), reverse=True)
+        candidates = [
+            BacktestOptimizerCandidate(
+                rank=index,
+                score=score,
+                eligible=eligible,
+                rejection_reasons=reasons,
+                profitable_walk_forward_ratio=window_ratio,
+                report=strategy,
+            )
+            for index, (score, eligible, reasons, window_ratio, strategy) in enumerate(scored, 1)
+        ]
+        result = BacktestOptimizerReport(
+            id=str(uuid4()),
+            symbol=request.run.symbol.upper(),
+            interval=request.run.interval,
+            dataset_fingerprint=dataset_hash,
+            evaluated_candidates=len(candidates),
+            eligible_candidates=sum(item.eligible for item in candidates),
+            minimum_oos_trades=request.minimum_oos_trades,
+            candidates=candidates,
+            candidate_applied=False,
+        )
+        self.latest_optimizer = result
+        return result
 
     def _simulate(
         self, candles: list[Candle], request: BacktestRunRequest, config: BacktestStrategyConfig
