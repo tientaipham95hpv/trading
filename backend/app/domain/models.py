@@ -206,6 +206,35 @@ class PortfolioRiskPosition(BaseModel):
     risk_fraction: float | None = None
 
 
+class CorrelationPair(BaseModel):
+    symbol_a: str
+    symbol_b: str
+    correlation: float = Field(ge=-1, le=1)
+    observations: int = Field(ge=0)
+    same_direction: bool
+
+
+class CorrelationCluster(BaseModel):
+    symbols: list[str]
+    notional: float = 0.0
+    notional_fraction: float = 0.0
+
+
+class CorrelationEvidence(BaseModel):
+    status: str = "NOT_REQUESTED"
+    interval: str = "15m"
+    lookback: int = 60
+    threshold: float = 0.80
+    closed_at: int | None = None
+    covered_symbols: list[str] = Field(default_factory=list)
+    missing_symbols: list[str] = Field(default_factory=list)
+    pairs: list[CorrelationPair] = Field(default_factory=list)
+    clusters: list[CorrelationCluster] = Field(default_factory=list)
+    adjusted_exposure: float = 0.0
+    adjusted_exposure_fraction: float = 0.0
+    reasons: list[str] = Field(default_factory=list)
+
+
 class PortfolioRiskSnapshot(BaseModel):
     generated_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     mode: str = "SHADOW"
@@ -228,6 +257,7 @@ class PortfolioRiskSnapshot(BaseModel):
     would_reject_new_entries: bool = False
     reasons: list[str] = Field(default_factory=list)
     positions: list[PortfolioRiskPosition] = Field(default_factory=list)
+    correlation: CorrelationEvidence = Field(default_factory=CorrelationEvidence)
 
 
 class PortfolioRiskAudit(BaseModel):

@@ -52,6 +52,19 @@ export type PortfolioRisk = {
   max_symbol_open_risk_fraction: number;
   would_reject_new_entries: boolean;
   reasons: string[];
+  correlation: {
+    status: "NOT_REQUESTED" | "COMPLETE" | "INCOMPLETE";
+    interval: string;
+    lookback: number;
+    threshold: number;
+    covered_symbols: string[];
+    missing_symbols: string[];
+    pairs: Array<{ symbol_a: string; symbol_b: string; correlation: number; observations: number; same_direction: boolean }>;
+    clusters: Array<{ symbols: string[]; notional: number; notional_fraction: number }>;
+    adjusted_exposure: number;
+    adjusted_exposure_fraction: number;
+    reasons: string[];
+  };
   positions: Array<{ symbol: string; side: string; quantity: number; entry_price: number; mark_price: number; stop_loss: number | null; notional: number; open_risk: number | null; protected: boolean; notional_fraction: number; risk_fraction: number | null }>;
 };
 export type PortfolioRiskAudit = { audit_id: string; created_at: string; event: "SNAPSHOT" | "PRE_TRADE"; symbol: string | null; side: string | null; decision: "OBSERVED" | "WOULD_ALLOW" | "WOULD_REJECT"; reasons: string[]; before: PortfolioRisk; after: PortfolioRisk | null; candidate: Record<string, string | number> | null; fingerprint: string };

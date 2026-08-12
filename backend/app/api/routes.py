@@ -2,6 +2,7 @@ import asyncio
 from datetime import UTC, datetime
 from uuid import uuid4
 
+import httpx
 from fastapi import APIRouter, HTTPException, Query, WebSocket, WebSocketDisconnect
 
 from app.domain.models import (
@@ -415,13 +416,29 @@ async def reset_performance() -> dict[str, object]:
 @router.get("/risk")
 async def risk() -> dict[str, object]:
     adapter = state.live_exchange if state.trading_mode == TradingMode.LIVE else state.demo_exchange
+    snapshot = adapter.snapshot_cache
+    symbols = sorted({item.symbol for item in snapshot.positions})
+    lookback = 60
+    now_ms = int(datetime.now(UTC).timestamp() * 1000)
+    closed_at = now_ms - (now_ms % 900_000)
+    correlation_candles = {}
+    for symbol in symbols:
+        try:
+            correlation_candles[symbol] = await state.market_client.closed_klines(
+                symbol, "15m", limit=lookback + 1, end_time=closed_at
+            )
+        except (ValueError, httpx.HTTPError):
+            correlation_candles[symbol] = []
     portfolio = state.portfolio_risk.snapshot(
-        adapter.snapshot_cache,
+        snapshot,
         max_open_risk_fraction=state.bot_settings.max_total_open_risk,
         max_exposure_fraction=state.bot_settings.max_portfolio_exposure,
         max_symbol_exposure_fraction=state.bot_settings.max_symbol_exposure,
         max_directional_exposure_fraction=state.bot_settings.max_directional_exposure,
         max_symbol_open_risk_fraction=state.bot_settings.max_symbol_open_risk,
+        correlation_candles=correlation_candles,
+        correlation_lookback=lookback,
+        correlation_closed_at=closed_at,
     )
     return {
         "limits": (await status())["risk"],

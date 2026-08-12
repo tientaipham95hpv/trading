@@ -160,6 +160,41 @@ class BinanceMarketDataClient:
         self._validate_historical_candles(candles, limit)
         return candles
 
+    async def closed_klines(
+        self, symbol: str, interval: str, *, limit: int, end_time: int
+    ) -> list[Candle]:
+        """Read an exact bounded window whose candles all closed before one shared cutoff."""
+        if limit < 2 or limit > 500:
+            raise ValueError("Số nến tương quan phải nằm trong khoảng 2-500")
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            response = await client.get(
+                f"{self._base_url}/fapi/v1/klines",
+                params={
+                    "symbol": symbol.upper(),
+                    "interval": interval,
+                    "endTime": end_time - 1,
+                    "limit": limit,
+                },
+            )
+            response.raise_for_status()
+            rows = response.json()
+        candles = [
+            Candle(
+                open_time=int(row[0]),
+                open=float(row[1]),
+                high=float(row[2]),
+                low=float(row[3]),
+                close=float(row[4]),
+                volume=float(row[5]),
+                close_time=int(row[6]),
+                quote_volume=float(row[7]),
+            )
+            for row in rows
+            if len(row) >= 8 and int(row[6]) < end_time
+        ]
+        self._validate_historical_candles(candles, limit)
+        return candles
+
     @staticmethod
     def _validate_historical_candles(candles: list[Candle], requested: int) -> None:
         if len(candles) != requested:

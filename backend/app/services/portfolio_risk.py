@@ -1,9 +1,15 @@
 import hashlib
 import json
+import math
 from datetime import UTC, datetime
+from itertools import pairwise
 from uuid import uuid4
 
 from app.domain.models import (
+    Candle,
+    CorrelationCluster,
+    CorrelationEvidence,
+    CorrelationPair,
     ExchangePosition,
     ExchangeSnapshot,
     OrderPlan,
@@ -25,6 +31,11 @@ class PortfolioRiskEngine:
         max_symbol_exposure_fraction: float = 0.20,
         max_directional_exposure_fraction: float = 0.30,
         max_symbol_open_risk_fraction: float = 0.015,
+        correlation_candles: dict[str, list[Candle]] | None = None,
+        correlation_interval: str = "15m",
+        correlation_lookback: int = 60,
+        correlation_threshold: float = 0.80,
+        correlation_closed_at: int | None = None,
     ) -> PortfolioRiskSnapshot:
         equity = max(exchange.balance.margin_balance or exchange.balance.balance, 0.0)
         lifecycles = {item.symbol: item for item in exchange.lifecycles}
@@ -102,6 +113,16 @@ class PortfolioRiskEngine:
             reasons.append("Tổng tập trung phía LONG vượt giới hạn")
         if equity and short_notional / equity > max_directional_exposure_fraction:
             reasons.append("Tổng tập trung phía SHORT vượt giới hạn")
+        correlation = self._correlation_evidence(
+            items,
+            equity,
+            correlation_candles,
+            interval=correlation_interval,
+            lookback=correlation_lookback,
+            threshold=correlation_threshold,
+            closed_at=correlation_closed_at,
+        )
+        reasons.extend(correlation.reasons)
         reasons = list(dict.fromkeys(reasons))
         return PortfolioRiskSnapshot(
             generated_at=datetime.now(UTC),
@@ -121,9 +142,120 @@ class PortfolioRiskEngine:
             max_directional_exposure_fraction=max_directional_exposure_fraction,
             max_symbol_open_risk_fraction=max_symbol_open_risk_fraction,
             positions=items,
+            correlation=correlation,
             reasons=reasons,
             would_reject_new_entries=bool(reasons),
         )
+
+    @staticmethod
+    def _correlation_evidence(
+        positions: list[PortfolioRiskPosition],
+        equity: float,
+        candles: dict[str, list[Candle]] | None,
+        *,
+        interval: str,
+        lookback: int,
+        threshold: float,
+        closed_at: int | None,
+    ) -> CorrelationEvidence:
+        symbols = sorted({item.symbol for item in positions})
+        lookback = min(240, max(30, lookback))
+        threshold = min(1.0, max(0.0, threshold))
+        if candles is None:
+            return CorrelationEvidence(interval=interval, lookback=lookback, threshold=threshold)
+        if not symbols:
+            return CorrelationEvidence(
+                status="COMPLETE",
+                interval=interval,
+                lookback=lookback,
+                threshold=threshold,
+                closed_at=closed_at,
+            )
+        covered, missing, returns = [], [], {}
+        reference_times: tuple[int, ...] | None = None
+        for symbol in symbols:
+            rows = sorted(candles.get(symbol, []), key=lambda row: row.open_time)
+            valid = (
+                len(rows) == lookback + 1
+                and all(row.close > 0 for row in rows)
+                and all(a.close_time < b.open_time for a, b in pairwise(rows))
+                and (closed_at is None or all(row.close_time < closed_at for row in rows))
+            )
+            times = tuple(row.open_time for row in rows)
+            if valid and reference_times is None:
+                reference_times = times
+            if not valid or times != reference_times:
+                missing.append(symbol)
+                continue
+            covered.append(symbol)
+            returns[symbol] = [math.log(b.close / a.close) for a, b in pairwise(rows)]
+        evidence = CorrelationEvidence(
+            status="COMPLETE" if not missing else "INCOMPLETE",
+            interval=interval,
+            lookback=lookback,
+            threshold=threshold,
+            closed_at=closed_at,
+            covered_symbols=covered,
+            missing_symbols=missing,
+        )
+        if missing:
+            evidence.reasons.append(
+                "Không đủ dữ liệu nến đã đóng để đánh giá tương quan: " + ", ".join(missing)
+            )
+            return evidence
+        sides = {item.symbol: item.side for item in positions}
+        notionals = {item.symbol: item.notional for item in positions}
+        edges: dict[str, set[str]] = {symbol: set() for symbol in symbols}
+        adjustment = 0.0
+        for index, left in enumerate(symbols):
+            for right in symbols[index + 1 :]:
+                xs, ys = returns[left], returns[right]
+                mx, my = sum(xs) / len(xs), sum(ys) / len(ys)
+                numerator = sum((x - mx) * (y - my) for x, y in zip(xs, ys, strict=True))
+                dx = sum((x - mx) ** 2 for x in xs)
+                dy = sum((y - my) ** 2 for y in ys)
+                corr = numerator / math.sqrt(dx * dy) if dx > 0 and dy > 0 else 0.0
+                corr = max(-1.0, min(1.0, corr))
+                same = sides[left] == sides[right]
+                evidence.pairs.append(
+                    CorrelationPair(
+                        symbol_a=left,
+                        symbol_b=right,
+                        correlation=round(corr, 8),
+                        observations=lookback,
+                        same_direction=same,
+                    )
+                )
+                effective = corr if same else -corr
+                if effective >= threshold:
+                    edges[left].add(right)
+                    edges[right].add(left)
+                    adjustment += effective * min(notionals[left], notionals[right])
+        remaining = set(symbols)
+        while remaining:
+            seed = min(remaining)
+            stack = [seed]
+            component = set()
+            while stack:
+                node = stack.pop()
+                if node in component:
+                    continue
+                component.add(node)
+                stack.extend(sorted(edges[node] - component, reverse=True))
+            remaining -= component
+            if len(component) > 1:
+                amount = sum(notionals[item] for item in component)
+                evidence.clusters.append(
+                    CorrelationCluster(
+                        symbols=sorted(component),
+                        notional=amount,
+                        notional_fraction=amount / equity if equity else 0.0,
+                    )
+                )
+        gross = sum(notionals.values())
+        evidence.adjusted_exposure = gross + adjustment
+        evidence.adjusted_exposure_fraction = evidence.adjusted_exposure / equity if equity else 0.0
+        return evidence
 
     @staticmethod
     def _decision_state(snapshot: PortfolioRiskSnapshot) -> dict[str, object]:
@@ -144,6 +276,24 @@ class PortfolioRiskEngine:
                 }
                 for item in snapshot.positions
             ],
+            "correlation": {
+                "status": snapshot.correlation.status,
+                "interval": snapshot.correlation.interval,
+                "lookback": snapshot.correlation.lookback,
+                "threshold": snapshot.correlation.threshold,
+                "covered_symbols": snapshot.correlation.covered_symbols,
+                "missing_symbols": snapshot.correlation.missing_symbols,
+                "pairs": [
+                    {
+                        "symbol_a": pair.symbol_a,
+                        "symbol_b": pair.symbol_b,
+                        "correlation": pair.correlation,
+                        "same_direction": pair.same_direction,
+                    }
+                    for pair in snapshot.correlation.pairs
+                ],
+                "clusters": [cluster.symbols for cluster in snapshot.correlation.clusters],
+            },
             "limits": {
                 "open_risk_fraction": snapshot.open_risk_limit / snapshot.equity
                 if snapshot.equity

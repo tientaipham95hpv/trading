@@ -1,6 +1,7 @@
 import pytest
 
 from app.domain.models import (
+    Candle,
     ExchangeBalance,
     ExchangeOrder,
     ExchangePosition,
@@ -139,3 +140,85 @@ def test_snapshot_fingerprint_ignores_price_noise_but_tracks_protection_changes(
     changed = exchange.model_copy(deep=True)
     changed.orders[0].stop_price = 96
     assert first.fingerprint != engine.audit_snapshot(changed, **limits()).fingerprint
+
+
+def candles(prices: list[float], *, shift: int = 0) -> list[Candle]:
+    return [
+        Candle(
+            open_time=shift + index * 60_000,
+            close_time=shift + (index + 1) * 60_000 - 1,
+            open=price,
+            high=price,
+            low=price,
+            close=price,
+            volume=1,
+            quote_volume=price,
+        )
+        for index, price in enumerate(prices)
+    ]
+
+
+def test_closed_candle_correlation_is_deterministic_and_builds_clusters():
+    exchange = ExchangeSnapshot(
+        balance=ExchangeBalance(balance=10_000),
+        positions=[
+            ExchangePosition(symbol="BTCUSDT", side="LONG", quantity=1, entry_price=100),
+            ExchangePosition(symbol="ETHUSDT", side="LONG", quantity=2, entry_price=50),
+        ],
+        orders=[stop("BTCUSDT", "SELL", 99), stop("ETHUSDT", "SELL", 49, 2)],
+    )
+    prices = [100 + index + (index % 3) for index in range(31)]
+    evidence = {"BTCUSDT": candles(prices), "ETHUSDT": candles([p * 2 for p in prices])}
+    first = (
+        PortfolioRiskEngine()
+        .snapshot(
+            exchange,
+            **limits(),
+            correlation_candles=evidence,
+            correlation_lookback=30,
+            correlation_closed_at=2_000_000,
+        )
+        .correlation
+    )
+    second = (
+        PortfolioRiskEngine()
+        .snapshot(
+            exchange,
+            **limits(),
+            correlation_candles=evidence,
+            correlation_lookback=30,
+            correlation_closed_at=2_000_000,
+        )
+        .correlation
+    )
+    assert first == second
+    assert first.status == "COMPLETE"
+    assert first.pairs[0].correlation == pytest.approx(1)
+    assert first.clusters[0].symbols == ["BTCUSDT", "ETHUSDT"]
+    assert first.adjusted_exposure > 200
+
+
+def test_correlation_requires_complete_aligned_coverage_and_fails_safe_in_vietnamese():
+    exchange = ExchangeSnapshot(
+        balance=ExchangeBalance(balance=1000),
+        positions=[
+            ExchangePosition(symbol="BTCUSDT", side="LONG", quantity=1, entry_price=100),
+            ExchangePosition(symbol="ETHUSDT", side="SHORT", quantity=1, entry_price=100),
+        ],
+        orders=[stop("BTCUSDT", "SELL", 99), stop("ETHUSDT", "BUY", 101, 2)],
+    )
+    prices = [100 + index for index in range(31)]
+    result = PortfolioRiskEngine().snapshot(
+        exchange,
+        **limits(),
+        correlation_candles={
+            "BTCUSDT": candles(prices),
+            "ETHUSDT": candles(prices, shift=60_000),
+        },
+        correlation_lookback=30,
+        correlation_closed_at=2_000_000,
+    )
+    assert result.correlation.status == "INCOMPLETE"
+    assert result.correlation.missing_symbols == ["ETHUSDT"]
+    assert "Không đủ dữ liệu nến đã đóng" in result.reasons[-1]
+    assert result.would_reject_new_entries is True

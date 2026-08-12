@@ -3,6 +3,8 @@ from datetime import UTC, datetime
 from typing import Any
 from uuid import uuid4
 
+import httpx
+
 from app.domain.models import (
     BotState,
     ExchangeExecutionResult,
@@ -144,6 +146,7 @@ class AutoTrader:
                 return await self._skip("BLOCKED", reason)
 
             self._mark_exchange_reconciled(adapter, snapshot)
+            correlation_limits = await self._correlation_limits(snapshot)
             snapshot_audit = self.state.portfolio_risk.audit_snapshot(
                 snapshot,
                 max_open_risk_fraction=self.state.bot_settings.max_total_open_risk,
@@ -151,6 +154,7 @@ class AutoTrader:
                 max_symbol_exposure_fraction=self.state.bot_settings.max_symbol_exposure,
                 max_directional_exposure_fraction=self.state.bot_settings.max_directional_exposure,
                 max_symbol_open_risk_fraction=self.state.bot_settings.max_symbol_open_risk,
+                **correlation_limits,
             )
             await self.state.storage.save_portfolio_risk_audit(
                 snapshot_audit.model_dump(mode="json")
@@ -290,6 +294,9 @@ class AutoTrader:
                 continue
 
             if snapshot is not None:
+                correlation_limits = await self._correlation_limits(
+                    snapshot, candidate_symbol=plan.symbol
+                )
                 audit = self.state.portfolio_risk.evaluate_plan(
                     snapshot,
                     plan,
@@ -298,6 +305,7 @@ class AutoTrader:
                     max_symbol_exposure_fraction=self.state.bot_settings.max_symbol_exposure,
                     max_directional_exposure_fraction=self.state.bot_settings.max_directional_exposure,
                     max_symbol_open_risk_fraction=self.state.bot_settings.max_symbol_open_risk,
+                    **correlation_limits,
                 )
                 await self.state.storage.save_portfolio_risk_audit(audit.model_dump(mode="json"))
                 await self.state.storage.log(
@@ -379,6 +387,30 @@ class AutoTrader:
         await self._notify_position_open(plan)
         await self.state.storage.log("Auto-trader submitted paper order", result, level="WARNING")
         return self.snapshot()
+
+    async def _correlation_limits(
+        self, snapshot: Any, *, candidate_symbol: str | None = None
+    ) -> dict[str, Any]:
+        """Collect bounded closed-candle evidence for shadow audits only."""
+        symbols = {item.symbol for item in snapshot.positions}
+        if candidate_symbol:
+            symbols.add(candidate_symbol)
+        lookback = 60
+        now_ms = int(datetime.now(UTC).timestamp() * 1000)
+        closed_at = now_ms - (now_ms % 900_000)
+        candles: dict[str, list[Any]] = {}
+        for symbol in sorted(symbols):
+            try:
+                candles[symbol] = await self.state.market_client.closed_klines(
+                    symbol, "15m", limit=lookback + 1, end_time=closed_at
+                )
+            except (ValueError, httpx.HTTPError):
+                candles[symbol] = []
+        return {
+            "correlation_candles": candles,
+            "correlation_lookback": lookback,
+            "correlation_closed_at": closed_at,
+        }
 
     async def _persist_exchange_result(
         self, plan: OrderPlan, result: ExchangeExecutionResult
