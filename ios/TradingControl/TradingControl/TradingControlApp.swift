@@ -1,9 +1,6 @@
 import SwiftUI
-import UserNotifications
 
 public struct TradingControlApp: App {
-    @UIApplicationDelegateAdaptor(TradingAppDelegate.self) private var appDelegate
-
     public init() {}
 
     public var body: some Scene {
@@ -15,7 +12,6 @@ public struct TradingControlApp: App {
 
 public struct TradingControlView: View {
     @StateObject private var model = TradingViewModel()
-    @StateObject private var push = PushNotificationCoordinator()
 
     public init() {}
 
@@ -31,12 +27,11 @@ public struct TradingControlView: View {
                 .tabItem { Label("Vị thế", systemImage: "arrow.up.arrow.down") }
             TradesView(model: model)
                 .tabItem { Label("Lịch sử", systemImage: "clock.arrow.circlepath") }
-            MoreView(model: model, push: push)
+            MoreView(model: model)
                 .tabItem { Label("Thêm", systemImage: "ellipsis.circle") }
         }
         .task {
             model.start()
-            await push.refreshAuthorizationStatus()
         }
         .preferredColorScheme(.dark)
         .tint(.cyan)
@@ -914,7 +909,6 @@ private struct TradeDetailView: View {
 
 private struct MoreView: View {
     @ObservedObject var model: TradingViewModel
-    @ObservedObject var push: PushNotificationCoordinator
 
     var body: some View {
         NavigationStack {
@@ -977,24 +971,6 @@ private struct MoreView: View {
                     Button("Xóa token") {
                         model.tokenDraft = ""
                         model.saveToken()
-                    }
-                }
-                Section("Chuẩn bị push APNs") {
-                    InfoRow(label: "Quyền thông báo", value: viNotificationStatus(push.authorizationStatus))
-                    Button("Xin quyền thông báo") {
-                        Task { await push.requestPermission() }
-                    }
-                    Button("Gửi thông báo test trên máy") {
-                        Task { await push.sendLocalTestNotification() }
-                    }
-                    if let token = push.deviceToken {
-                        Text(token)
-                            .font(.footnote.monospaced())
-                            .textSelection(.enabled)
-                    } else {
-                        Text("Chưa có APNs device token. Bấm xin quyền thông báo trên iPhone thật, simulator thường không có token push thật.")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
                     }
                 }
                 Section("Cấu hình scanner") {
@@ -1328,17 +1304,6 @@ private func viOrderType(_ value: String) -> String {
     case "TAKE_PROFIT_MARKET": return "Take profit"
     case "TRAILING_STOP_MARKET": return "Trailing stop"
     default: return value
-    }
-}
-
-private func viNotificationStatus(_ value: UNAuthorizationStatus) -> String {
-    switch value {
-    case .authorized: return "Đã cho phép"
-    case .denied: return "Đã từ chối"
-    case .ephemeral: return "Tạm thời"
-    case .notDetermined: return "Chưa hỏi"
-    case .provisional: return "Tạm cho phép"
-    @unknown default: return "Không rõ"
     }
 }
 

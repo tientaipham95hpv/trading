@@ -66,15 +66,6 @@ public actor TradingAPI {
     }
 
     @discardableResult
-    public func registerPushToken(_ token: String, platform: String = "ios") async throws -> PushDeviceRegistrationResponse {
-        try await send(
-            "/api/notifications/devices",
-            method: "POST",
-            body: PushDeviceRegistration(platform: platform, token: token)
-        )
-    }
-
-    @discardableResult
     public func setMode(_ mode: String) async throws -> ModeResponse {
         try await post("/api/mode/\(mode)")
     }
@@ -228,16 +219,6 @@ public struct PrepareLiveResponse: Codable {
     public let accepted: Bool
     public let reason: String?
     public let readiness: LiveReadiness?
-}
-
-public struct PushDeviceRegistration: Codable {
-    public let platform: String
-    public let token: String
-}
-
-public struct PushDeviceRegistrationResponse: Codable {
-    public let accepted: Bool
-    public let platform: String
 }
 
 public enum TradingAPIError: Error, LocalizedError {

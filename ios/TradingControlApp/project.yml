@@ -29,17 +29,3 @@ targets:
           SWIFT_OPTIMIZATION_LEVEL: "-Onone"
         Release:
           SWIFT_OPTIMIZATION_LEVEL: "-O"
-  TradingControlWidget:
-    type: app-extension
-    platform: iOS
-    deploymentTarget: "17.0"
-    sources:
-      - TradingWidget
-    settings:
-      base:
-        PRODUCT_BUNDLE_IDENTIFIER: live.cineviet.tradingcontrol.widget
-        PRODUCT_NAME: TradingControlWidget
-        INFOPLIST_FILE: TradingWidget/Info.plist
-        CODE_SIGN_STYLE: Manual
-        DEVELOPMENT_TEAM: ""
-        SWIFT_VERSION: "5.0"
