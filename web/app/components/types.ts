@@ -284,6 +284,12 @@ export type ExitAnalytics = {
   by_side: ExitAnalyticsBreakdown[];
   by_symbol: ExitAnalyticsBreakdown[];
   realized_r: number | null;
+  excursion: {
+    lifecycles: number;
+    mae_r: number | null;
+    mfe_r: number | null;
+    missed_r: number | null;
+  };
   realized_r_availability: ExitAnalyticsAvailability;
   mae_availability: ExitAnalyticsAvailability;
   mfe_availability: ExitAnalyticsAvailability;

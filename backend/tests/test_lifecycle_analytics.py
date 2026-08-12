@@ -46,3 +46,28 @@ def test_lifecycle_storage_model_keeps_mode_and_event_identity():
     assert row.event_key == "DEMO:x:OPEN"
     assert row.mode == "DEMO"
     assert row.payload["risk_verifiable"] is True
+
+
+def test_break_even_stop_fill_maps_back_to_original_lifecycle():
+    fact = _lifecycle_fact(
+        TradingMode.DEMO,
+        {
+            "E": 1_700_000_000_000,
+            "o": {
+                "s": "BTCUSDT",
+                "c": "a-demo-BTCUSDT-abc-be-1700000000000",
+                "X": "FILLED",
+                "i": 55,
+                "t": 66,
+                "S": "SELL",
+                "l": "0.1",
+                "z": "0.1",
+                "L": "50100",
+                "rp": "1",
+                "n": "0.2",
+            },
+        },
+    )
+    assert fact is not None
+    assert fact["reason"] == "STOP_LOSS"
+    assert fact["lifecycle_id"] == "a-demo-BTCUSDT-abc"

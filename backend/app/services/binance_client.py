@@ -61,6 +61,60 @@ class BinanceMarketDataClient:
             for row in rows
         ]
 
+    async def closed_klines_range(
+        self,
+        symbol: str,
+        interval: str,
+        *,
+        start_time: int,
+        end_time: int,
+        limit: int,
+    ) -> list[Candle]:
+        """Fetch one bounded, historical range and retain only candles closed before exit."""
+        if limit < 1 or limit > 5000:
+            raise ValueError("Số nến lifecycle phải nằm trong khoảng 1-5000")
+        rows: list[list[Any]] = []
+        cursor = start_time
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            while len(rows) < limit and cursor < end_time:
+                page_limit = min(1000, limit - len(rows))
+                response = await client.get(
+                    f"{self._base_url}/fapi/v1/klines",
+                    params={
+                        "symbol": symbol.upper(),
+                        "interval": interval,
+                        "startTime": cursor,
+                        "endTime": end_time - 1,
+                        "limit": page_limit,
+                    },
+                )
+                response.raise_for_status()
+                page = response.json()
+                if not isinstance(page, list) or not page:
+                    break
+                rows.extend(page)
+                cursor = int(page[-1][6]) + 1
+                if len(page) < page_limit:
+                    break
+        candles = [
+            Candle(
+                open_time=int(row[0]),
+                open=float(row[1]),
+                high=float(row[2]),
+                low=float(row[3]),
+                close=float(row[4]),
+                volume=float(row[5]),
+                close_time=int(row[6]),
+                quote_volume=float(row[7]),
+            )
+            for row in rows
+            if len(row) >= 8 and int(row[6]) < end_time
+        ]
+        if len(candles) != limit:
+            raise ValueError(f"Chỉ nhận được {len(candles)}/{limit} nến lifecycle đã đóng")
+        self._validate_historical_candles(candles, limit)
+        return candles
+
     async def historical_klines(
         self, symbol: str, interval: str, limit: int = 1000
     ) -> list[Candle]:

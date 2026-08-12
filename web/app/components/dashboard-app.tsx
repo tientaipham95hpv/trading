@@ -1560,11 +1560,11 @@ function Analytics({
 }
 
 function ExitAnalyticsPanel({ analytics }: { analytics: ExitAnalytics | null }) {
-  const unavailable = [
-    ["Realized R", analytics?.realized_r_availability],
-    ["MAE", analytics?.mae_availability],
-    ["MFE", analytics?.mfe_availability],
-    ["Missed R", analytics?.missed_r_availability],
+  const lifecycleMetrics = [
+    ["Realized R", analytics?.realized_r, analytics?.realized_r_availability],
+    ["MAE trung bình", analytics?.excursion.mae_r, analytics?.mae_availability],
+    ["MFE trung bình", analytics?.excursion.mfe_r, analytics?.mfe_availability],
+    ["Missed R trung bình", analytics?.excursion.missed_r, analytics?.missed_r_availability],
   ] as const;
 
   return (
@@ -1595,15 +1595,20 @@ function ExitAnalyticsPanel({ analytics }: { analytics: ExitAnalytics | null }) 
         <ExitBreakdown title="Theo symbol" rows={analytics?.by_symbol ?? []} />
       </div>
       <div className="mt-4 grid gap-2 md:grid-cols-2">
-        {unavailable.map(([label, item]) => (
+        {lifecycleMetrics.map(([label, value, item]) => (
           <div className="rounded-md bg-white/[0.04] px-3 py-2 text-sm" key={label}>
-            <strong>{label}: {item?.available ? "Có dữ liệu" : "Chưa đủ dữ liệu"}</strong>
+            <strong>
+              {label}: {item?.available && value != null ? `${value.toFixed(3)}R` : "Chưa đủ dữ liệu"}
+            </strong>
             <p className="mt-1 text-xs text-slate-400">
-              Coverage {percent((item?.coverage ?? 0) * 100)} · {item?.reason ?? "Đang tải"}
+              Coverage {percent((item?.coverage ?? 0) * 100)} · {item?.reason ?? "Đã xác minh bằng lifecycle và nến đóng đầy đủ"}
             </p>
           </div>
         ))}
       </div>
+      <p className="mt-2 text-xs text-slate-400">
+        Lifecycle đủ excursion: {analytics?.excursion.lifecycles ?? 0}. Không dùng nến entry đang hình thành hoặc nến chứa thời điểm thoát.
+      </p>
       {(analytics?.notes ?? []).map((note) => (
         <p className="mt-2 text-xs text-slate-400" key={note}>• {note}</p>
       ))}

@@ -201,7 +201,7 @@ def _lifecycle_fact(mode: TradingMode, event: dict[str, Any]) -> dict[str, objec
     client_id = str(order.get("c") or "")
     status = str(order.get("X") or "")
     if status not in {"FILLED", "PARTIALLY_FILLED"} or not any(
-        marker in client_id for marker in ("-tp-", "-sl-", "-close")
+        marker in client_id for marker in ("-tp-", "-sl-", "-be-", "-lock-", "-repair-", "-close")
     ):
         return None
     event_time = int(event.get("E") or order.get("T") or 0)
@@ -209,11 +209,13 @@ def _lifecycle_fact(mode: TradingMode, event: dict[str, Any]) -> dict[str, objec
     event_type = "PARTIAL_CLOSE" if status == "PARTIALLY_FILLED" else "CLOSE_FILL"
     if "-tp-" in client_id:
         reason = "TAKE_PROFIT"
-    elif "-sl-" in client_id:
+    elif any(marker in client_id for marker in ("-sl-", "-be-", "-lock-", "-repair-")):
         reason = "STOP_LOSS"
     else:
         reason = "MARKET_CLOSE"
-    lifecycle_id = client_id.split("-tp-")[0].split("-sl-")[0].split("-close")[0]
+    lifecycle_id = client_id
+    for marker in ("-tp-", "-sl-", "-be-", "-lock-", "-repair-", "-close"):
+        lifecycle_id = lifecycle_id.split(marker)[0]
     order_id = str(order.get("i") or "")
     trade_id = str(order.get("t") or "")
     return {

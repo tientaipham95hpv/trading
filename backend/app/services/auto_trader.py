@@ -312,14 +312,14 @@ class AutoTrader:
                     level="WARNING" if audit.decision == "WOULD_REJECT" else "INFO",
                 )
 
-            return await self._submit(plan)
+            return await self._submit(plan, timeframe=result.timeframe.value)
 
         return await self._skip(
             "NO_ACCEPTED_SIGNAL",
             self._rejection_summary(rejection_reasons),
         )
 
-    async def _submit(self, plan: OrderPlan) -> dict[str, object]:
+    async def _submit(self, plan: OrderPlan, *, timeframe: str) -> dict[str, object]:
         self.last_status = "SUBMITTING"
         self.last_symbol = plan.symbol
         if self.state.trading_mode in {TradingMode.DEMO, TradingMode.LIVE}:
@@ -335,7 +335,7 @@ class AutoTrader:
                 return await self._skip("ORDER_ERROR", f"{plan.symbol}: {exc}")
             await self._persist_exchange_result(plan, result)
             if result.accepted:
-                await self._record_lifecycle_open(plan, result)
+                await self._record_lifecycle_open(plan, result, timeframe=timeframe)
             if result.critical_alert:
                 self.state.enter_safe_mode(result.critical_alert)
                 await self.state.storage.log(
@@ -394,13 +394,34 @@ class AutoTrader:
         )
 
     async def _record_lifecycle_open(
-        self, plan: OrderPlan, result: ExchangeExecutionResult
+        self,
+        plan: OrderPlan,
+        result: ExchangeExecutionResult,
+        *,
+        timeframe: str,
     ) -> None:
-        now = datetime.now(UTC)
-        entry_price = float(
-            result.order.get("avg_price") or result.order.get("price") or plan.entry_price
+        raw_order = result.order.get("raw")
+        raw_order = raw_order if isinstance(raw_order, dict) else {}
+        exchange_time_ms = int(
+            raw_order.get("updateTime")
+            or raw_order.get("transactTime")
+            or raw_order.get("time")
+            or 0
         )
-        initial_risk = abs(entry_price - plan.stop_loss) * plan.quantity
+        event_at = (
+            datetime.fromtimestamp(exchange_time_ms / 1000, UTC) if exchange_time_ms > 0 else None
+        )
+        entry_price = float(
+            raw_order.get("avgPrice")
+            or result.order.get("avg_price")
+            or result.order.get("price")
+            or 0
+        )
+        executed_quantity = float(
+            result.order.get("executed_quantity") or raw_order.get("executedQty") or 0
+        )
+        initial_risk = abs(entry_price - plan.stop_loss) * executed_quantity
+        evidence_verifiable = event_at is not None and entry_price > 0 and executed_quantity > 0
         await self.state.storage.save_lifecycle_analytics_event(
             {
                 "event_key": f"{self.state.trading_mode.value}:{plan.client_order_id}:OPEN",
@@ -408,14 +429,15 @@ class AutoTrader:
                 "lifecycle_id": plan.client_order_id,
                 "symbol": plan.symbol,
                 "event_type": "OPEN",
-                "event_at": now.isoformat(),
+                "event_at": event_at.isoformat() if event_at else datetime.now(UTC).isoformat(),
+                "entry_timestamp_verifiable": event_at is not None,
                 "side": plan.side.value,
                 "entry_price": entry_price,
-                "initial_quantity": plan.quantity,
+                "initial_quantity": executed_quantity or plan.quantity,
                 "initial_stop_loss": plan.stop_loss,
                 "initial_risk": initial_risk,
-                "risk_verifiable": initial_risk > 0,
-                "timeframe": None,
+                "risk_verifiable": evidence_verifiable and initial_risk > 0,
+                "timeframe": timeframe,
                 "take_profits": plan.take_profits,
                 "entry_order_id": result.order.get("order_id"),
                 "entry_client_order_id": plan.client_order_id,

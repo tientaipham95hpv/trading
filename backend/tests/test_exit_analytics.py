@@ -45,6 +45,7 @@ def test_realized_r_uses_only_matched_verifiable_lifecycle_evidence():
             "event_type": "OPEN",
             "lifecycle_id": "a-demo-BTC-1",
             "risk_verifiable": True,
+            "entry_timestamp_verifiable": True,
             "initial_risk": 20,
         },
         {"event_type": "CLOSE_FILL", "lifecycle_id": "a-demo-BTC-1", "realized_pnl": 10},
@@ -54,3 +55,149 @@ def test_realized_r_uses_only_matched_verifiable_lifecycle_evidence():
     assert result.realized_r == pytest.approx(0.5)
     assert result.realized_r_availability.available is True
     assert result.realized_r_availability.coverage == pytest.approx(0.5)
+
+
+from app.domain.models import Candle
+from app.services.exit_analytics import excursion_requests
+
+
+def _candle(open_time: int, high: float, low: float) -> Candle:
+    return Candle(
+        open_time=open_time,
+        open=100,
+        high=high,
+        low=low,
+        close=100,
+        volume=1,
+        close_time=open_time + 59_999,
+    )
+
+
+def test_long_excursion_uses_only_complete_closed_candles():
+    events = [
+        {
+            "event_type": "OPEN",
+            "lifecycle_id": "x",
+            "symbol": "BTCUSDT",
+            "event_at": "2026-01-01T00:00:10+00:00",
+            "risk_verifiable": True,
+            "entry_timestamp_verifiable": True,
+            "initial_risk": 10,
+            "entry_price": 100,
+            "initial_stop_loss": 90,
+            "initial_quantity": 1,
+            "side": "LONG",
+            "timeframe": "1m",
+        },
+        {
+            "event_type": "CLOSE_FILL",
+            "lifecycle_id": "x",
+            "event_at": "2026-01-01T00:03:30+00:00",
+            "reason": "MARKET_CLOSE",
+            "realized_pnl": 15,
+        },
+    ]
+    start = 1_767_225_660_000
+    candles = [
+        _candle(start, 110, 95),
+        _candle(start + 60_000, 125, 98),
+        _candle(start + 120_000, 120, 99),
+    ]
+    result = ExitAnalyticsService().analyze(
+        [], [], lifecycle_events=events, lifecycle_candles={"x": candles}
+    )
+    assert result.excursion.lifecycles == 1
+    assert result.excursion.mae_r == pytest.approx(0.5)
+    assert result.excursion.mfe_r == pytest.approx(2.5)
+    assert result.excursion.missed_r == pytest.approx(1.0)
+    assert result.mae_availability.coverage == 1
+
+
+def test_excursion_rejects_partial_candle_coverage():
+    events = [
+        {
+            "event_type": "OPEN",
+            "lifecycle_id": "x",
+            "symbol": "BTCUSDT",
+            "event_at": "2026-01-01T00:00:10+00:00",
+            "risk_verifiable": True,
+            "entry_timestamp_verifiable": True,
+            "initial_risk": 10,
+            "entry_price": 100,
+            "initial_stop_loss": 90,
+            "side": "LONG",
+            "timeframe": "1m",
+        },
+        {
+            "event_type": "CLOSE_FILL",
+            "lifecycle_id": "x",
+            "event_at": "2026-01-01T00:03:30+00:00",
+            "reason": "MARKET_CLOSE",
+            "realized_pnl": 15,
+        },
+    ]
+    result = ExitAnalyticsService().analyze(
+        [],
+        [],
+        lifecycle_events=events,
+        lifecycle_candles={"x": [_candle(1_767_225_660_000, 110, 95)]},
+    )
+    assert result.excursion.mae_r is None
+    assert result.mae_availability.available is False
+    assert result.mae_availability.coverage == 0
+
+
+def test_excursion_request_requires_terminal_close_and_bounded_range():
+    events = [
+        {
+            "event_type": "OPEN",
+            "lifecycle_id": "x",
+            "symbol": "BTCUSDT",
+            "event_at": "2026-01-01T00:00:10+00:00",
+            "risk_verifiable": True,
+            "entry_timestamp_verifiable": True,
+            "timeframe": "1m",
+        },
+        {
+            "event_type": "CLOSE_FILL",
+            "lifecycle_id": "x",
+            "event_at": "2026-01-01T00:03:30+00:00",
+            "reason": "MARKET_CLOSE",
+        },
+    ]
+    request = excursion_requests(events)["x"]
+    assert request[0:2] == ("BTCUSDT", "1m")
+    assert request[-1] == 2
+
+
+def test_excursion_requires_realized_pnl_evidence():
+    events = [
+        {
+            "event_type": "OPEN",
+            "lifecycle_id": "x",
+            "symbol": "BTCUSDT",
+            "event_at": "2026-01-01T00:00:10+00:00",
+            "risk_verifiable": True,
+            "entry_timestamp_verifiable": True,
+            "initial_risk": 10,
+            "entry_price": 100,
+            "initial_stop_loss": 90,
+            "side": "LONG",
+            "timeframe": "1m",
+        },
+        {
+            "event_type": "CLOSE_FILL",
+            "lifecycle_id": "x",
+            "event_at": "2026-01-01T00:02:30+00:00",
+            "reason": "MARKET_CLOSE",
+        },
+    ]
+    start = 1_767_225_660_000
+    result = ExitAnalyticsService().analyze(
+        [],
+        [],
+        lifecycle_events=events,
+        lifecycle_candles={"x": [_candle(start, 120, 95), _candle(start + 60_000, 115, 98)]},
+    )
+    assert result.excursion.lifecycles == 0
+    assert result.excursion.missed_r is None

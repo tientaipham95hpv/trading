@@ -23,7 +23,11 @@ from app.domain.models import (
 from app.services.app_state import state
 from app.services.exchange import ExchangeCredentialsError, ExchangeError
 from app.services.execution import DuplicateOrderError
-from app.services.exit_analytics import ExitAnalyticsService, normalize_exchange_closes
+from app.services.exit_analytics import (
+    ExitAnalyticsService,
+    excursion_requests,
+    normalize_exchange_closes,
+)
 
 router = APIRouter(prefix="/api")
 
@@ -262,8 +266,24 @@ async def exit_analytics() -> ExitAnalyticsResponse:
         lifecycle_events = await state.storage.lifecycle_analytics_events(
             mode=state.trading_mode.value, limit=5000
         )
+        lifecycle_candles = {}
+        for lifecycle_id, request in excursion_requests(lifecycle_events).items():
+            symbol, interval, start_ms, end_ms, count = request
+            try:
+                lifecycle_candles[lifecycle_id] = await state.market_client.closed_klines_range(
+                    symbol,
+                    interval,
+                    start_time=start_ms,
+                    end_time=end_ms,
+                    limit=count,
+                )
+            except ValueError:
+                lifecycle_candles[lifecycle_id] = []
         return ExitAnalyticsService().analyze(
-            normalize_exchange_closes(rows), income, lifecycle_events=lifecycle_events
+            normalize_exchange_closes(rows),
+            income,
+            lifecycle_events=lifecycle_events,
+            lifecycle_candles=lifecycle_candles,
         )
 
     paper_rows = [

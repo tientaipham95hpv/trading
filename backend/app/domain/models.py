@@ -376,6 +376,13 @@ class ExitAnalyticsSummary(BaseModel):
     net_realized_pnl: float = 0.0
 
 
+class ExitExcursionMetrics(BaseModel):
+    lifecycles: int = 0
+    mae_r: float | None = None
+    mfe_r: float | None = None
+    missed_r: float | None = None
+
+
 class ExitAnalyticsResponse(BaseModel):
     read_only: bool = True
     generated_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
@@ -385,6 +392,7 @@ class ExitAnalyticsResponse(BaseModel):
     by_side: list[ExitAnalyticsBreakdown] = Field(default_factory=list)
     by_symbol: list[ExitAnalyticsBreakdown] = Field(default_factory=list)
     realized_r: float | None = None
+    excursion: ExitExcursionMetrics = Field(default_factory=ExitExcursionMetrics)
     realized_r_availability: ExitAnalyticsAvailability
     mae_availability: ExitAnalyticsAvailability
     mfe_availability: ExitAnalyticsAvailability
