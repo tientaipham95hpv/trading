@@ -126,16 +126,20 @@ class AppState:
 
     @property
     def safe_mode(self) -> bool:
-        return self.demo_exchange.snapshot_cache.safe_mode
+        return self._active_exchange().snapshot_cache.safe_mode
 
     @property
     def safe_mode_reason(self) -> str | None:
-        return self.demo_exchange.snapshot_cache.safe_mode_reason
+        return self._active_exchange().snapshot_cache.safe_mode_reason
 
     def enter_safe_mode(self, reason: str) -> None:
         self.bot_state = BotState.SAFE_MODE
-        self.demo_exchange.snapshot_cache.safe_mode = True
-        self.demo_exchange.snapshot_cache.safe_mode_reason = reason
+        adapter = self._active_exchange()
+        adapter.snapshot_cache.safe_mode = True
+        adapter.snapshot_cache.safe_mode_reason = reason
+
+    def _active_exchange(self) -> BinanceFuturesAdapter:
+        return self.live_exchange if self.trading_mode == TradingMode.LIVE else self.demo_exchange
 
     def performance_reset_at_for(self, mode: TradingMode | None = None) -> datetime | None:
         return self.performance_reset_at_by_mode.get(mode or self.trading_mode)

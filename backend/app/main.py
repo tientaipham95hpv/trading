@@ -2,6 +2,7 @@ from fastapi import FastAPI
 
 from app.api.routes import router
 from app.services.app_state import state
+from app.services.exchange import ExchangeError
 
 app = FastAPI(title="Trading Automation API", version="1.0.0")
 app.include_router(router)
@@ -10,6 +11,17 @@ app.include_router(router)
 @app.on_event("startup")
 async def startup() -> None:
     await state.storage.init()
+    adapter = state.live_exchange if state.trading_mode.value == "LIVE" else state.demo_exchange
+    if adapter.configured:
+        try:
+            await state.user_stream._reconcile_after_connect(adapter)
+        except ExchangeError as exc:  # keep API observable, but lock entries on uncertain recovery
+            state.enter_safe_mode(f"Startup reconcile không chắc chắn: {exc}")
+            await state.storage.log(
+                "Startup reconciliation entered SAFE_MODE",
+                {"error": str(exc)},
+                level="CRITICAL",
+            )
     state.auto_trader.start()
     state.user_stream.start()
     state.stability.start()

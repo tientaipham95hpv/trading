@@ -99,3 +99,27 @@ import Testing
     #expect(envelope.items?.first?.symbol == "BTCUSDT")
     #expect(envelope.items?.first?.longScore == 82)
 }
+
+@Test func settingsDecodesCurrentBackendBalanceKey() async throws {
+    let data = """
+    {
+      "whitelist": [], "blacklist": [], "min_quote_volume": 1,
+      "max_spread_bps": 1, "min_listing_age_days": 1,
+      "scan_timeframes": ["15m"], "min_score_to_trade": 80,
+      "simulation_initial_balance": 5000, "taker_fee_rate": 0.0005,
+      "maker_fee_rate": 0.0002, "slippage_bps": 1,
+      "funding_rate_per_8h": 0, "max_leverage": 3,
+      "risk_per_trade": 0.0025, "max_risk_per_trade": 0.005,
+      "max_total_open_risk": 0.01, "max_margin_per_trade": 0.1,
+      "max_total_margin": 0.15, "max_daily_loss": 0.02,
+      "max_weekly_drawdown": 0.05, "max_open_positions": 1,
+      "max_portfolio_exposure": 0.3, "max_correlated_positions": 1,
+      "max_loss_streak": 3, "loss_streak_cooldown_minutes": 60,
+      "extreme_volatility_atr_fraction": 0.05, "stale_data_seconds": 90,
+      "minimum_risk_reward": 2
+    }
+    """.data(using: .utf8)!
+
+    let settings = try JSONDecoder().decode(CaiDatBot.self, from: data)
+    #expect(settings.paperInitialBalance == 5000)
+}

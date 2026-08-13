@@ -66,6 +66,7 @@ class UserStreamWatchdog:
                 self.last_connected_at = datetime.now(UTC)
                 self.last_error = None
                 self._consecutive_failures = 0
+                await self._reconcile_after_connect(adapter)
                 await self.state.storage.log(
                     "User-stream connected",
                     {"mode": self.state.trading_mode.value},
@@ -92,27 +93,114 @@ class UserStreamWatchdog:
         async with websockets.connect(
             url, ping_interval=20, ping_timeout=20, close_timeout=5
         ) as websocket:
-            keepalive_task = asyncio.create_task(self._keepalive_loop(adapter))
+            maintenance_task = asyncio.create_task(self._maintenance_loop(adapter))
             try:
                 async for raw in websocket:
                     event = json.loads(raw)
                     await self._handle_event(adapter, event)
             finally:
-                keepalive_task.cancel()
+                maintenance_task.cancel()
                 try:
-                    await keepalive_task
+                    await maintenance_task
                 except asyncio.CancelledError:
                     pass
 
-    async def _keepalive_loop(self, adapter: Any) -> None:
-        while True:
-            await asyncio.sleep(25 * 60)
-            await adapter.keepalive_user_stream()
-            await self.state.storage.log(
-                "User-stream listenKey keepalive",
-                {"mode": self.state.trading_mode.value},
-                level="INFO",
+    async def _reconcile_after_connect(self, adapter: Any) -> None:
+        """Reconnect cannot prove that no account events were missed."""
+        # DEMO/LIVE positions are authoritative on Binance. ExecutionService is
+        # in-memory, so recover positions proven to be bot-managed before the
+        # symbol reconciliation performed after a process restart.
+        initial_snapshot = await adapter.snapshot()
+        self._restore_managed_positions(initial_snapshot)
+        local_positions = (
+            [position.model_dump(mode="json") for position in self.state.execution.open_positions()]
+            if hasattr(self.state, "execution")
+            else []
+        )
+        snapshot = await adapter.reconcile(local_positions)
+        await adapter.remove_duplicate_stop_losses(snapshot)
+        repaired = await adapter.repair_missing_stop_losses(snapshot)
+        if repaired:
+            snapshot = await adapter.snapshot()
+        unprotected = {
+            position.symbol
+            for position in snapshot.positions
+            if not any(
+                order.symbol == position.symbol
+                and order.stop_price
+                and "STOP" in order.order_type
+                and "TAKE_PROFIT" not in order.order_type
+                for order in snapshot.orders
             )
+        }
+        if snapshot.safe_mode or unprotected:
+            reason = snapshot.safe_mode_reason or (
+                f"Position không có SL: {', '.join(sorted(unprotected))}"
+            )
+            self.state.enter_safe_mode(reason)
+            raise ExchangeError(reason)
+
+    def _restore_managed_positions(self, snapshot: Any) -> None:
+        from uuid import uuid4
+
+        from app.domain.models import PaperPosition, Side
+
+        existing = {position.symbol for position in self.state.execution.open_positions()}
+        for position in snapshot.positions:
+            if position.symbol in existing:
+                continue
+            orders = [order for order in snapshot.orders if order.symbol == position.symbol]
+            managed = [
+                order
+                for order in orders
+                if order.client_order_id.startswith(("a-demo-", "a-live-", "demo-", "live-"))
+            ]
+            stops = [
+                order
+                for order in managed
+                if "STOP" in order.order_type
+                and "TAKE_PROFIT" not in order.order_type
+                and order.stop_price
+            ]
+            # Never adopt a manual/foreign or unprotected exchange position.
+            if not managed or not stops:
+                continue
+            take_profits = sorted(
+                {
+                    float(order.stop_price)
+                    for order in managed
+                    if "TAKE_PROFIT" in order.order_type and order.stop_price
+                },
+                reverse=position.side == "SHORT",
+            )
+            self.state.execution.positions.append(
+                PaperPosition(
+                    id=f"recovered-{position.symbol}-{uuid4()}",
+                    symbol=position.symbol,
+                    side=Side.LONG if position.side == "LONG" else Side.SHORT,
+                    quantity=position.quantity,
+                    remaining_quantity=position.quantity,
+                    entry_price=position.entry_price,
+                    stop_loss=float(stops[0].stop_price),
+                    take_profits=take_profits,
+                )
+            )
+            existing.add(position.symbol)
+
+    async def _maintenance_loop(self, adapter: Any) -> None:
+        """Keep the authoritative snapshot fresh even when the stream is quiet."""
+        keepalive_at = datetime.now(UTC)
+        while True:
+            await asyncio.sleep(60)
+            await self._reconcile_after_connect(adapter)
+            if (datetime.now(UTC) - keepalive_at).total_seconds() >= 25 * 60:
+                await adapter.keepalive_user_stream()
+                keepalive_at = datetime.now(UTC)
+                await self.state.storage.log(
+                    "User-stream listenKey keepalive",
+                    {"mode": self.state.trading_mode.value},
+                    level="INFO",
+                )
 
     async def _handle_event(self, adapter: Any, event: dict[str, Any]) -> None:
         now = datetime.now(UTC)

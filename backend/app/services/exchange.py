@@ -98,15 +98,22 @@ class BinanceFuturesAdapter(ExchangeAdapter):
     async def submit_order_plan(self, plan: OrderPlan) -> ExchangeExecutionResult:
         self._require_credentials()
         plan = await self._normalize_plan(plan)
+        # Binance client ids survive process restarts; the in-memory set does not.
+        try:
+            existing = await self.query_order(plan.symbol, plan.client_order_id, strict=True)
+        except ExchangeError as exc:
+            self._enter_safe_mode(
+                f"Không xác minh được client order id {plan.client_order_id}: {exc}"
+            )
+            raise
+        if existing:
+            return ExchangeExecutionResult(
+                accepted=True,
+                status=f"{self.mode.value}_DUPLICATE_ACK",
+                client_order_id=plan.client_order_id,
+                order=self._normalize_order(existing).model_dump(mode="json"),
+            )
         if plan.client_order_id in self._submitted_client_ids:
-            existing = await self.query_order(plan.symbol, plan.client_order_id)
-            if existing:
-                return ExchangeExecutionResult(
-                    accepted=True,
-                    status=f"{self.mode.value}_DUPLICATE_ACK",
-                    client_order_id=plan.client_order_id,
-                    order=self._normalize_order(existing).model_dump(mode="json"),
-                )
             raise ExchangeError(f"Duplicate client order id: {plan.client_order_id}")
         self._submitted_client_ids.add(plan.client_order_id)
         self._submitted_plans_by_symbol[plan.symbol] = plan
@@ -214,7 +221,11 @@ class BinanceFuturesAdapter(ExchangeAdapter):
         return self.snapshot_cache
 
     async def reconcile(self, local_positions: list[dict[str, Any]]) -> ExchangeSnapshot:
-        snapshot = await self.snapshot()
+        try:
+            snapshot = await self.snapshot()
+        except ExchangeError as exc:
+            self._enter_safe_mode(f"Reconcile không chắc chắn: {exc}")
+            raise
         exchange_symbols = {
             position.symbol for position in snapshot.positions if abs(position.quantity) > 0
         }
@@ -225,12 +236,22 @@ class BinanceFuturesAdapter(ExchangeAdapter):
         }
         mismatch = sorted(exchange_symbols.symmetric_difference(local_symbols))
         if mismatch:
-            snapshot.safe_mode = True
-            snapshot.connection = ExchangeConnectionState.SAFE_MODE
-            snapshot.safe_mode_reason = f"Mismatch vị thế Binance vs DB: {', '.join(mismatch)}"
+            self._enter_safe_mode(f"Mismatch vị thế Binance vs DB: {', '.join(mismatch)}")
+            snapshot = self.snapshot_cache
+        else:
+            # A successful authoritative reconciliation is the only automatic
+            # way out of a mismatch SAFE_MODE after recovery/restart.
+            snapshot.safe_mode = False
+            snapshot.safe_mode_reason = None
+            snapshot.connection = ExchangeConnectionState.CONNECTED
         snapshot.last_reconciled_at = datetime.now(UTC)
         self.snapshot_cache = snapshot
         return snapshot
+
+    def _enter_safe_mode(self, reason: str) -> None:
+        self.snapshot_cache.safe_mode = True
+        self.snapshot_cache.connection = ExchangeConnectionState.SAFE_MODE
+        self.snapshot_cache.safe_mode_reason = reason
 
     async def open_user_stream(self) -> str:
         self._require_credentials()
@@ -433,14 +454,21 @@ class BinanceFuturesAdapter(ExchangeAdapter):
     async def change_leverage(self, symbol: str, leverage: int) -> None:
         await self._signed("POST", "/fapi/v1/leverage", {"symbol": symbol, "leverage": leverage})
 
-    async def query_order(self, symbol: str, client_order_id: str) -> dict[str, Any] | None:
+    async def query_order(
+        self, symbol: str, client_order_id: str, *, strict: bool = False
+    ) -> dict[str, Any] | None:
         try:
             return await self._signed(
                 "GET",
                 "/fapi/v1/order",
                 {"symbol": symbol, "origClientOrderId": client_order_id},
             )
-        except ExchangeError:
+        except ExchangeError as exc:
+            message = str(exc)
+            if "-2013" in message or "Order does not exist" in message:
+                return None
+            if strict:
+                raise
             return None
 
     async def open_orders(self, symbol: str | None = None) -> list[ExchangeOrder]:
@@ -568,6 +596,43 @@ class BinanceFuturesAdapter(ExchangeAdapter):
             )
         return actions
 
+    async def remove_duplicate_stop_losses(
+        self, snapshot: ExchangeSnapshot
+    ) -> list[dict[str, object]]:
+        actions: list[dict[str, object]] = []
+        for position in snapshot.positions:
+            stops = [
+                order
+                for order in snapshot.orders
+                if order.symbol == position.symbol
+                and order.stop_price
+                and "STOP" in order.order_type
+                and "TAKE_PROFIT" not in order.order_type
+            ]
+            if len(stops) <= 1:
+                continue
+            keep = (
+                max(stops, key=lambda item: item.stop_price)
+                if position.side == "LONG"
+                else min(stops, key=lambda item: item.stop_price)
+            )
+            for order in stops:
+                if order is keep or not self._is_bot_order_id(order.client_order_id):
+                    continue
+                await self._signed(
+                    "DELETE",
+                    "/fapi/v1/algoOrder",
+                    {"symbol": position.symbol, "clientAlgoId": order.client_order_id},
+                )
+                actions.append(
+                    {
+                        "symbol": position.symbol,
+                        "client_order_id": order.client_order_id,
+                        "status": "Đã hủy SL trùng",
+                    }
+                )
+        return actions
+
     async def is_symbol_tradable(self, symbol: str) -> bool:
         try:
             await self._filters_for(symbol)
@@ -630,11 +695,18 @@ class BinanceFuturesAdapter(ExchangeAdapter):
             params["price"] = _format_number(plan.entry_price)
         try:
             return await self._signed("POST", "/fapi/v1/order", params)
-        except ExchangeError as exc:
-            if "Unknown error" in str(exc):
-                existing = await self.query_order(plan.symbol, plan.client_order_id)
+        except ExchangeError:
+            try:
+                existing = await self.query_order(plan.symbol, plan.client_order_id, strict=True)
                 if existing:
                     return existing
+            except ExchangeError as query_exc:
+                self._enter_safe_mode(
+                    f"Không xác định được kết quả entry {plan.client_order_id}: {query_exc}"
+                )
+                raise ExchangeError(
+                    self.snapshot_cache.safe_mode_reason or "Entry outcome uncertain"
+                ) from query_exc
             raise
 
     async def _ensure_stop_loss(self, plan: OrderPlan) -> dict[str, Any] | None:

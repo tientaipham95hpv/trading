@@ -20,6 +20,7 @@ from app.domain.models import (
     TradingMode,
 )
 from app.services.app_state import state
+from app.services.capital_risk import capital_risk_profile
 from app.services.exchange import ExchangeCredentialsError, ExchangeError
 from app.services.exit_analytics import (
     ExitAnalyticsService,
@@ -42,6 +43,21 @@ async def status() -> dict[str, object]:
         "exchange": (
             state.live_exchange if state.trading_mode == TradingMode.LIVE else state.demo_exchange
         ).snapshot_cache.model_dump(mode="json"),
+        "capital_risk": capital_risk_profile(
+            max(
+                (
+                    state.live_exchange
+                    if state.trading_mode == TradingMode.LIVE
+                    else state.demo_exchange
+                ).snapshot_cache.balance.margin_balance
+                or (
+                    state.live_exchange
+                    if state.trading_mode == TradingMode.LIVE
+                    else state.demo_exchange
+                ).snapshot_cache.balance.available,
+                0.0,
+            )
+        ).snapshot(),
         "risk": {
             "max_leverage": state.bot_settings.max_leverage,
             "risk_per_trade": state.bot_settings.risk_per_trade,
@@ -221,6 +237,7 @@ async def exit_analytics() -> ExitAnalyticsResponse:
             lifecycle_events=lifecycle_events,
             lifecycle_candles=lifecycle_candles,
         )
+
 
 @router.get("/logs")
 async def logs(limit: int = Query(default=100, ge=1, le=500)) -> dict[str, object]:
@@ -718,6 +735,7 @@ async def _submit_order(plan: OrderPlan) -> dict[str, object]:
             )
         return result.model_dump(mode="json")
 
+
 async def _channel_payload(channel: str) -> dict[str, object]:
     if channel == "market":
         return {
@@ -730,22 +748,26 @@ async def _channel_payload(channel: str) -> dict[str, object]:
             "items": [item.model_dump(mode="json") for item in state.scanner.last_results],
         }
     if channel == "positions":
+        # WebSocket fan-out must never turn into Binance REST polling. The
+        # user-stream/watchdog keeps this authoritative cache current.
         return {
             "channel": channel,
-            "items": _exchange_positions_for_app(await _current_exchange_snapshot()),
+            "items": _exchange_positions_for_app(_current_adapter().snapshot_cache),
         }
     if channel == "performance":
-        adapter = _current_adapter()
-        snapshot = await adapter.snapshot()
-        income = _income_since_reset(await adapter.income_history(limit=200))
+        # Keep this legacy channel cheap. Clients refresh full performance via
+        # the REST endpoint at a much lower cadence.
         return {
             "channel": channel,
-            "data": _exchange_performance(snapshot, income).model_dump(mode="json"),
+            "data": state.execution.performance().model_dump(mode="json"),
         }
     if channel == "system":
         return {"channel": channel, "data": await status()}
     if channel == "exchange":
-        return {"channel": channel, "data": await exchange_snapshot()}
+        return {
+            "channel": channel,
+            "data": _current_adapter().snapshot_cache.model_dump(mode="json"),
+        }
     await asyncio.sleep(0)
     return {"channel": channel, "error": "Unknown channel"}
 
