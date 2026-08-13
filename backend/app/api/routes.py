@@ -1,6 +1,5 @@
 import asyncio
 from datetime import UTC, datetime
-from uuid import uuid4
 
 import httpx
 from fastapi import APIRouter, HTTPException, Query, WebSocket, WebSocketDisconnect
@@ -17,13 +16,11 @@ from app.domain.models import (
     OrderPlan,
     PerformanceSnapshot,
     PushDeviceRegistration,
-    SignalAction,
     Timeframe,
     TradingMode,
 )
 from app.services.app_state import state
 from app.services.exchange import ExchangeCredentialsError, ExchangeError
-from app.services.execution import DuplicateOrderError
 from app.services.exit_analytics import (
     ExitAnalyticsService,
     excursion_requests,
