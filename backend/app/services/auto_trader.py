@@ -15,7 +15,9 @@ from app.domain.models import (
     Timeframe,
     TradingMode,
 )
+from app.services.capital_risk import CapitalRiskProfile, capital_risk_profile
 from app.services.exchange import ExchangeCredentialsError, ExchangeError
+from app.services.risk_engine import RiskEngine
 from app.services.smart_entry import SmartEntryAnalytics
 
 
@@ -35,6 +37,7 @@ class AutoTrader:
         self.rejected = 0
         self.data_quality_blocked = 0
         self.last_data_quality: dict[str, object] | None = None
+        self.active_capital_profile: CapitalRiskProfile | None = None
 
     def start(self) -> None:
         if self.task and not self.task.done():
@@ -65,6 +68,9 @@ class AutoTrader:
             "rejected": self.rejected,
             "data_quality_blocked": self.data_quality_blocked,
             "last_data_quality": self.last_data_quality,
+            "capital_risk": self.active_capital_profile.snapshot()
+            if self.active_capital_profile
+            else None,
         }
 
     async def _run(self) -> None:
@@ -101,6 +107,8 @@ class AutoTrader:
 
         snapshot = None
         account_equity = self.state.execution.performance().equity
+        profile = capital_risk_profile(account_equity)
+        self.active_capital_profile = profile
         active_symbols: set[str] = set()
         open_position_count = len(self.state.execution.open_positions())
         portfolio_exposure_fraction = self._portfolio_exposure_fraction()
@@ -115,6 +123,8 @@ class AutoTrader:
                 account_equity = max(
                     snapshot.balance.margin_balance or snapshot.balance.available, 1.0
                 )
+                profile = capital_risk_profile(account_equity)
+                self.active_capital_profile = profile
             except (ExchangeCredentialsError, ExchangeError) as exc:
                 self.rejected += 1
                 return await self._skip("BLOCKED", f"Exchange snapshot lỗi: {exc}")
@@ -154,8 +164,14 @@ class AutoTrader:
             correlation_limits = await self._correlation_limits(snapshot)
             snapshot_audit = self.state.portfolio_risk.audit_snapshot(
                 snapshot,
-                max_open_risk_fraction=self.state.bot_settings.max_total_open_risk,
-                max_exposure_fraction=self.state.bot_settings.max_portfolio_exposure,
+                max_open_risk_fraction=min(
+                    self.state.bot_settings.max_total_open_risk,
+                    profile.max_risk_per_trade * profile.max_open_positions,
+                ),
+                max_exposure_fraction=min(
+                    self.state.bot_settings.max_portfolio_exposure,
+                    profile.max_portfolio_exposure,
+                ),
                 max_symbol_exposure_fraction=self.state.bot_settings.max_symbol_exposure,
                 max_directional_exposure_fraction=self.state.bot_settings.max_directional_exposure,
                 max_symbol_open_risk_fraction=self.state.bot_settings.max_symbol_open_risk,
@@ -174,15 +190,24 @@ class AutoTrader:
                     {"mode": self.state.trading_mode.value, "actions": stop_actions},
                     level="WARNING",
                 )
-            if open_position_count >= self.state.bot_settings.max_open_positions:
+            if open_position_count >= profile.max_open_positions:
                 return await self._skip(
                     "WAITING_POSITION",
-                    f"Đã đủ {open_position_count}/{self.state.bot_settings.max_open_positions} vị thế trên exchange",
+                    f"Đã đủ {open_position_count}/{profile.max_open_positions} vị thế trên exchange",
                 )
         elif self.state.execution.open_positions():
             active_symbols = {position.symbol for position in self.state.execution.open_positions()}
-            if open_position_count >= self.state.bot_settings.max_open_positions:
+            if open_position_count >= profile.max_open_positions:
                 return await self._skip("WAITING_POSITION", "Đã chạm số vị thế mô phỏng tối đa")
+
+        if self.state.trading_mode == TradingMode.LIVE and not profile.live_allowed:
+            return await self._skip("BLOCKED", profile.reason)
+        effective_risk = self._effective_risk_engine(profile)
+        if open_position_count >= profile.max_open_positions:
+            return await self._skip(
+                "WAITING_POSITION",
+                f"Đã đủ {open_position_count}/{profile.max_open_positions} vị thế theo {profile.name}",
+            )
 
         self.last_status = "SCANNING"
         results = await self.state.scanner.scan(limit=40)
@@ -249,9 +274,9 @@ class AutoTrader:
                 rejection_reasons[reason] = rejection_reasons.get(reason, 0) + 1
                 continue
             correlated_positions = self._correlated_positions(signal.symbol, snapshot=snapshot)
-            selected_leverage = self._select_leverage(signal, result)
+            selected_leverage = self._select_leverage(signal, result, profile=profile)
             selected_risk_fraction = self._risk_fraction_for_candidate(
-                result, correlated_positions=correlated_positions
+                result, correlated_positions=correlated_positions, profile=profile
             )
             signal = signal.model_copy(
                 update={
@@ -260,7 +285,7 @@ class AutoTrader:
                 }
             )
 
-            decision = self.state.risk.evaluate(
+            decision = effective_risk.evaluate(
                 signal,
                 open_positions=open_position_count,
                 daily_loss_fraction=self._daily_loss_fraction(),
@@ -326,8 +351,14 @@ class AutoTrader:
                 audit = self.state.portfolio_risk.evaluate_plan(
                     snapshot,
                     plan,
-                    max_open_risk_fraction=self.state.bot_settings.max_total_open_risk,
-                    max_exposure_fraction=self.state.bot_settings.max_portfolio_exposure,
+                    max_open_risk_fraction=min(
+                        self.state.bot_settings.max_total_open_risk,
+                        profile.max_risk_per_trade * profile.max_open_positions,
+                    ),
+                    max_exposure_fraction=min(
+                        self.state.bot_settings.max_portfolio_exposure,
+                        profile.max_portfolio_exposure,
+                    ),
                     max_symbol_exposure_fraction=self.state.bot_settings.max_symbol_exposure,
                     max_directional_exposure_fraction=self.state.bot_settings.max_directional_exposure,
                     max_symbol_open_risk_fraction=self.state.bot_settings.max_symbol_open_risk,
@@ -425,7 +456,9 @@ class AutoTrader:
         self.last_status = "ORDER_SUBMITTED"
         self.last_reason = f"Đã vào {plan.symbol} {plan.side.value} trên mô phỏng"
         await self._notify_position_open(plan)
-        await self.state.storage.log("Auto-trader submitted simulated order", result, level="WARNING")
+        await self.state.storage.log(
+            "Auto-trader submitted simulated order", result, level="WARNING"
+        )
         return self.snapshot()
 
     async def _correlation_limits(
@@ -637,13 +670,18 @@ class AutoTrader:
         return exposure / equity
 
     def _current_open_risk_fraction(self, open_position_count: int) -> float:
-        return open_position_count * self.state.bot_settings.risk_per_trade
+        risk = (
+            self.active_capital_profile.risk_per_trade
+            if self.active_capital_profile
+            else self.state.bot_settings.risk_per_trade
+        )
+        return open_position_count * risk
 
     def _simulation_margin_fraction(self) -> float:
         equity = max(self.state.execution.performance().equity, 1.0)
-        leverage = max(self.state.bot_settings.max_leverage, 1)
         margin = sum(
-            (position.remaining_quantity * position.entry_price) / leverage
+            (position.remaining_quantity * position.entry_price)
+            / max(getattr(position, "leverage", None) or 1, 1)
             for position in self.state.execution.open_positions()
         )
         return margin / equity
@@ -672,8 +710,12 @@ class AutoTrader:
             if position.symbol.replace("USDT", "")[:3] == bucket[:3]
         )
 
-    def _select_leverage(self, signal: Any, result: Any) -> int:
-        maximum = max(5, min(int(self.state.bot_settings.max_leverage), 10))
+    def _select_leverage(
+        self, signal: Any, result: Any, *, profile: CapitalRiskProfile | None = None
+    ) -> int:
+        maximum = (
+            profile.max_leverage if profile else min(int(self.state.bot_settings.max_leverage), 10)
+        )
         atr_fraction = (result.indicators.atr / result.price) if result.indicators.atr else 0.02
         risk_reward = result.risk_reward or 0.0
         confidence = signal.confidence
@@ -683,19 +725,46 @@ class AutoTrader:
             chosen = 8
         else:
             chosen = 5
-        return max(5, min(chosen, maximum))
+        return max(1, min(chosen, maximum))
 
-    def _risk_fraction_for_candidate(self, result: Any, *, correlated_positions: int) -> float:
-        score = max(result.long_score, result.short_score)
-        if score >= 90 and (result.risk_reward or 0.0) >= 2.6:
-            risk_fraction = min(0.0075, self.state.bot_settings.max_risk_per_trade)
-        elif score >= 85:
-            risk_fraction = min(0.005, self.state.bot_settings.risk_per_trade)
-        else:
-            risk_fraction = min(0.0035, self.state.bot_settings.risk_per_trade)
+    def _risk_fraction_for_candidate(
+        self, result: Any, *, correlated_positions: int, profile: CapitalRiskProfile | None = None
+    ) -> float:
+        target = profile.risk_per_trade if profile else self.state.bot_settings.risk_per_trade
+        maximum = (
+            profile.max_risk_per_trade if profile else self.state.bot_settings.max_risk_per_trade
+        )
+        risk_fraction = min(target, maximum)
+        if max(result.long_score, result.short_score) < 85:
+            risk_fraction = min(risk_fraction, 0.0035)
         if correlated_positions > 0:
             risk_fraction *= 0.5
         return max(0.001, risk_fraction)
+
+    def _effective_risk_engine(self, profile: CapitalRiskProfile) -> RiskEngine:
+        settings = self.state.bot_settings
+        return RiskEngine(
+            max_leverage=profile.max_leverage,
+            risk_per_trade=profile.risk_per_trade,
+            max_risk_per_trade=profile.max_risk_per_trade,
+            max_total_open_risk=min(
+                settings.max_total_open_risk,
+                profile.max_risk_per_trade * profile.max_open_positions,
+            ),
+            max_margin_per_trade=profile.max_margin_per_trade,
+            max_total_margin=profile.max_total_margin,
+            max_daily_loss=profile.max_daily_loss,
+            max_weekly_drawdown=profile.max_weekly_drawdown,
+            max_open_positions=profile.max_open_positions,
+            max_portfolio_exposure=min(
+                settings.max_portfolio_exposure, profile.max_portfolio_exposure
+            ),
+            max_correlated_positions=settings.max_correlated_positions,
+            max_loss_streak=settings.max_loss_streak,
+            extreme_volatility_atr_fraction=settings.extreme_volatility_atr_fraction,
+            stale_data_seconds=settings.stale_data_seconds,
+            minimum_risk_reward=settings.minimum_risk_reward,
+        )
 
     def _candidate_has_enough_confirmation(self, result: Any) -> tuple[bool, str]:
         score = max(result.long_score, result.short_score)

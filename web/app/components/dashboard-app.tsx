@@ -168,8 +168,9 @@ export function DashboardApp({ page }: { page: PageKey }) {
   }, []);
 
   useEffect(() => {
-    const sockets: WebSocket[] = [];
+    const sockets = new Map<string, WebSocket>();
     const reconnects: number[] = [];
+    const attempts = new Map<string, number>();
     let closed = false;
 
     type RealtimePayload = {
@@ -187,9 +188,12 @@ export function DashboardApp({ page }: { page: PageKey }) {
     function connect(
       channel: "system" | "exchange" | "positions" | "performance",
     ) {
+      const previous = sockets.get(channel);
+      if (previous && previous.readyState < WebSocket.CLOSING) return;
       const socket = new WebSocket(wsUrl(channel));
-      sockets.push(socket);
+      sockets.set(channel, socket);
       socket.onopen = () => {
+        attempts.set(channel, 0);
         markLive();
       };
       socket.onmessage = (event) => {
@@ -212,9 +216,14 @@ export function DashboardApp({ page }: { page: PageKey }) {
       };
       socket.onerror = () => setWsState("STALE");
       socket.onclose = () => {
+        sockets.delete(channel);
         if (closed) return;
-        setWsState("OFFLINE");
-        reconnects.push(window.setTimeout(() => connect(channel), 2500));
+        setWsState("STALE");
+        const attempt = (attempts.get(channel) ?? 0) + 1;
+        attempts.set(channel, attempt);
+        const delay = Math.min(30_000, 1_000 * 2 ** Math.min(attempt, 5));
+        const jitter = Math.floor(Math.random() * 500);
+        reconnects.push(window.setTimeout(() => connect(channel), delay + jitter));
       };
     }
 
@@ -229,6 +238,7 @@ export function DashboardApp({ page }: { page: PageKey }) {
       reconnects.forEach((reconnect) => window.clearTimeout(reconnect));
       window.clearInterval(staleTimer);
       sockets.forEach((socket) => socket.close());
+      sockets.clear();
     };
   }, []);
 

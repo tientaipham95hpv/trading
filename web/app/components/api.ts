@@ -20,18 +20,32 @@ import type {
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL || "";
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
-  const response = await fetch(`${API_BASE}${path}`, {
-    ...init,
-    cache: "no-store",
-    headers: {
-      "content-type": "application/json",
-      ...(init?.headers || {}),
-    },
-  });
-  if (!response.ok) {
-    throw new Error(await response.text());
+  let lastError: unknown;
+  const retryable = !init?.method || init.method === "GET";
+  for (let attempt = 0; attempt < (retryable ? 2 : 1); attempt += 1) {
+    const controller = new AbortController();
+    const timeout = window.setTimeout(() => controller.abort(), 12_000);
+    try {
+      const response = await fetch(`${API_BASE}${path}`, {
+        ...init,
+        signal: init?.signal ?? controller.signal,
+        cache: "no-store",
+        headers: {
+          "content-type": "application/json",
+          ...(init?.headers || {}),
+        },
+      });
+      if (!response.ok) throw new Error(await response.text());
+      return response.json() as Promise<T>;
+    } catch (error) {
+      lastError = error;
+      if (!retryable || attempt > 0) throw error;
+      await new Promise((resolve) => window.setTimeout(resolve, 400));
+    } finally {
+      window.clearTimeout(timeout);
+    }
   }
-  return response.json() as Promise<T>;
+  throw lastError;
 }
 
 export const api = {

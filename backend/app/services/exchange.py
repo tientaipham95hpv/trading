@@ -238,6 +238,12 @@ class BinanceFuturesAdapter(ExchangeAdapter):
         if mismatch:
             self._enter_safe_mode(f"Mismatch vị thế Binance vs DB: {', '.join(mismatch)}")
             snapshot = self.snapshot_cache
+        else:
+            # A successful authoritative reconciliation is the only automatic
+            # way out of a mismatch SAFE_MODE after recovery/restart.
+            snapshot.safe_mode = False
+            snapshot.safe_mode_reason = None
+            snapshot.connection = ExchangeConnectionState.CONNECTED
         snapshot.last_reconciled_at = datetime.now(UTC)
         self.snapshot_cache = snapshot
         return snapshot
@@ -691,9 +697,7 @@ class BinanceFuturesAdapter(ExchangeAdapter):
             return await self._signed("POST", "/fapi/v1/order", params)
         except ExchangeError:
             try:
-                existing = await self.query_order(
-                    plan.symbol, plan.client_order_id, strict=True
-                )
+                existing = await self.query_order(plan.symbol, plan.client_order_id, strict=True)
                 if existing:
                     return existing
             except ExchangeError as query_exc:

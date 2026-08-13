@@ -505,6 +505,7 @@ async def test_manage_stops_serializes_concurrent_calls_per_symbol():
     assert posts[0]["quantity"] == "0.006"
     assert sum(len(result) for result in results) == 1
 
+
 async def test_redeploy_queries_exchange_before_entry_submit():
     adapter = FakeBinanceAdapter()
     existing = plan(client_order_id="a-demo-BTCUSDT-durable")
@@ -513,7 +514,10 @@ async def test_redeploy_queries_exchange_before_entry_submit():
     result = await adapter.submit_order_plan(existing)
 
     assert result.status == "DEMO_DUPLICATE_ACK"
-    assert len([call for call in adapter.calls if call[0] == "POST" and call[1] == "/fapi/v1/order"]) == 1
+    assert (
+        len([call for call in adapter.calls if call[0] == "POST" and call[1] == "/fapi/v1/order"])
+        == 1
+    )
 
 
 async def test_uncertain_entry_query_failure_enters_safe_mode():
@@ -545,14 +549,31 @@ async def test_duplicate_stop_losses_keep_most_protective_long_stop():
         mode=adapter.mode,
         positions=[ExchangePosition(symbol="BTCUSDT", side="LONG", quantity=0.01, entry_price=100)],
         orders=[
-            ExchangeOrder(symbol="BTCUSDT", order_id=1, client_order_id="demo-x-sl-1", side="SELL", order_type="STOP_MARKET", status="NEW", stop_price=95),
-            ExchangeOrder(symbol="BTCUSDT", order_id=2, client_order_id="demo-x-sl-2", side="SELL", order_type="STOP_MARKET", status="NEW", stop_price=97),
+            ExchangeOrder(
+                symbol="BTCUSDT",
+                order_id=1,
+                client_order_id="demo-x-sl-1",
+                side="SELL",
+                order_type="STOP_MARKET",
+                status="NEW",
+                stop_price=95,
+            ),
+            ExchangeOrder(
+                symbol="BTCUSDT",
+                order_id=2,
+                client_order_id="demo-x-sl-2",
+                side="SELL",
+                order_type="STOP_MARKET",
+                status="NEW",
+                stop_price=97,
+            ),
         ],
     )
 
     actions = await adapter.remove_duplicate_stop_losses(snapshot)
 
     assert [action["client_order_id"] for action in actions] == ["demo-x-sl-1"]
+
 
 async def test_preflight_client_id_query_uncertainty_enters_safe_mode():
     adapter = FakeBinanceAdapter()
@@ -569,3 +590,69 @@ async def test_preflight_client_id_query_uncertainty_enters_safe_mode():
 
     assert adapter.snapshot_cache.safe_mode is True
     assert "client order id" in (adapter.snapshot_cache.safe_mode_reason or "")
+
+
+async def test_successful_reconcile_clears_previous_mismatch_safe_mode():
+    adapter = FakeBinanceAdapter()
+    adapter.position_risk = [
+        {
+            "symbol": "BTCUSDT",
+            "positionAmt": "0.01",
+            "entryPrice": "100",
+            "markPrice": "101",
+            "unRealizedProfit": "0.01",
+            "leverage": "2",
+            "marginType": "isolated",
+        }
+    ]
+    await adapter.reconcile([])
+    assert adapter.snapshot_cache.safe_mode is True
+
+    snapshot = await adapter.reconcile([{"symbol": "BTCUSDT", "status": "OPEN"}])
+
+    assert snapshot.safe_mode is False
+    assert snapshot.safe_mode_reason is None
+
+
+def test_restart_recovers_only_protected_bot_managed_position():
+    from types import SimpleNamespace
+
+    from app.domain.models import ExchangeOrder, ExchangePosition, ExchangeSnapshot
+    from app.services.execution import ExecutionService
+
+    state = SimpleNamespace(execution=ExecutionService())
+    watchdog = UserStreamWatchdog(state)
+    snapshot = ExchangeSnapshot(
+        positions=[
+            ExchangePosition(symbol="BNBUSDT", side="LONG", quantity=2.71, entry_price=611.89)
+        ],
+        orders=[
+            ExchangeOrder(
+                symbol="BNBUSDT",
+                order_id=1,
+                client_order_id="a-demo-BNBUSDT-g-sl-0",
+                side="SELL",
+                order_type="STOP_MARKET",
+                status="NEW",
+                stop_price=605.53,
+            ),
+            ExchangeOrder(
+                symbol="BNBUSDT",
+                order_id=2,
+                client_order_id="a-demo-BNBUSDT-g-tp-0",
+                side="SELL",
+                order_type="TAKE_PROFIT_MARKET",
+                status="NEW",
+                stop_price=618.3,
+            ),
+        ],
+    )
+
+    watchdog._restore_managed_positions(snapshot)
+    watchdog._restore_managed_positions(snapshot)
+
+    positions = state.execution.open_positions()
+    assert len(positions) == 1
+    assert positions[0].symbol == "BNBUSDT"
+    assert positions[0].stop_loss == 605.53
+    assert positions[0].take_profits == [618.3]
