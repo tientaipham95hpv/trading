@@ -164,119 +164,10 @@ async def smart_entry(limit: int = Query(default=100, ge=1, le=500)) -> dict[str
     }
 
 
-@router.post("/signals/{symbol}/paper")
-async def paper_from_signal(symbol: str) -> dict[str, object]:
-    result = next(
-        (
-            item
-            for item in state.scanner.last_results
-            if item.symbol == symbol.upper() and item.action != SignalAction.NO_TRADE
-        ),
-        None,
-    )
-    if result is None:
-        raise HTTPException(status_code=404, detail="Không có signal đủ điểm cho symbol này")
-    signal = state.scanner.signal_from_result(result)
-    if signal is None:
-        raise HTTPException(status_code=400, detail="Signal không hợp lệ")
-    decision = state.risk.evaluate(
-        signal,
-        open_positions=len(state.execution.open_positions()),
-        daily_loss_fraction=_daily_loss_fraction(),
-        emergency_stop=state.emergency_stop,
-        account_equity=state.execution.performance().equity,
-        weekly_drawdown_fraction=_weekly_drawdown_fraction(),
-        portfolio_exposure_fraction=_portfolio_exposure_fraction(),
-        correlated_positions=_correlated_positions(signal.symbol),
-        loss_streak=_loss_streak(),
-        market_regime=result.regime,
-        atr_fraction=(result.indicators.atr / result.price) if result.indicators.atr else None,
-        data_age_seconds=max(0.0, (datetime.now(UTC) - result.scanned_at).total_seconds()),
-        safe_mode=state.safe_mode,
-    )
-    if not decision.accepted or decision.quantity is None:
-        notification = state.notifications.build(
-            NotificationEvent.RISK_LIMIT,
-            title="Risk limit",
-            body=decision.reason or "Risk rejected",
-            data={"symbol": signal.symbol},
-        )
-        await state.storage.log(
-            "APNs-ready notification", notification.model_dump(mode="json"), level="WARNING"
-        )
-        return {"accepted": False, "reason": decision.reason}
-    plan = OrderPlan(
-        client_order_id=f"{state.trading_mode.value.lower()}-{signal.symbol}-{uuid4()}",
-        symbol=signal.symbol,
-        side=signal.side,
-        quantity=state.position_sizer.apply(decision),
-        entry_price=signal.entry_price,
-        stop_loss=signal.stop_loss,
-        leverage=signal.leverage,
-        order_type=signal.order_type,
-        take_profits=signal.take_profits,
-        risk_fraction=signal.risk_fraction,
-    )
-    try:
-        state.order_validator.validate(plan)
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-    return await _submit_order(plan)
-
-
-@router.post("/orders/paper")
-async def submit_paper_order(plan: OrderPlan) -> dict[str, object]:
-    return await _submit_order(plan)
-
-
 @router.get("/positions")
 async def positions() -> dict[str, object]:
-    if state.trading_mode in {TradingMode.DEMO, TradingMode.LIVE}:
-        snapshot = await _current_exchange_snapshot()
-        return {"items": _exchange_positions_for_app(snapshot)}
-    return {"items": [item.model_dump(mode="json") for item in state.execution.positions]}
-
-
-@router.post("/positions/mark/{symbol}")
-async def mark_position(symbol: str, price: float) -> dict[str, object]:
-    before_trades = len(state.execution.trades)
-    trades = state.execution.update_market_price(symbol.upper(), price)
-    if trades:
-        await state.storage.save_order_bundle(
-            order={
-                "client_order_id": f"mark-{symbol}-{before_trades}-{uuid4()}",
-                "symbol": symbol.upper(),
-                "status": "MARK_UPDATE",
-            },
-            fills=[item.model_dump(mode="json") for item in state.execution.fills],
-            positions=[item.model_dump(mode="json") for item in state.execution.positions],
-            trades=[item.model_dump(mode="json") for item in trades],
-            performance=state.execution.performance({symbol.upper(): price}).model_dump(
-                mode="json"
-            ),
-        )
-        for trade in trades:
-            event = (
-                NotificationEvent.TP
-                if trade.reason == "TP"
-                else NotificationEvent.SL
-                if trade.reason == "SL"
-                else NotificationEvent.POSITION_CLOSE
-            )
-            notification = state.notifications.build(
-                event,
-                title=event.value,
-                body=f"{trade.symbol} {trade.reason} {trade.net_pnl:.2f}",
-                data={"symbol": trade.symbol, "reason": trade.reason},
-            )
-            await state.storage.log(
-                "APNs-ready notification", notification.model_dump(mode="json"), level="INFO"
-            )
-    return {
-        "closed_trades": [item.model_dump(mode="json") for item in trades],
-        "positions": [item.model_dump(mode="json") for item in state.execution.positions],
-        "performance": state.execution.performance({symbol.upper(): price}).model_dump(mode="json"),
-    }
+    snapshot = await _current_exchange_snapshot()
+    return {"items": _exchange_positions_for_app(snapshot)}
 
 
 @router.get("/trades")
@@ -333,26 +224,6 @@ async def exit_analytics() -> ExitAnalyticsResponse:
             lifecycle_events=lifecycle_events,
             lifecycle_candles=lifecycle_candles,
         )
-
-    paper_rows = [
-        {
-            "symbol": trade.symbol,
-            "realizedPnl": trade.gross_pnl,
-            "reason": trade.reason,
-            "position_side": trade.side.value,
-        }
-        for trade in state.execution.trades
-    ]
-    lifecycle_events = await state.storage.lifecycle_analytics_events(
-        mode=state.trading_mode.value, limit=5000
-    )
-    return ExitAnalyticsService().analyze(
-        paper_rows,
-        [],
-        source="Lịch sử paper execution hiện có",
-        lifecycle_events=lifecycle_events,
-    )
-
 
 @router.get("/logs")
 async def logs(limit: int = Query(default=100, ge=1, le=500)) -> dict[str, object]:
@@ -562,8 +433,6 @@ async def bot_stop() -> dict[str, object]:
 
 @router.post("/mode/{mode}")
 async def set_mode(mode: TradingMode) -> dict[str, object]:
-    if mode == TradingMode.PAPER:
-        return {"accepted": False, "reason": "PAPER đã tắt khỏi production, dùng DEMO hoặc LIVE"}
     if mode == TradingMode.DEMO and state.safe_mode:
         return {"accepted": False, "reason": state.safe_mode_reason}
     if mode == TradingMode.LIVE and not state.live_trading_enabled:
@@ -585,8 +454,6 @@ async def set_mode(mode: TradingMode) -> dict[str, object]:
 
 @router.get("/exchange")
 async def exchange_snapshot() -> dict[str, object]:
-    if state.trading_mode == TradingMode.PAPER:
-        return state.demo_exchange.snapshot_cache.model_dump(mode="json")
     adapter = _current_adapter()
     try:
         return (await adapter.snapshot()).model_dump(mode="json")
@@ -743,9 +610,6 @@ async def pause_new_trades() -> dict[str, object]:
 @router.post("/controls/cancel-orders")
 async def cancel_orders(symbol: str | None = None) -> dict[str, object]:
     adapter = state.live_exchange if state.trading_mode == TradingMode.LIVE else state.demo_exchange
-    if state.trading_mode == TradingMode.PAPER:
-        orders = state.execution.cancel_open_orders()
-        return {"accepted": True, "orders": [order.model_dump(mode="json") for order in orders]}
     orders = await adapter.cancel_all_orders(symbol.upper() if symbol else None)
     await state.storage.log(
         "Cancel Orders", {"symbol": symbol, "mode": state.trading_mode.value}, level="WARNING"
@@ -756,13 +620,6 @@ async def cancel_orders(symbol: str | None = None) -> dict[str, object]:
 @router.post("/controls/close-all")
 async def close_all() -> dict[str, object]:
     adapter = state.live_exchange if state.trading_mode == TradingMode.LIVE else state.demo_exchange
-    if state.trading_mode == TradingMode.PAPER:
-        trades = state.execution.close_all_positions()
-        return {
-            "accepted": True,
-            "trades": [trade.model_dump(mode="json") for trade in trades],
-            "positions": [item.model_dump(mode="json") for item in state.execution.positions],
-        }
     orders = await adapter.close_all_positions()
     canceled_orders = await adapter.cancel_all_orders()
     await state.storage.log("Close All", {"mode": state.trading_mode.value}, level="CRITICAL")
@@ -864,33 +721,6 @@ async def _submit_order(plan: OrderPlan) -> dict[str, object]:
             )
         return result.model_dump(mode="json")
 
-    try:
-        before_fills = len(state.execution.fills)
-        before_trades = len(state.execution.trades)
-        result = await state.execution.submit_order_plan(plan)
-    except DuplicateOrderError as exc:
-        raise HTTPException(status_code=409, detail="Trùng client_order_id") from exc
-    new_fills = [item.model_dump(mode="json") for item in state.execution.fills[before_fills:]]
-    new_trades = [item.model_dump(mode="json") for item in state.execution.trades[before_trades:]]
-    await state.storage.save_order_bundle(
-        order=result["order"],  # type: ignore[arg-type]
-        fills=new_fills,
-        positions=[item.model_dump(mode="json") for item in state.execution.positions],
-        trades=new_trades,
-        performance=state.execution.performance().model_dump(mode="json"),
-    )
-    notification = state.notifications.build(
-        NotificationEvent.POSITION_OPEN,
-        title="Position open",
-        body=f"{plan.symbol} {plan.side.value}",
-        data={"client_order_id": plan.client_order_id, "mode": state.trading_mode.value},
-    )
-    await state.storage.log(
-        "APNs-ready notification", notification.model_dump(mode="json"), level="INFO"
-    )
-    return result
-
-
 async def _channel_payload(channel: str) -> dict[str, object]:
     if channel == "market":
         return {
@@ -903,26 +733,18 @@ async def _channel_payload(channel: str) -> dict[str, object]:
             "items": [item.model_dump(mode="json") for item in state.scanner.last_results],
         }
     if channel == "positions":
-        if state.trading_mode in {TradingMode.DEMO, TradingMode.LIVE}:
-            return {
-                "channel": channel,
-                "items": _exchange_positions_for_app(await _current_exchange_snapshot()),
-            }
         return {
             "channel": channel,
-            "items": [item.model_dump(mode="json") for item in state.execution.open_positions()],
+            "items": _exchange_positions_for_app(await _current_exchange_snapshot()),
         }
     if channel == "performance":
-        if state.trading_mode in {TradingMode.DEMO, TradingMode.LIVE}:
-            adapter = _current_adapter()
-            snapshot = await adapter.snapshot()
-            income = await adapter.income_history(limit=200)
-            income = _income_since_reset(income)
-            return {
-                "channel": channel,
-                "data": _exchange_performance(snapshot, income).model_dump(mode="json"),
-            }
-        return {"channel": channel, "data": state.execution.performance().model_dump(mode="json")}
+        adapter = _current_adapter()
+        snapshot = await adapter.snapshot()
+        income = _income_since_reset(await adapter.income_history(limit=200))
+        return {
+            "channel": channel,
+            "data": _exchange_performance(snapshot, income).model_dump(mode="json"),
+        }
     if channel == "system":
         return {"channel": channel, "data": await status()}
     if channel == "exchange":
@@ -1127,26 +949,15 @@ def _float(value: object) -> float:
 
 
 def _daily_loss_fraction() -> float:
-    realized = state.execution.performance().realized_pnl
-    if realized >= 0:
-        return 0.0
-    return abs(realized) / state.bot_settings.paper_initial_balance
+    return 0.0
 
 
 def _weekly_drawdown_fraction() -> float:
-    performance = state.execution.performance()
-    if state.bot_settings.paper_initial_balance <= 0:
-        return 0.0
-    return performance.max_drawdown / state.bot_settings.paper_initial_balance
+    return 0.0
 
 
 def _portfolio_exposure_fraction() -> float:
-    equity = max(state.execution.performance().equity, 1.0)
-    exposure = sum(
-        position.remaining_quantity * position.entry_price
-        for position in state.execution.open_positions()
-    )
-    return exposure / equity
+    return 0.0
 
 
 def _correlated_positions(symbol: str) -> int:

@@ -280,7 +280,7 @@ class AutoTrader:
                 current_margin_fraction=(
                     self._exchange_margin_fraction(snapshot)
                     if snapshot is not None
-                    else self._paper_margin_fraction()
+                    else self._simulation_margin_fraction()
                 ),
             )
             if not decision.accepted or decision.quantity is None:
@@ -411,7 +411,7 @@ class AutoTrader:
         self.last_status = "ORDER_SUBMITTED"
         self.last_reason = f"Đã vào {plan.symbol} {plan.side.value} trên mô phỏng"
         await self._notify_position_open(plan)
-        await self.state.storage.log("Auto-trader submitted paper order", result, level="WARNING")
+        await self.state.storage.log("Auto-trader submitted simulated order", result, level="WARNING")
         return self.snapshot()
 
     async def _correlation_limits(
@@ -598,13 +598,13 @@ class AutoTrader:
         realized = self.state.execution.performance().realized_pnl
         if realized >= 0:
             return 0.0
-        return abs(realized) / self.state.bot_settings.paper_initial_balance
+        return abs(realized) / self.state.bot_settings.simulation_initial_balance
 
     def _weekly_drawdown_fraction(self) -> float:
         performance = self.state.execution.performance()
-        if self.state.bot_settings.paper_initial_balance <= 0:
+        if self.state.bot_settings.simulation_initial_balance <= 0:
             return 0.0
-        return performance.max_drawdown / self.state.bot_settings.paper_initial_balance
+        return performance.max_drawdown / self.state.bot_settings.simulation_initial_balance
 
     def _portfolio_exposure_fraction(self) -> float:
         equity = max(self.state.execution.performance().equity, 1.0)
@@ -625,7 +625,7 @@ class AutoTrader:
     def _current_open_risk_fraction(self, open_position_count: int) -> float:
         return open_position_count * self.state.bot_settings.risk_per_trade
 
-    def _paper_margin_fraction(self) -> float:
+    def _simulation_margin_fraction(self) -> float:
         equity = max(self.state.execution.performance().equity, 1.0)
         leverage = max(self.state.bot_settings.max_leverage, 1)
         margin = sum(

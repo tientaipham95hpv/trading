@@ -5,7 +5,6 @@ from pydantic import BaseModel, Field, model_validator
 
 
 class TradingMode(StrEnum):
-    PAPER = "PAPER"
     DEMO = "DEMO"
     LIVE = "LIVE"
 
@@ -464,7 +463,7 @@ class BotSettings(BaseModel):
         ]
     )
     min_score_to_trade: int = 70
-    paper_initial_balance: float = 10_000.0
+    simulation_initial_balance: float = 10_000.0
     taker_fee_rate: float = 0.0005
     maker_fee_rate: float = 0.0002
     slippage_bps: float = 2.0
@@ -557,7 +556,7 @@ class ExchangePositionLifecycle(BaseModel):
 
 
 class ExchangeSnapshot(BaseModel):
-    mode: TradingMode = TradingMode.PAPER
+    mode: TradingMode = TradingMode.DEMO
     connection: ExchangeConnectionState = ExchangeConnectionState.DISCONNECTED
     safe_mode: bool = False
     safe_mode_reason: str | None = None

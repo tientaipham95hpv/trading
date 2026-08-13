@@ -55,11 +55,6 @@ class UserStreamWatchdog:
     async def _run(self) -> None:
         await self.state.storage.log("User-stream watchdog started", {})
         while self.running:
-            if self.state.trading_mode == TradingMode.PAPER:
-                self.connected = False
-                await asyncio.sleep(10)
-                continue
-
             adapter = (
                 self.state.live_exchange
                 if self.state.trading_mode == TradingMode.LIVE
@@ -180,8 +175,6 @@ class UserStreamWatchdog:
             )
 
     async def _has_exchange_exposure(self) -> bool:
-        if self.state.trading_mode == TradingMode.PAPER:
-            return False
         adapter = (
             self.state.live_exchange
             if self.state.trading_mode == TradingMode.LIVE

@@ -23,7 +23,7 @@
 	<key>LSRequiresIPhoneOS</key>
 	<true/>
 	<key>NSFaceIDUsageDescription</key>
-	<string>Xác thực Face ID trước khi thực hiện thao tác nhạy cảm với bot PAPER.</string>
+	<string>Xác thực Face ID trước khi thực hiện thao tác nhạy cảm với bot giao dịch.</string>
 	<key>UIApplicationSupportsIndirectInputEvents</key>
 	<true/>
 	<key>UILaunchScreen</key>

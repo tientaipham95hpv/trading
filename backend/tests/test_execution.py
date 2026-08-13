@@ -6,7 +6,7 @@ from app.services.execution import DuplicateOrderError, ExecutionService
 
 def long_plan(**overrides):
     data = {
-        "client_order_id": "paper-BTCUSDT-1",
+        "client_order_id": "sim-BTCUSDT-1",
         "symbol": "BTCUSDT",
         "side": Side.LONG,
         "quantity": 1.0,
@@ -50,7 +50,7 @@ async def test_short_stop_loss_and_fee_slippage_reduce_pnl():
     service = ExecutionService(BotSettings(slippage_bps=10, taker_fee_rate=0.001, funding_rate_per_8h=0))
     await service.submit_order_plan(
         long_plan(
-            client_order_id="paper-ETHUSDT-1",
+            client_order_id="sim-ETHUSDT-1",
             symbol="ETHUSDT",
             side=Side.SHORT,
             entry_price=100.0,

@@ -72,7 +72,7 @@ export type RiskPayload = { limits: StatusPayload["risk"]; portfolio: PortfolioR
 
 
 export type StatusPayload = {
-  mode: TradingMode | "PAPER";
+  mode: TradingMode;
   live_enabled: boolean;
   bot_state: "STOPPED" | "RUNNING" | "PAUSED" | "SAFE_MODE";
   emergency_stop: boolean;
@@ -121,7 +121,7 @@ export type StatusPayload = {
 };
 
 export type ExchangeSnapshot = {
-  mode: TradingMode | "PAPER";
+  mode: TradingMode;
   connection: "DISCONNECTED" | "CONNECTED" | "STALE" | "SAFE_MODE";
   safe_mode: boolean;
   safe_mode_reason: string | null;
@@ -426,7 +426,6 @@ export type BotSettings = {
   min_listing_age_days: number;
   scan_timeframes: string[];
   min_score_to_trade: number;
-  paper_initial_balance: number;
   taker_fee_rate: number;
   maker_fee_rate: number;
   slippage_bps: number;

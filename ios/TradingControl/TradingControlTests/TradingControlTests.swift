@@ -9,14 +9,14 @@ import Testing
 @Test func trangThaiBotDecodesSnakeCaseBackendPayload() async throws {
     let data = """
     {
-      "mode": "PAPER",
+      "mode": "DEMO",
       "live_enabled": false,
       "bot_state": "PAUSED",
       "emergency_stop": false,
       "safe_mode": false,
       "safe_mode_reason": null,
       "exchange": {
-        "mode": "PAPER",
+        "mode": "DEMO",
         "connection": "DISCONNECTED",
         "safe_mode": false,
         "safe_mode_reason": null,
@@ -58,7 +58,7 @@ import Testing
 
     let status = try JSONDecoder().decode(TrangThaiBot.self, from: data)
 
-    #expect(status.mode == "PAPER")
+    #expect(status.mode == "DEMO")
     #expect(status.liveEnabled == false)
     #expect(status.botState == "PAUSED")
     #expect(status.exchange.connection == "DISCONNECTED")

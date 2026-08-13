@@ -9,7 +9,7 @@ Hệ thống chỉ được tiến sang phase tiếp theo khi có yêu cầu rõ
 - Mặc định an toàn ở backend
 - Ranh giới scanner chỉ đọc
 - Hàng rào kiểm soát rủi ro
-- Khung thực thi chỉ PAPER
+- Khung thực thi DEMO/LIVE
 - Skeleton quản trị cho web/iOS
 
 ## Phase 1: Backend Core + Scanner + Paper Trading

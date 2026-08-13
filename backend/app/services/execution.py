@@ -23,7 +23,7 @@ class DuplicateOrderError(Exception):
 class ExecutionService:
     def __init__(self, settings: BotSettings | None = None) -> None:
         self.settings = settings or BotSettings()
-        self.balance = self.settings.paper_initial_balance
+        self.balance = self.settings.simulation_initial_balance
         self._submitted_client_ids: set[str] = set()
         self.orders: list[PaperOrder] = []
         self.fills: list[PaperFill] = []
@@ -151,7 +151,7 @@ class ExecutionService:
         volatility = pstdev(returns) if len(returns) > 1 else 0.0
         downside = [value for value in returns if value < 0]
         downside_vol = pstdev(downside) if len(downside) > 1 else 0.0
-        equity = self.settings.paper_initial_balance
+        equity = self.settings.simulation_initial_balance
         peak = equity
         max_drawdown = 0.0
         for trade in self.trades:
@@ -159,7 +159,7 @@ class ExecutionService:
             peak = max(peak, equity)
             max_drawdown = max(max_drawdown, peak - equity)
         equity_value = self.balance + unrealized
-        initial_capital = self.settings.paper_initial_balance
+        initial_capital = self.settings.simulation_initial_balance
         return PerformanceSnapshot(
             balance=self.balance,
             equity=equity_value,

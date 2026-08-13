@@ -44,7 +44,6 @@ class Settings(BaseSettings):
     scanner_max_spread_bps: float = 8.0
     scanner_min_listing_age_days: int = 30
     scanner_min_score_to_trade: int = 70
-    paper_initial_balance: float = 10_000.0
     taker_fee_rate: float = 0.0005
     maker_fee_rate: float = 0.0002
     slippage_bps: float = 2.0

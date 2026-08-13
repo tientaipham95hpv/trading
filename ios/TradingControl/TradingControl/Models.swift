@@ -517,7 +517,6 @@ public struct CaiDatBot: Codable, Equatable {
         case minListingAgeDays = "min_listing_age_days"
         case scanTimeframes = "scan_timeframes"
         case minScoreToTrade = "min_score_to_trade"
-        case paperInitialBalance = "paper_initial_balance"
         case takerFeeRate = "taker_fee_rate"
         case makerFeeRate = "maker_fee_rate"
         case slippageBps = "slippage_bps"

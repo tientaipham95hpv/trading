@@ -14,7 +14,7 @@ Phase hiện tại: chỉ là nền móng dự án. Giao dịch LIVE mặc đị
 
 ## Mặc định an toàn
 
-- Chế độ giao dịch mặc định là `PAPER`
+- Chế độ giao dịch mặc định là `DEMO`
 - Chế độ LIVE mặc định bị tắt
 - Ký quỹ mặc định là isolated
 - Đòn bẩy tối đa mặc định `5x`
@@ -72,7 +72,7 @@ pytest
 
 ## Chế độ
 
-Các chế độ được phép là `PAPER`, `DEMO`, và `LIVE`.
+Các chế độ được phép là `DEMO` và `LIVE`.
 
 LIVE yêu cầu đồng thời:
 
@@ -87,8 +87,6 @@ Không bật hai giá trị này nếu chưa được duyệt rõ ràng.
 - `GET /api/markets`
 - `GET /api/scanner?limit=30&timeframes=1m,5m,15m,1h,4h`
 - `GET /api/signals`
-- `POST /api/signals/{symbol}/paper`
-- `POST /api/orders/paper`
 - `POST /api/positions/mark/{symbol}?price=...`
 - `GET /api/positions`
 - `GET /api/trades`

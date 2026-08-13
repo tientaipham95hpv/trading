@@ -129,7 +129,7 @@ public final class TradingViewModel: ObservableObject {
     public func setMode(_ mode: String) async {
         do {
             guard mode == "DEMO" || mode == "LIVE" else {
-                errorMessage = "PAPER đã tắt khỏi production."
+                errorMessage = "Chỉ hỗ trợ chế độ DEMO và LIVE."
                 return
             }
             let response = try await api.setMode(mode)

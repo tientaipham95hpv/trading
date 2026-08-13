@@ -500,7 +500,6 @@ function CriticalOverview({
     marginBalance > 0 ? (usedMargin / marginBalance) * 100 : 0;
   const unrealized =
     exchange?.balance.unrealized_pnl ?? performance?.unrealized_pnl ?? 0;
-  const realized = performance?.realized_pnl ?? 0;
 
   return (
     <section className="grid gap-4 xl:grid-cols-[1.1fr_0.9fr]">

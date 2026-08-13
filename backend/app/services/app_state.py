@@ -26,7 +26,6 @@ def bot_settings_from_env(settings: Settings) -> BotSettings:
         max_spread_bps=settings.scanner_max_spread_bps,
         min_listing_age_days=settings.scanner_min_listing_age_days,
         min_score_to_trade=settings.scanner_min_score_to_trade,
-        paper_initial_balance=settings.paper_initial_balance,
         taker_fee_rate=settings.taker_fee_rate,
         maker_fee_rate=settings.maker_fee_rate,
         slippage_bps=settings.slippage_bps,
