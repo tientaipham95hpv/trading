@@ -2,7 +2,7 @@ from decimal import Decimal
 from typing import Any
 
 from app.domain.models import MarginType, OrderPlan, Side
-from app.services.exchange import BinanceFuturesAdapter
+from app.services.exchange import BinanceFuturesAdapter, ExchangeError
 from app.services.user_stream import UserStreamWatchdog
 
 
@@ -77,6 +77,14 @@ class FakeBinanceAdapter(BinanceFuturesAdapter):
                 "triggerPrice": params.get("triggerPrice", 0),
             }
         if path == "/fapi/v1/order" and method == "GET":
+            submitted = any(
+                call_path == "/fapi/v1/order"
+                and call_method == "POST"
+                and call_params.get("newClientOrderId") == params["origClientOrderId"]
+                for call_method, call_path, call_params in self.calls[:-1]
+            )
+            if not submitted:
+                return None
             return {
                 "symbol": params["symbol"],
                 "orderId": 1,
@@ -496,3 +504,68 @@ async def test_manage_stops_serializes_concurrent_calls_per_symbol():
     assert len(posts) == 1
     assert posts[0]["quantity"] == "0.006"
     assert sum(len(result) for result in results) == 1
+
+async def test_redeploy_queries_exchange_before_entry_submit():
+    adapter = FakeBinanceAdapter()
+    existing = plan(client_order_id="a-demo-BTCUSDT-durable")
+    adapter.calls.append(("POST", "/fapi/v1/order", {"newClientOrderId": existing.client_order_id}))
+
+    result = await adapter.submit_order_plan(existing)
+
+    assert result.status == "DEMO_DUPLICATE_ACK"
+    assert len([call for call in adapter.calls if call[0] == "POST" and call[1] == "/fapi/v1/order"]) == 1
+
+
+async def test_uncertain_entry_query_failure_enters_safe_mode():
+    adapter = FakeBinanceAdapter()
+
+    async def fail_signed(method, path, params):
+        if method == "POST" and path == "/fapi/v1/order":
+            raise ExchangeError("timeout")
+        if method == "GET" and path == "/fapi/v1/order" and adapter._submitted_client_ids:
+            raise ExchangeError("query unavailable")
+        return await FakeBinanceAdapter._signed(adapter, method, path, params)
+
+    adapter._signed = fail_signed  # type: ignore[method-assign]
+
+    try:
+        await adapter.submit_order_plan(plan())
+    except ExchangeError:
+        pass
+
+    assert adapter.snapshot_cache.safe_mode is True
+    assert "Không xác định" in (adapter.snapshot_cache.safe_mode_reason or "")
+
+
+async def test_duplicate_stop_losses_keep_most_protective_long_stop():
+    from app.domain.models import ExchangeOrder, ExchangePosition, ExchangeSnapshot
+
+    adapter = FakeBinanceAdapter()
+    snapshot = ExchangeSnapshot(
+        mode=adapter.mode,
+        positions=[ExchangePosition(symbol="BTCUSDT", side="LONG", quantity=0.01, entry_price=100)],
+        orders=[
+            ExchangeOrder(symbol="BTCUSDT", order_id=1, client_order_id="demo-x-sl-1", side="SELL", order_type="STOP_MARKET", status="NEW", stop_price=95),
+            ExchangeOrder(symbol="BTCUSDT", order_id=2, client_order_id="demo-x-sl-2", side="SELL", order_type="STOP_MARKET", status="NEW", stop_price=97),
+        ],
+    )
+
+    actions = await adapter.remove_duplicate_stop_losses(snapshot)
+
+    assert [action["client_order_id"] for action in actions] == ["demo-x-sl-1"]
+
+async def test_preflight_client_id_query_uncertainty_enters_safe_mode():
+    adapter = FakeBinanceAdapter()
+
+    async def fail_query(symbol, client_order_id, *, strict=False):
+        raise ExchangeError("query unavailable")
+
+    adapter.query_order = fail_query  # type: ignore[method-assign]
+
+    try:
+        await adapter.submit_order_plan(plan())
+    except ExchangeError:
+        pass
+
+    assert adapter.snapshot_cache.safe_mode is True
+    assert "client order id" in (adapter.snapshot_cache.safe_mode_reason or "")

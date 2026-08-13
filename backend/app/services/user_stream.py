@@ -66,6 +66,7 @@ class UserStreamWatchdog:
                 self.last_connected_at = datetime.now(UTC)
                 self.last_error = None
                 self._consecutive_failures = 0
+                await self._reconcile_after_connect(adapter)
                 await self.state.storage.log(
                     "User-stream connected",
                     {"mode": self.state.trading_mode.value},
@@ -103,6 +104,39 @@ class UserStreamWatchdog:
                     await keepalive_task
                 except asyncio.CancelledError:
                     pass
+
+    async def _reconcile_after_connect(self, adapter: Any) -> None:
+        """Reconnect cannot prove that no account events were missed."""
+        local_positions = (
+            [
+                position.model_dump(mode="json")
+                for position in self.state.execution.open_positions()
+            ]
+            if hasattr(self.state, "execution")
+            else []
+        )
+        snapshot = await adapter.reconcile(local_positions)
+        await adapter.remove_duplicate_stop_losses(snapshot)
+        repaired = await adapter.repair_missing_stop_losses(snapshot)
+        if repaired:
+            snapshot = await adapter.snapshot()
+        unprotected = {
+            position.symbol
+            for position in snapshot.positions
+            if not any(
+                order.symbol == position.symbol
+                and order.stop_price
+                and "STOP" in order.order_type
+                and "TAKE_PROFIT" not in order.order_type
+                for order in snapshot.orders
+            )
+        }
+        if snapshot.safe_mode or unprotected:
+            reason = snapshot.safe_mode_reason or (
+                f"Position không có SL: {', '.join(sorted(unprotected))}"
+            )
+            self.state.enter_safe_mode(reason)
+            raise ExchangeError(reason)
 
     async def _keepalive_loop(self, adapter: Any) -> None:
         while True:
