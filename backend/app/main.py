@@ -13,10 +13,12 @@ async def startup() -> None:
     state.auto_trader.start()
     state.user_stream.start()
     state.stability.start()
+    state.smart_entry_collector.start()
 
 
 @app.on_event("shutdown")
 async def shutdown() -> None:
+    await state.smart_entry_collector.stop()
     await state.stability.stop()
     await state.user_stream.stop()
     await state.auto_trader.stop()

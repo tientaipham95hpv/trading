@@ -123,36 +123,18 @@ async def smart_entry(limit: int = Query(default=100, ge=1, le=500)) -> dict[str
 
     mode = state.trading_mode.value
     items = await state.storage.smart_entry_events(mode=mode, limit=limit)
+    outcomes = await state.storage.smart_entry_outcomes(
+        mode=mode, decision_keys=[str(item["event_key"]) for item in items]
+    )
+    outcomes_by_key: dict[str, list[dict[str, object]]] = {}
+    for outcome in outcomes:
+        outcomes_by_key.setdefault(str(outcome["decision_event_key"]), []).append(outcome)
     for item in items:
-        existing = await state.storage.smart_entry_outcomes(
-            mode=mode, decision_keys=[str(item["event_key"])]
-        )
-        completed = {int(outcome["horizon"]) for outcome in existing}
-        if len(completed) < len(SmartEntryOutcomeAnalytics.HORIZONS):
-            interval_ms = SmartEntryOutcomeAnalytics._interval_ms(str(item["timeframe"]))
-            decision_ms = SmartEntryOutcomeAnalytics._timestamp_ms(str(item["decision_at"]))
-            first_open = ((decision_ms + interval_ms - 1) // interval_ms) * interval_ms
-            now_ms = int(datetime.now(UTC).timestamp() * 1000)
-            available_count = min(24, max(0, (now_ms - first_open) // interval_ms))
-            if available_count >= 4:
-                try:
-                    candles = await state.market_client.closed_klines_range(
-                        str(item["symbol"]),
-                        str(item["timeframe"]),
-                        start_time=first_open,
-                        end_time=first_open + available_count * interval_ms,
-                        limit=available_count,
-                    )
-                    for outcome in SmartEntryOutcomeAnalytics.evaluate(item, candles):
-                        await state.storage.save_smart_entry_outcome(outcome)
-                except (ValueError, httpx.HTTPError):
-                    pass
-        outcomes = await state.storage.smart_entry_outcomes(
-            mode=mode, decision_keys=[str(item["event_key"])]
-        )
+        item_outcomes = outcomes_by_key.get(str(item["event_key"]), [])
         item["outcomes"] = {
             str(horizon): next(
-                (outcome for outcome in outcomes if int(outcome["horizon"]) == horizon), None
+                (outcome for outcome in item_outcomes if int(outcome["horizon"]) == horizon),
+                None,
             )
             for horizon in SmartEntryOutcomeAnalytics.HORIZONS
         }
@@ -174,6 +156,10 @@ async def smart_entry(limit: int = Query(default=100, ge=1, le=500)) -> dict[str
             ),
         },
         "performance": SmartEntryPerformanceReport.build(items),
+        "collector": {
+            **state.smart_entry_collector.snapshot(),
+            "coverage": await state.storage.smart_entry_collection_coverage(mode=mode),
+        },
         "note": "Smart Entry chỉ quan sát; không thay đổi Baseline hoặc gửi lệnh.",
     }
 

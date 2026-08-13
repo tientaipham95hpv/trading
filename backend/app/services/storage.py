@@ -149,6 +149,22 @@ class SmartEntryOutcomeRow(Base):
     )
 
 
+class SmartEntryCollectionStateRow(Base):
+    __tablename__ = "smart_entry_collection_states"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    decision_event_key: Mapped[str] = mapped_column(String(160), unique=True, index=True)
+    mode: Mapped[str] = mapped_column(String(16), index=True)
+    status: Mapped[str] = mapped_column(String(32), index=True)
+    attempts: Mapped[int] = mapped_column(Integer, default=0)
+    next_retry_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True, index=True
+    )
+    last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(UTC), index=True
+    )
+
+
 class IncidentRow(Base):
     __tablename__ = "incidents"
 
@@ -324,6 +340,162 @@ class Storage:
                 )
             ).scalars()
             return [row.payload for row in rows]
+
+    async def pending_smart_entry_events(
+        self, *, mode: str, now: datetime, limit: int = 25
+    ) -> list[dict[str, Any]]:
+        """Return oldest incomplete decisions whose retry window is open."""
+        async with self.session_factory() as session:
+            outcome_count = (
+                select(
+                    SmartEntryOutcomeRow.decision_event_key,
+                    func.count(SmartEntryOutcomeRow.id).label("outcome_count"),
+                )
+                .where(SmartEntryOutcomeRow.mode == mode)
+                .group_by(SmartEntryOutcomeRow.decision_event_key)
+                .subquery()
+            )
+            rows = (
+                await session.execute(
+                    select(SmartEntryEventRow)
+                    .outerjoin(
+                        outcome_count,
+                        outcome_count.c.decision_event_key == SmartEntryEventRow.event_key,
+                    )
+                    .outerjoin(
+                        SmartEntryCollectionStateRow,
+                        SmartEntryCollectionStateRow.decision_event_key
+                        == SmartEntryEventRow.event_key,
+                    )
+                    .where(
+                        SmartEntryEventRow.mode == mode,
+                        func.coalesce(outcome_count.c.outcome_count, 0) < 3,
+                        (SmartEntryCollectionStateRow.status.is_(None))
+                        | (SmartEntryCollectionStateRow.status != "PERMANENT_ERROR"),
+                        (SmartEntryCollectionStateRow.next_retry_at.is_(None))
+                        | (SmartEntryCollectionStateRow.next_retry_at <= now),
+                    )
+                    .order_by(SmartEntryEventRow.decision_at.asc())
+                    .limit(limit)
+                )
+            ).scalars()
+            return [row.payload for row in rows]
+
+    async def smart_entry_collection_state(self, decision_event_key: str) -> dict[str, Any] | None:
+        async with self.session_factory() as session:
+            row = (
+                await session.execute(
+                    select(SmartEntryCollectionStateRow).where(
+                        SmartEntryCollectionStateRow.decision_event_key == decision_event_key
+                    )
+                )
+            ).scalar_one_or_none()
+            return (
+                None
+                if row is None
+                else {
+                    "status": row.status,
+                    "attempts": row.attempts,
+                    "next_retry_at": row.next_retry_at,
+                    "last_error": row.last_error,
+                }
+            )
+
+    async def set_smart_entry_collection_state(
+        self,
+        *,
+        decision_event_key: str,
+        mode: str,
+        status: str,
+        attempts: int = 0,
+        next_retry_at: datetime | None = None,
+        last_error: str | None = None,
+    ) -> None:
+        async with self.session_factory() as session:
+            row = (
+                await session.execute(
+                    select(SmartEntryCollectionStateRow).where(
+                        SmartEntryCollectionStateRow.decision_event_key == decision_event_key
+                    )
+                )
+            ).scalar_one_or_none()
+            if row is None:
+                row = SmartEntryCollectionStateRow(
+                    decision_event_key=decision_event_key, mode=mode, status=status
+                )
+                session.add(row)
+            row.status = status
+            row.attempts = attempts
+            row.next_retry_at = next_retry_at
+            row.last_error = last_error
+            row.updated_at = datetime.now(UTC)
+            await session.commit()
+
+    async def smart_entry_collection_coverage(self, *, mode: str) -> dict[str, Any]:
+        async with self.session_factory() as session:
+            events = list(
+                (
+                    await session.execute(
+                        select(SmartEntryEventRow.event_key, SmartEntryEventRow.decision_at).where(
+                            SmartEntryEventRow.mode == mode
+                        )
+                    )
+                ).all()
+            )
+            counts = dict(
+                (
+                    await session.execute(
+                        select(
+                            SmartEntryOutcomeRow.decision_event_key,
+                            func.count(SmartEntryOutcomeRow.id),
+                        )
+                        .where(SmartEntryOutcomeRow.mode == mode)
+                        .group_by(SmartEntryOutcomeRow.decision_event_key)
+                    )
+                ).all()
+            )
+            states = {
+                row.decision_event_key: row
+                for row in (
+                    await session.execute(
+                        select(SmartEntryCollectionStateRow).where(
+                            SmartEntryCollectionStateRow.mode == mode
+                        )
+                    )
+                ).scalars()
+            }
+            complete = sum(counts.get(key, 0) >= 3 for key, _ in events)
+            permanent = sum(
+                bool(states.get(key) and states[key].status == "PERMANENT_ERROR")
+                for key, _ in events
+            )
+            retrying = sum(
+                bool(states.get(key) and states[key].status == "RETRYING") for key, _ in events
+            )
+            pending_dates = [
+                when
+                for key, when in events
+                if counts.get(key, 0) < 3
+                and not (states.get(key) and states[key].status == "PERMANENT_ERROR")
+            ]
+            horizon_rows = (
+                await session.execute(
+                    select(SmartEntryOutcomeRow.horizon, func.count(SmartEntryOutcomeRow.id))
+                    .where(SmartEntryOutcomeRow.mode == mode)
+                    .group_by(SmartEntryOutcomeRow.horizon)
+                )
+            ).all()
+            horizons = {str(horizon): count for horizon, count in horizon_rows}
+            return {
+                "total_decisions": len(events),
+                "complete_decisions": complete,
+                "pending_decisions": len(events) - complete - permanent,
+                "retrying_decisions": retrying,
+                "permanent_errors": permanent,
+                "completion_ratio": complete / len(events) if events else 0,
+                "oldest_pending_at": min(pending_dates).isoformat() if pending_dates else None,
+                "outcomes_by_horizon": {str(h): horizons.get(str(h), 0) for h in (4, 12, 24)},
+            }
 
     async def save_smart_entry_outcome(self, payload: dict[str, Any]) -> bool:
         async with self.session_factory() as session:

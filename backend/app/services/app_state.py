@@ -14,6 +14,7 @@ from app.services.order_pipeline import OrderValidator, PositionSizer
 from app.services.portfolio_risk import PortfolioRiskEngine
 from app.services.risk_engine import RiskEngine
 from app.services.scanner import FuturesScanner
+from app.services.smart_entry import SmartEntryOutcomeCollector
 from app.services.stability import DemoStabilityService
 from app.services.storage import Storage
 from app.services.user_stream import UserStreamWatchdog
@@ -121,6 +122,7 @@ class AppState:
         self.auto_trader = AutoTrader(self)
         self.user_stream = UserStreamWatchdog(self)
         self.stability = DemoStabilityService(self)
+        self.smart_entry_collector = SmartEntryOutcomeCollector(self)
 
     @property
     def safe_mode(self) -> bool:

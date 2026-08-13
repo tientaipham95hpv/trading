@@ -1,4 +1,6 @@
 from datetime import UTC, datetime
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 from app.domain.models import (
     IndicatorSnapshot,
@@ -7,7 +9,7 @@ from app.domain.models import (
     SignalAction,
     Timeframe,
 )
-from app.services.smart_entry import SmartEntryAnalytics
+from app.services.smart_entry import SmartEntryAnalytics, SmartEntryOutcomeCollector
 
 
 def result(**updates):
@@ -112,3 +114,80 @@ def test_performance_report_is_descriptive_and_sample_guarded():
 
 def test_performance_report_handles_no_verified_outcomes():
     assert SmartEntryPerformanceReport.build([])["confidence_status"] == "CHƯA ĐỦ DỮ LIỆU"
+
+
+async def test_outcome_collector_persists_available_horizons_and_reports_coverage():
+    decision = SmartEntryAnalytics.evaluate(result(), mode="DEMO")
+    storage = SimpleNamespace(
+        pending_smart_entry_events=AsyncMock(side_effect=[[decision], []]),
+        smart_entry_outcomes=AsyncMock(return_value=[]),
+        save_smart_entry_outcome=AsyncMock(return_value=True),
+        set_smart_entry_collection_state=AsyncMock(),
+        smart_entry_collection_state=AsyncMock(return_value=None),
+        log=AsyncMock(),
+    )
+    market_client = SimpleNamespace(closed_klines_range=AsyncMock(return_value=candles(12)))
+    collector = SmartEntryOutcomeCollector(
+        SimpleNamespace(storage=storage, market_client=market_client), interval_seconds=1
+    )
+
+    stats = await collector.run_once(now=datetime(2026, 1, 1, 3, tzinfo=UTC))
+
+    assert stats == {
+        "decisions_scanned": 1,
+        "decisions_pending": 1,
+        "decisions_complete": 0,
+        "decisions_retrying": 0,
+        "decisions_permanent_error": 0,
+        "decisions_failed": 0,
+        "outcomes_saved": 2,
+    }
+    assert storage.save_smart_entry_outcome.await_count == 2
+    assert collector.snapshot()["last_error"] is None
+
+
+async def test_outcome_collector_exposes_retryable_data_error():
+    decision = SmartEntryAnalytics.evaluate(result(), mode="DEMO")
+    storage = SimpleNamespace(
+        pending_smart_entry_events=AsyncMock(side_effect=[[decision], []]),
+        smart_entry_outcomes=AsyncMock(return_value=[]),
+        save_smart_entry_outcome=AsyncMock(),
+        set_smart_entry_collection_state=AsyncMock(),
+        smart_entry_collection_state=AsyncMock(return_value=None),
+        log=AsyncMock(),
+    )
+    market_client = SimpleNamespace(
+        closed_klines_range=AsyncMock(side_effect=ValueError("gap in closed candles"))
+    )
+    collector = SmartEntryOutcomeCollector(
+        SimpleNamespace(storage=storage, market_client=market_client)
+    )
+
+    stats = await collector.run_once(now=datetime(2026, 1, 2, tzinfo=UTC))
+
+    assert stats["decisions_failed"] == 1
+    assert collector.snapshot()["consecutive_failures"] == 1
+    assert "gap in closed candles" in collector.snapshot()["last_error"]
+    storage.log.assert_awaited_once()
+
+
+async def test_outcome_collector_retries_with_backoff_then_marks_permanent_error():
+    decision = SmartEntryAnalytics.evaluate(result(), mode="DEMO")
+    storage = SimpleNamespace(
+        pending_smart_entry_events=AsyncMock(side_effect=[[decision], []]),
+        smart_entry_outcomes=AsyncMock(return_value=[]),
+        save_smart_entry_outcome=AsyncMock(),
+        set_smart_entry_collection_state=AsyncMock(),
+        smart_entry_collection_state=AsyncMock(return_value={"attempts": 5}),
+        log=AsyncMock(),
+    )
+    market_client = SimpleNamespace(
+        closed_klines_range=AsyncMock(side_effect=ValueError("bad historical data"))
+    )
+    collector = SmartEntryOutcomeCollector(
+        SimpleNamespace(storage=storage, market_client=market_client)
+    )
+    stats = await collector.run_once(now=datetime(2026, 1, 2, tzinfo=UTC))
+    assert stats["decisions_permanent_error"] == 1
+    assert storage.set_smart_entry_collection_state.await_args.kwargs["status"] == "PERMANENT_ERROR"
+    assert storage.set_smart_entry_collection_state.await_args.kwargs["next_retry_at"] is None

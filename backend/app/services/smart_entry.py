@@ -1,6 +1,10 @@
+import asyncio
 import hashlib
 import json
+from datetime import UTC, datetime, timedelta
 from typing import Any
+
+import httpx
 
 from app.domain.models import Candle, ScannerResult, SignalAction
 
@@ -231,3 +235,193 @@ class SmartEntryPerformanceReport:
             "dimensions": dimensions,
             "note": "Thống kê mô tả shadow-only; không tối ưu threshold và không thay đổi Baseline.",
         }
+
+
+class SmartEntryOutcomeCollector:
+    """Durably collect closed-candle outcomes away from read-only reporting."""
+
+    MAX_ATTEMPTS = 6
+
+    def __init__(self, app_state: Any, *, interval_seconds: int = 60, batch_size: int = 25) -> None:
+        self.state = app_state
+        self.interval_seconds = interval_seconds
+        self.batch_size = batch_size
+        self.task: asyncio.Task[None] | None = None
+        self.running = False
+        self.cycles = 0
+        self.last_run_at: datetime | None = None
+        self.last_success_at: datetime | None = None
+        self.last_error: str | None = None
+        self.consecutive_failures = 0
+        self.last_cycle = self._empty_cycle()
+
+    @staticmethod
+    def _empty_cycle() -> dict[str, int]:
+        return {
+            "decisions_scanned": 0,
+            "decisions_pending": 0,
+            "decisions_complete": 0,
+            "decisions_retrying": 0,
+            "decisions_permanent_error": 0,
+            "decisions_failed": 0,
+            "outcomes_saved": 0,
+        }
+
+    def start(self) -> None:
+        if self.task and not self.task.done():
+            return
+        self.running = True
+        self.task = asyncio.create_task(self._run())
+
+    async def stop(self) -> None:
+        self.running = False
+        if self.task and not self.task.done():
+            self.task.cancel()
+            try:
+                await self.task
+            except asyncio.CancelledError:
+                pass
+
+    def snapshot(self) -> dict[str, Any]:
+        return {
+            "running": self.running and self.task is not None and not self.task.done(),
+            "interval_seconds": self.interval_seconds,
+            "batch_size": self.batch_size,
+            "cycles": self.cycles,
+            "last_run_at": self.last_run_at.isoformat() if self.last_run_at else None,
+            "last_success_at": self.last_success_at.isoformat() if self.last_success_at else None,
+            "last_error": self.last_error,
+            "consecutive_failures": self.consecutive_failures,
+            "last_cycle": self.last_cycle,
+        }
+
+    async def _run(self) -> None:
+        await self.state.storage.log(
+            "Smart Entry outcome collector started",
+            {"interval_seconds": self.interval_seconds, "batch_size": self.batch_size},
+        )
+        while self.running:
+            try:
+                await self.run_once()
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:  # noqa: BLE001
+                self.last_error = str(exc)
+                self.consecutive_failures += 1
+                await self.state.storage.log(
+                    "Smart Entry outcome collector cycle error",
+                    {"error": str(exc), "consecutive_failures": self.consecutive_failures},
+                    level="ERROR",
+                )
+            await asyncio.sleep(self.interval_seconds)
+
+    async def run_once(self, *, now: datetime | None = None) -> dict[str, int]:
+        self.cycles += 1
+        self.last_run_at = now or datetime.now(UTC)
+        stats = self._empty_cycle()
+        cycle_errors: list[str] = []
+        for mode in ("DEMO", "LIVE"):
+            decisions = await self.state.storage.pending_smart_entry_events(
+                mode=mode, now=self.last_run_at, limit=self.batch_size
+            )
+            if not decisions:
+                continue
+            outcomes = await self.state.storage.smart_entry_outcomes(
+                mode=mode, decision_keys=[str(item["event_key"]) for item in decisions]
+            )
+            completed_by_key: dict[str, set[int]] = {}
+            for outcome in outcomes:
+                completed_by_key.setdefault(str(outcome["decision_event_key"]), set()).add(
+                    int(outcome["horizon"])
+                )
+            for decision in decisions:
+                await asyncio.sleep(0)
+                stats["decisions_scanned"] += 1
+                key = str(decision["event_key"])
+                completed = completed_by_key.get(key, set())
+                interval_ms = SmartEntryOutcomeAnalytics._interval_ms(str(decision["timeframe"]))
+                decision_ms = SmartEntryOutcomeAnalytics._timestamp_ms(str(decision["decision_at"]))
+                first_open = ((decision_ms + interval_ms - 1) // interval_ms) * interval_ms
+                available_count = min(
+                    24,
+                    max(0, (int(self.last_run_at.timestamp() * 1000) - first_open) // interval_ms),
+                )
+                if available_count < 4:
+                    stats["decisions_pending"] += 1
+                    next_due_ms = first_open + 4 * interval_ms
+                    await self.state.storage.set_smart_entry_collection_state(
+                        decision_event_key=key,
+                        mode=mode,
+                        status="NOT_MATURED",
+                        next_retry_at=datetime.fromtimestamp(next_due_ms / 1000, UTC),
+                    )
+                    continue
+                try:
+                    candles = await self.state.market_client.closed_klines_range(
+                        str(decision["symbol"]),
+                        str(decision["timeframe"]),
+                        start_time=first_open,
+                        end_time=first_open + available_count * interval_ms,
+                        limit=available_count,
+                    )
+                    for outcome in SmartEntryOutcomeAnalytics.evaluate(decision, candles):
+                        if int(
+                            outcome["horizon"]
+                        ) not in completed and await self.state.storage.save_smart_entry_outcome(
+                            outcome
+                        ):
+                            stats["outcomes_saved"] += 1
+                            completed.add(int(outcome["horizon"]))
+                    complete = len(completed) == len(SmartEntryOutcomeAnalytics.HORIZONS)
+                    stats["decisions_complete" if complete else "decisions_pending"] += 1
+                    next_horizon = next(
+                        (h for h in SmartEntryOutcomeAnalytics.HORIZONS if h not in completed), None
+                    )
+                    next_retry_at = (
+                        datetime.fromtimestamp(
+                            (first_open + next_horizon * interval_ms) / 1000, UTC
+                        )
+                        if next_horizon is not None
+                        else None
+                    )
+                    await self.state.storage.set_smart_entry_collection_state(
+                        decision_event_key=key,
+                        mode=mode,
+                        status="COMPLETE" if complete else "PENDING",
+                        next_retry_at=next_retry_at,
+                    )
+                except (ValueError, httpx.HTTPError) as exc:
+                    previous = await self.state.storage.smart_entry_collection_state(key)
+                    attempts = int(previous["attempts"]) + 1 if previous else 1
+                    permanent = attempts >= self.MAX_ATTEMPTS
+                    retry_at = (
+                        None
+                        if permanent
+                        else self.last_run_at
+                        + timedelta(seconds=min(3600, 30 * 2 ** (attempts - 1)))
+                    )
+                    await self.state.storage.set_smart_entry_collection_state(
+                        decision_event_key=key,
+                        mode=mode,
+                        status="PERMANENT_ERROR" if permanent else "RETRYING",
+                        attempts=attempts,
+                        next_retry_at=retry_at,
+                        last_error=str(exc),
+                    )
+                    stats["decisions_failed"] += 1
+                    stats["decisions_permanent_error" if permanent else "decisions_retrying"] += 1
+                    cycle_errors.append(f"{key}: {exc}")
+        self.last_cycle = stats
+        if cycle_errors:
+            self.last_error = cycle_errors[-1]
+            self.consecutive_failures += 1
+            await self.state.storage.log(
+                "Smart Entry outcome collection incomplete",
+                {"failures": len(cycle_errors), "last_error": self.last_error, "stats": stats},
+                level="WARNING",
+            )
+        else:
+            self.last_error = None
+            self.consecutive_failures = 0
+            self.last_success_at = self.last_run_at
+        return stats
