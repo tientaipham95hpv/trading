@@ -656,7 +656,8 @@ private struct PriceChart: View {
     let candles: [NenGia]
 
     private let visibleCandleCount = 80
-    private let chartPadding: CGFloat = 8
+    private let verticalPadding: CGFloat = 10
+    private let priceScaleWidth: CGFloat = 72
 
     var body: some View {
         Canvas { context, size in
@@ -667,21 +668,36 @@ private struct PriceChart: View {
             else { return }
 
             let priceRange = max(maxHigh - minLow, max(abs(maxHigh) * 0.0001, 0.000_000_01))
-            let drawingHeight = max(size.height - chartPadding * 2, 1)
-            let slotWidth = size.width / CGFloat(visibleCandles.count)
+            let plotWidth = max(size.width - priceScaleWidth, 1)
+            let drawingHeight = max(size.height - verticalPadding * 2, 1)
+            let slotWidth = plotWidth / CGFloat(visibleCandles.count)
             let bodyWidth = max(min(slotWidth * 0.68, 9), 1)
 
             func yPosition(_ price: Double) -> CGFloat {
-                chartPadding + CGFloat((maxHigh - price) / priceRange) * drawingHeight
+                verticalPadding + CGFloat((maxHigh - price) / priceRange) * drawingHeight
             }
 
             for line in 0 ... 4 {
-                let y = chartPadding + drawingHeight * CGFloat(line) / 4
+                let fraction = Double(line) / 4
+                let y = verticalPadding + drawingHeight * CGFloat(fraction)
+                let price = maxHigh - priceRange * fraction
                 var grid = Path()
                 grid.move(to: CGPoint(x: 0, y: y))
-                grid.addLine(to: CGPoint(x: size.width, y: y))
+                grid.addLine(to: CGPoint(x: plotWidth, y: y))
                 context.stroke(grid, with: .color(.white.opacity(0.08)), lineWidth: 0.5)
+                context.draw(
+                    Text(chartPrice(price))
+                        .font(.system(size: 10, weight: .semibold, design: .monospaced))
+                        .foregroundStyle(.secondary),
+                    at: CGPoint(x: plotWidth + 6, y: y),
+                    anchor: .leading
+                )
             }
+
+            var scaleBorder = Path()
+            scaleBorder.move(to: CGPoint(x: plotWidth, y: 0))
+            scaleBorder.addLine(to: CGPoint(x: plotWidth, y: size.height))
+            context.stroke(scaleBorder, with: .color(.white.opacity(0.12)), lineWidth: 0.5)
 
             for (index, candle) in visibleCandles.enumerated() {
                 let centerX = slotWidth * (CGFloat(index) + 0.5)
@@ -704,8 +720,27 @@ private struct PriceChart: View {
                 )
                 context.fill(Path(body), with: .color(color))
             }
+
+            if let last = visibleCandles.last {
+                let y = yPosition(last.close)
+                let color: Color = last.close >= last.open ? .green : .red
+                var currentPrice = Path()
+                currentPrice.move(to: CGPoint(x: 0, y: y))
+                currentPrice.addLine(to: CGPoint(x: plotWidth, y: y))
+                context.stroke(currentPrice, with: .color(color.opacity(0.75)), style: StrokeStyle(lineWidth: 1, dash: [4, 3]))
+                context.fill(
+                    Path(roundedRect: CGRect(x: plotWidth + 2, y: y - 10, width: priceScaleWidth - 4, height: 20), cornerRadius: 4),
+                    with: .color(color)
+                )
+                context.draw(
+                    Text(chartPrice(last.close))
+                        .font(.system(size: 10, weight: .bold, design: .monospaced))
+                        .foregroundStyle(.white),
+                    at: CGPoint(x: plotWidth + priceScaleWidth / 2, y: y)
+                )
+            }
         }
-        .accessibilityLabel("Biểu đồ nến giá")
+        .accessibilityLabel("Biểu đồ nến và trục giá")
         .background(.white.opacity(0.04), in: RoundedRectangle(cornerRadius: 8))
     }
 }
@@ -1272,6 +1307,16 @@ private func money(_ value: Double?) -> String {
         return value.formatted(.currency(code: "USD").precision(.fractionLength(4)))
     }
     return value.formatted(.currency(code: "USD").precision(.fractionLength(6)))
+}
+
+private func chartPrice(_ value: Double) -> String {
+    let magnitude = abs(value)
+    let digits = magnitude >= 1_000 ? 0 : magnitude >= 1 ? 2 : magnitude >= 0.01 ? 4 : 6
+    return value.formatted(
+        .number
+            .grouping(.automatic)
+            .precision(.fractionLength(digits))
+    )
 }
 
 private func compact(_ value: Double?) -> String {
