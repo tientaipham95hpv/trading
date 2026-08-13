@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 
 public struct TradingControlApp: App {
     public init() {}
@@ -520,7 +521,7 @@ private struct MarketsView: View {
         NavigationStack {
             List(rows) { item in
                 NavigationLink {
-                    CoinChartView(symbol: item.symbol)
+                    CoinChartView(symbol: item.symbol, symbols: rows.map(\.symbol))
                 } label: {
                     MarketRowCard(item: item)
                 }
@@ -576,10 +577,18 @@ private struct MarketRowCard: View {
 
 private struct CoinChartView: View {
     let symbol: String
+    let symbols: [String]
     @State private var candles: [NenGia] = []
     @State private var interval = "15m"
+    @State private var selectedSymbol: String
     @State private var lastUpdated: Date?
     @State private var error: String?
+
+    init(symbol: String, symbols: [String] = []) {
+        self.symbol = symbol
+        self.symbols = symbols.isEmpty ? [symbol] : symbols
+        _selectedSymbol = State(initialValue: symbol)
+    }
 
     var body: some View {
         ZStack {
@@ -589,8 +598,14 @@ private struct CoinChartView: View {
                     GlassPanel {
                         HStack {
                             VStack(alignment: .leading, spacing: 5) {
-                                Text(symbol)
-                                    .font(.title.bold())
+                                Menu {
+                                    ForEach(symbols, id: \.self) { item in
+                                        Button(item) { selectedSymbol = item }
+                                    }
+                                } label: {
+                                    Label(selectedSymbol, systemImage: "chevron.down.circle.fill")
+                                        .font(.title.bold())
+                                }
                                 Text("Realtime 5 giây • \(interval)")
                                     .font(.caption.bold())
                                     .foregroundStyle(.secondary)
@@ -608,8 +623,8 @@ private struct CoinChartView: View {
                         }
                     }
                     GlassPanel {
-                        PriceChart(candles: candles)
-                            .frame(height: 260)
+                        InteractivePriceChart(candles: candles)
+                            .frame(height: 300)
                         HStack {
                             InfoPill("Nến \(candles.count)")
                             InfoPill("Cập nhật \(lastUpdated.map(shortTime) ?? "-")")
@@ -628,9 +643,9 @@ private struct CoinChartView: View {
                 .padding()
             }
         }
-        .navigationTitle(symbol)
+        .navigationTitle(selectedSymbol)
         .toolbarBackground(.hidden, for: .navigationBar)
-        .task(id: interval) { await realtimeLoad() }
+        .task(id: "\(selectedSymbol)-\(interval)") { await realtimeLoad() }
     }
 
     private func realtimeLoad() async {
@@ -642,7 +657,7 @@ private struct CoinChartView: View {
 
     private func load() async {
         do {
-            let response = try await TradingAPI.shared.klines(symbol: symbol, interval: interval, limit: 180)
+            let response = try await TradingAPI.shared.klines(symbol: selectedSymbol, interval: interval, limit: 220)
             candles = response.items
             lastUpdated = Date()
             error = nil
@@ -652,96 +667,148 @@ private struct CoinChartView: View {
     }
 }
 
-private struct PriceChart: View {
+private struct InteractivePriceChart: View {
     let candles: [NenGia]
 
-    private let visibleCandleCount = 80
-    private let verticalPadding: CGFloat = 10
+    @State private var visibleCount = 80
+    @State private var endOffset = 0
+    @State private var selectedIndex: Int?
+    @State private var dragStartOffset: Int?
+    @State private var magnificationStartCount: Int?
+
+    private let verticalPadding: CGFloat = 12
+    private let timeScaleHeight: CGFloat = 24
     private let priceScaleWidth: CGFloat = 72
 
+    private var window: ArraySlice<NenGia> {
+        let end = max(candles.count - endOffset, 0)
+        let start = max(end - min(visibleCount, end), 0)
+        return candles[start..<end]
+    }
+
     var body: some View {
-        Canvas { context, size in
-            let visibleCandles = Array(candles.suffix(visibleCandleCount))
-            guard !visibleCandles.isEmpty else { return }
-            guard let minLow = visibleCandles.map(\.low).min(),
-                  let maxHigh = visibleCandles.map(\.high).max()
-            else { return }
-
-            let priceRange = max(maxHigh - minLow, max(abs(maxHigh) * 0.0001, 0.000_000_01))
-            let plotWidth = max(size.width - priceScaleWidth, 1)
-            let drawingHeight = max(size.height - verticalPadding * 2, 1)
-            let slotWidth = plotWidth / CGFloat(visibleCandles.count)
-            let bodyWidth = max(min(slotWidth * 0.68, 9), 1)
-
-            func yPosition(_ price: Double) -> CGFloat {
-                verticalPadding + CGFloat((maxHigh - price) / priceRange) * drawingHeight
+        VStack(alignment: .leading, spacing: 8) {
+            if let candle = selectedCandle {
+                HStack(spacing: 10) {
+                    Text(chartDate(candle.openTime)).foregroundStyle(.secondary)
+                    Text("O \(chartPrice(candle.open))")
+                    Text("H \(chartPrice(candle.high))").foregroundStyle(.green)
+                    Text("L \(chartPrice(candle.low))").foregroundStyle(.red)
+                    Text("C \(chartPrice(candle.close))")
+                }
+                .font(.system(size: 10, weight: .semibold, design: .monospaced))
+                .lineLimit(1)
+                .minimumScaleFactor(0.65)
+            } else if let first = window.first, let last = window.last {
+                HStack {
+                    Text("\(window.count) nến")
+                    Spacer()
+                    Text(signedPercent((last.close - first.open) / first.open * 100))
+                        .foregroundStyle(last.close >= first.open ? .green : .red)
+                }
+                .font(.caption.bold())
+                .foregroundStyle(.secondary)
             }
 
-            for line in 0 ... 4 {
-                let fraction = Double(line) / 4
-                let y = verticalPadding + drawingHeight * CGFloat(fraction)
-                let price = maxHigh - priceRange * fraction
-                var grid = Path()
-                grid.move(to: CGPoint(x: 0, y: y))
-                grid.addLine(to: CGPoint(x: plotWidth, y: y))
-                context.stroke(grid, with: .color(.white.opacity(0.08)), lineWidth: 0.5)
-                context.draw(
-                    Text(chartPrice(price))
-                        .font(.system(size: 10, weight: .semibold, design: .monospaced))
-                        .foregroundStyle(.secondary),
-                    at: CGPoint(x: plotWidth + 6, y: y),
-                    anchor: .leading
-                )
+            Canvas { context, size in
+                drawChart(context: context, size: size)
             }
-
-            var scaleBorder = Path()
-            scaleBorder.move(to: CGPoint(x: plotWidth, y: 0))
-            scaleBorder.addLine(to: CGPoint(x: plotWidth, y: size.height))
-            context.stroke(scaleBorder, with: .color(.white.opacity(0.12)), lineWidth: 0.5)
-
-            for (index, candle) in visibleCandles.enumerated() {
-                let centerX = slotWidth * (CGFloat(index) + 0.5)
-                let color: Color = candle.close >= candle.open ? .green : .red
-
-                var wick = Path()
-                wick.move(to: CGPoint(x: centerX, y: yPosition(candle.high)))
-                wick.addLine(to: CGPoint(x: centerX, y: yPosition(candle.low)))
-                context.stroke(wick, with: .color(color), lineWidth: 1)
-
-                let openY = yPosition(candle.open)
-                let closeY = yPosition(candle.close)
-                let bodyTop = min(openY, closeY)
-                let bodyHeight = max(abs(closeY - openY), 1)
-                let body = CGRect(
-                    x: centerX - bodyWidth / 2,
-                    y: bodyTop,
-                    width: bodyWidth,
-                    height: bodyHeight
-                )
-                context.fill(Path(body), with: .color(color))
-            }
-
-            if let last = visibleCandles.last {
-                let y = yPosition(last.close)
-                let color: Color = last.close >= last.open ? .green : .red
-                var currentPrice = Path()
-                currentPrice.move(to: CGPoint(x: 0, y: y))
-                currentPrice.addLine(to: CGPoint(x: plotWidth, y: y))
-                context.stroke(currentPrice, with: .color(color.opacity(0.75)), style: StrokeStyle(lineWidth: 1, dash: [4, 3]))
-                context.fill(
-                    Path(roundedRect: CGRect(x: plotWidth + 2, y: y - 10, width: priceScaleWidth - 4, height: 20), cornerRadius: 4),
-                    with: .color(color)
-                )
-                context.draw(
-                    Text(chartPrice(last.close))
-                        .font(.system(size: 10, weight: .bold, design: .monospaced))
-                        .foregroundStyle(.white),
-                    at: CGPoint(x: plotWidth + priceScaleWidth / 2, y: y)
-                )
-            }
+            .contentShape(Rectangle())
+            .gesture(dragGesture.simultaneously(with: magnificationGesture))
+            .onTapGesture { selectedIndex = nil }
+            .accessibilityLabel("Biểu đồ nến tương tác, kéo để xem giá hoặc dịch thời gian, chụm để thu phóng")
         }
-        .accessibilityLabel("Biểu đồ nến và trục giá")
+        .padding(6)
         .background(.white.opacity(0.04), in: RoundedRectangle(cornerRadius: 8))
+        .onChange(of: candles.count) { _, _ in clampState() }
+    }
+
+    private var selectedCandle: NenGia? {
+        let items = Array(window)
+        guard let selectedIndex, items.indices.contains(selectedIndex) else { return nil }
+        return items[selectedIndex]
+    }
+
+    private var dragGesture: some Gesture {
+        DragGesture(minimumDistance: 0)
+            .onChanged { value in
+                let plotWidth = max(value.startLocation.x > 0 ? UIScreen.main.bounds.width - 120 : 1, 1)
+                if dragStartOffset == nil { dragStartOffset = endOffset }
+                if abs(value.translation.width) > 14 {
+                    let candleWidth = max(plotWidth / CGFloat(max(visibleCount, 1)), 1)
+                    let shift = Int((value.translation.width / candleWidth).rounded())
+                    endOffset = min(max((dragStartOffset ?? 0) + shift, 0), max(candles.count - 10, 0))
+                    selectedIndex = nil
+                } else {
+                    let count = max(Array(window).count, 1)
+                    let width = max(UIScreen.main.bounds.width - priceScaleWidth - 44, 1)
+                    selectedIndex = min(max(Int(value.location.x / width * CGFloat(count)), 0), count - 1)
+                }
+            }
+            .onEnded { _ in dragStartOffset = nil }
+    }
+
+    private var magnificationGesture: some Gesture {
+        MagnifyGesture()
+            .onChanged { value in
+                if magnificationStartCount == nil { magnificationStartCount = visibleCount }
+                visibleCount = min(max(Int(CGFloat(magnificationStartCount ?? 80) / value.magnification), 20), min(max(candles.count, 20), 180))
+                clampState()
+            }
+            .onEnded { _ in magnificationStartCount = nil }
+    }
+
+    private func clampState() {
+        visibleCount = min(max(visibleCount, 20), min(max(candles.count, 20), 180))
+        endOffset = min(max(endOffset, 0), max(candles.count - 10, 0))
+        selectedIndex = nil
+    }
+
+    private func drawChart(context: GraphicsContext, size: CGSize) {
+        let items = Array(window)
+        guard !items.isEmpty, let minLow = items.map(\.low).min(), let maxHigh = items.map(\.high).max() else { return }
+        let plotWidth = max(size.width - priceScaleWidth, 1)
+        let drawingHeight = max(size.height - verticalPadding * 2 - timeScaleHeight, 1)
+        let range = max(maxHigh - minLow, max(abs(maxHigh) * 0.0001, 0.000_000_01))
+        let slot = plotWidth / CGFloat(items.count)
+        let bodyWidth = max(min(slot * 0.68, 9), 1)
+        func y(_ price: Double) -> CGFloat { verticalPadding + CGFloat((maxHigh - price) / range) * drawingHeight }
+
+        for line in 0...4 {
+            let fraction = Double(line) / 4
+            let lineY = verticalPadding + drawingHeight * CGFloat(fraction)
+            var path = Path(); path.move(to: CGPoint(x: 0, y: lineY)); path.addLine(to: CGPoint(x: plotWidth, y: lineY))
+            context.stroke(path, with: .color(.white.opacity(0.08)), lineWidth: 0.5)
+            context.draw(Text(chartPrice(maxHigh - range * fraction)).font(.system(size: 10, design: .monospaced)).foregroundStyle(.secondary), at: CGPoint(x: plotWidth + 5, y: lineY), anchor: .leading)
+        }
+
+        for (index, candle) in items.enumerated() {
+            let x = slot * (CGFloat(index) + 0.5)
+            let color: Color = candle.close >= candle.open ? .green : .red
+            var wick = Path(); wick.move(to: CGPoint(x: x, y: y(candle.high))); wick.addLine(to: CGPoint(x: x, y: y(candle.low)))
+            context.stroke(wick, with: .color(color), lineWidth: 1)
+            let openY = y(candle.open), closeY = y(candle.close)
+            context.fill(Path(CGRect(x: x - bodyWidth / 2, y: min(openY, closeY), width: bodyWidth, height: max(abs(closeY - openY), 1))), with: .color(color))
+        }
+
+        for index in Set([0, items.count / 2, items.count - 1]) {
+            let x = slot * (CGFloat(index) + 0.5)
+            context.draw(Text(chartTime(items[index].openTime)).font(.system(size: 9, design: .monospaced)).foregroundStyle(.secondary), at: CGPoint(x: x, y: size.height - 4), anchor: index == 0 ? .bottomLeading : index == items.count - 1 ? .bottomTrailing : .bottom)
+        }
+
+        if let last = items.last {
+            let lineY = y(last.close), color: Color = last.close >= last.open ? .green : .red
+            var path = Path(); path.move(to: CGPoint(x: 0, y: lineY)); path.addLine(to: CGPoint(x: plotWidth, y: lineY))
+            context.stroke(path, with: .color(color.opacity(0.75)), style: StrokeStyle(lineWidth: 1, dash: [4, 3]))
+            context.fill(Path(roundedRect: CGRect(x: plotWidth + 2, y: lineY - 10, width: priceScaleWidth - 4, height: 20), cornerRadius: 4), with: .color(color))
+            context.draw(Text(chartPrice(last.close)).font(.system(size: 10, weight: .bold, design: .monospaced)).foregroundStyle(.white), at: CGPoint(x: plotWidth + priceScaleWidth / 2, y: lineY))
+        }
+
+        if let selectedIndex, items.indices.contains(selectedIndex) {
+            let x = slot * (CGFloat(selectedIndex) + 0.5)
+            var crosshair = Path(); crosshair.move(to: CGPoint(x: x, y: 0)); crosshair.addLine(to: CGPoint(x: x, y: drawingHeight + verticalPadding))
+            context.stroke(crosshair, with: .color(.cyan.opacity(0.8)), style: StrokeStyle(lineWidth: 1, dash: [3, 3]))
+        }
     }
 }
 
@@ -1317,6 +1384,16 @@ private func chartPrice(_ value: Double) -> String {
             .grouping(.automatic)
             .precision(.fractionLength(digits))
     )
+}
+
+private func chartTime(_ milliseconds: Int) -> String {
+    Date(timeIntervalSince1970: TimeInterval(milliseconds) / 1_000)
+        .formatted(date: .omitted, time: .shortened)
+}
+
+private func chartDate(_ milliseconds: Int) -> String {
+    Date(timeIntervalSince1970: TimeInterval(milliseconds) / 1_000)
+        .formatted(.dateTime.day().month().hour().minute())
 }
 
 private func compact(_ value: Double?) -> String {
