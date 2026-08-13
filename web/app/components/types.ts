@@ -226,6 +226,22 @@ export type ScannerResult = {
     vwap: number | null;
   };
   reasons: string[];
+  data_quality: {
+    accepted: boolean;
+    status: "PASS" | "BLOCKED";
+    confidence: number;
+    minimum_confidence: number;
+    sample_size: number;
+    minimum_candles: number;
+    latest_closed_at: string | null;
+    age_seconds: number | null;
+    complete: boolean;
+    continuous: boolean;
+    valid: boolean;
+    fresh: boolean;
+    reasons: string[];
+    checked_at: string;
+  } | null;
   scanned_at: string;
 };
 

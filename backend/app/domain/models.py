@@ -124,6 +124,23 @@ class IndicatorSnapshot(BaseModel):
     volume_sma20: float | None = None
 
 
+class DataQualityAssessment(BaseModel):
+    accepted: bool
+    status: str
+    confidence: float = Field(ge=0, le=1)
+    minimum_confidence: float = Field(ge=0, le=1)
+    sample_size: int = Field(ge=0)
+    minimum_candles: int = Field(ge=1)
+    latest_closed_at: datetime | None = None
+    age_seconds: float | None = Field(default=None, ge=0)
+    complete: bool
+    continuous: bool
+    valid: bool
+    fresh: bool
+    reasons: list[str] = Field(default_factory=list)
+    checked_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+
+
 class ScannerResult(BaseModel):
     symbol: str
     timeframe: Timeframe
@@ -141,6 +158,7 @@ class ScannerResult(BaseModel):
     risk_reward: float | None = None
     indicators: IndicatorSnapshot
     reasons: list[str] = Field(default_factory=list)
+    data_quality: DataQualityAssessment | None = None
     scanned_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
 

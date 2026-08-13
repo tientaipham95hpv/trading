@@ -33,6 +33,8 @@ class AutoTrader:
         self.cycles = 0
         self.submitted = 0
         self.rejected = 0
+        self.data_quality_blocked = 0
+        self.last_data_quality: dict[str, object] | None = None
 
     def start(self) -> None:
         if self.task and not self.task.done():
@@ -61,6 +63,8 @@ class AutoTrader:
             "cycles": self.cycles,
             "submitted": self.submitted,
             "rejected": self.rejected,
+            "data_quality_blocked": self.data_quality_blocked,
+            "last_data_quality": self.last_data_quality,
         }
 
     async def _run(self) -> None:
@@ -197,6 +201,24 @@ class AutoTrader:
             if result.symbol in active_symbols:
                 reason = "Symbol đang có vị thế hoặc lệnh mở"
                 rejection_reasons[reason] = rejection_reasons.get(reason, 0) + 1
+                continue
+            quality = result.data_quality
+            self.last_data_quality = quality.model_dump(mode="json") if quality else None
+            if quality is None or not quality.accepted:
+                self.rejected += 1
+                self.data_quality_blocked += 1
+                details = ", ".join(quality.reasons) if quality else "thiếu bằng chứng chất lượng"
+                reason = f"Data-quality gate chặn: {details}"
+                rejection_reasons[reason] = rejection_reasons.get(reason, 0) + 1
+                await self.state.storage.log(
+                    "Auto-trader data-quality gate blocked candidate",
+                    {
+                        "symbol": result.symbol,
+                        "timeframe": result.timeframe.value,
+                        "assessment": quality.model_dump(mode="json") if quality else None,
+                    },
+                    level="WARNING",
+                )
                 continue
             accepted, reason = self._candidate_has_enough_confirmation(result)
             if not accepted:

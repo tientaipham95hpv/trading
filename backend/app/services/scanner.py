@@ -15,6 +15,7 @@ from app.domain.models import (
     SymbolCandidate,
     Timeframe,
 )
+from app.services.data_quality import MarketDataQualityGate
 from app.services.indicators import calculate_indicators
 
 
@@ -160,10 +161,17 @@ class FuturesScanner:
         candles = await self._client.klines(market.symbol, timeframe.value, limit=250)
         if len(candles) < 60:
             return None
-        indicators = calculate_indicators(candles)
-        regime = detect_regime(candles, indicators)
-        long_score, short_score, reasons = score_market(candles, indicators, regime)
-        price = candles[-1].close
+        data_quality = MarketDataQualityGate.evaluate(
+            candles, timeframe, stale_data_seconds=self.settings.stale_data_seconds
+        )
+        cutoff_ms = int(data_quality.checked_at.timestamp() * 1000)
+        closed_candles = [candle for candle in candles if candle.close_time < cutoff_ms]
+        if len(closed_candles) < 60:
+            return None
+        indicators = calculate_indicators(closed_candles)
+        regime = detect_regime(closed_candles, indicators)
+        long_score, short_score, reasons = score_market(closed_candles, indicators, regime)
+        price = closed_candles[-1].close
         action = SignalAction.NO_TRADE
         strategy = None
         stop_loss = None
@@ -195,6 +203,8 @@ class FuturesScanner:
             risk_reward=risk_reward,
             indicators=indicators,
             reasons=reasons,
+            data_quality=data_quality,
+            scanned_at=data_quality.checked_at,
         )
 
 
