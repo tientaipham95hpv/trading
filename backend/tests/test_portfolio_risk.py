@@ -1,3 +1,5 @@
+from types import SimpleNamespace
+
 import pytest
 
 from app.domain.models import (
@@ -9,6 +11,7 @@ from app.domain.models import (
     OrderPlan,
     Side,
 )
+from app.services.auto_trader import AutoTrader
 from app.services.portfolio_risk import PortfolioRiskEngine
 
 
@@ -118,6 +121,27 @@ def test_pretrade_audit_is_shadow_only_and_has_stable_fingerprint():
     assert first.after and first.after.enforcement_enabled is False
     assert first.fingerprint == second.fingerprint
     assert "BTCUSDT vượt giới hạn tập trung theo symbol" in first.reasons
+
+
+def test_portfolio_enforcement_is_opt_in_and_fail_closed():
+    audit = SimpleNamespace(decision="WOULD_REJECT", reasons=["Vượt gross exposure"])
+    shadow = AutoTrader(SimpleNamespace(portfolio_risk_enforcement_enabled=False))
+    enforced = AutoTrader(SimpleNamespace(portfolio_risk_enforcement_enabled=True))
+
+    assert shadow._portfolio_risk_rejection(audit) is None
+    assert enforced._portfolio_risk_rejection(audit) == "Vượt gross exposure"
+    assert (
+        enforced._portfolio_risk_rejection(
+            SimpleNamespace(decision="WOULD_REJECT", reasons=[])
+        )
+        == "Portfolio risk từ chối entry mới"
+    )
+    assert (
+        enforced._portfolio_risk_rejection(
+            SimpleNamespace(decision="WOULD_ALLOW", reasons=[])
+        )
+        is None
+    )
 
 
 def test_snapshot_fingerprint_ignores_price_noise_but_tracks_protection_changes():

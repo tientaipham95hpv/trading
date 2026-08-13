@@ -34,7 +34,12 @@ jobs:
       - name: Ruff
         run: ruff check app tests
 
-      - name: Pytest
+      - name: Pytest (network disabled)
+        env:
+          HTTP_PROXY: http://127.0.0.1:9
+          HTTPS_PROXY: http://127.0.0.1:9
+          ALL_PROXY: http://127.0.0.1:9
+          NO_PROXY: localhost,127.0.0.1
         run: pytest -q
 
   web:

@@ -27,6 +27,7 @@ class Settings(BaseSettings):
     max_weekly_drawdown: float = Field(default=0.08, gt=0, le=0.5)
     max_open_positions: int = Field(default=3, ge=1, le=50)
     max_portfolio_exposure: float = Field(default=0.30, gt=0, le=3)
+    portfolio_risk_enforcement_enabled: bool = False
     max_correlated_positions: int = Field(default=2, ge=1, le=10)
     max_loss_streak: int = Field(default=3, ge=1, le=20)
     loss_streak_cooldown_minutes: int = Field(default=60, ge=1, le=1440)

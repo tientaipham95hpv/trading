@@ -1,3 +1,4 @@
+from decimal import Decimal
 from typing import Any
 
 from app.domain.models import MarginType, OrderPlan, Side
@@ -28,6 +29,12 @@ class FakeBinanceAdapter(BinanceFuturesAdapter):
         self.sl_exists = True
         self.position_risk: list[dict[str, Any]] = []
         self.open_algo_orders: list[dict[str, Any]] | None = None
+        # Unit tests must never depend on Binance or make real network calls.
+        self._symbol_filters["BTCUSDT"] = {
+            "quantity_step": Decimal("0.001"),
+            "min_quantity": Decimal("0.001"),
+            "price_tick": Decimal("0.1"),
+        }
 
     async def _signed(self, method: str, path: str, params: dict[str, Any]) -> Any:
         self.calls.append((method, path, params))

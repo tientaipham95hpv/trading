@@ -10,7 +10,7 @@ Hệ thống đang chạy **DEMO end-to-end** với Binance Futures Demo/Testnet
 - Auto-trader chạy liên tục: scanner → data-quality gate → xác nhận tín hiệu → risk engine → order plan → exchange adapter.
 - Entry đi kèm Stop Loss và 3 mức Take Profit; watchdog phát hiện vị thế thiếu SL, tự repair khi có thể và chuyển `SAFE_MODE` khi không thể bảo vệ.
 - User stream, reconciliation, orphan-order cleanup, duplicate client-order handling và emergency controls đã có.
-- Portfolio risk đã có snapshot/audit theo symbol, hướng, tổng exposure, open risk và correlation nhưng hiện vẫn ở chế độ **shadow**, chưa chặn lệnh thật.
+- Portfolio risk đã có snapshot/audit theo symbol, hướng, tổng exposure, open risk và correlation. Enforcement cho entry mới đã được triển khai theo feature flag `PORTFOLIO_RISK_ENFORCEMENT_ENABLED`, mặc định **false/shadow** để tiếp tục hiệu chỉnh an toàn.
 - Smart Entry đang **shadow/read-only**, thu outcome 4/12/24 nến và không tác động Baseline hay execution.
 - Web và iOS dùng chung API; workflow GitHub Actions tạo unsigned IPA đã build thành công.
 - CI backend/web chạy Ruff, Pytest, lint và production build trên push/PR.
@@ -48,7 +48,7 @@ Không mở LIVE cho đến khi tất cả điều kiện sau đạt:
 
 - So sánh sizing thực tế với `max_symbol_exposure`, `max_portfolio_exposure`, directional exposure và margin limits.
 - Xử lý trường hợp plan mới làm vượt limit; bổ sung test fail-closed.
-- Chỉ bật enforcement sau khi shadow audit ổn định và không có false positive do dữ liệu correlation thiếu/stale.
+- Chỉ chuyển `PORTFOLIO_RISK_ENFORCEMENT_ENABLED=true` sau khi shadow audit ổn định và không có false positive do dữ liệu correlation thiếu/stale. Enforcement chỉ chặn entry mới, không tự đóng vị thế hiện hữu.
 
 ### 3. Đánh giá chiến lược bằng dữ liệu đủ mẫu
 

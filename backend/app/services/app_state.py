@@ -56,6 +56,7 @@ class AppState:
         self.bot_settings = bot_settings
         self.trading_mode = TradingMode(settings.trading_mode)
         self.live_trading_enabled = settings.live_trading_enabled
+        self.portfolio_risk_enforcement_enabled = settings.portfolio_risk_enforcement_enabled
         self.live_preflight = {
             "all_tests_pass": settings.live_preflight_all_tests_pass,
             "demo_stable": settings.live_preflight_demo_stable,

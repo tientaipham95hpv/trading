@@ -334,17 +334,23 @@ class AutoTrader:
                     **correlation_limits,
                 )
                 await self.state.storage.save_portfolio_risk_audit(audit.model_dump(mode="json"))
+                enforcement_enabled = self.state.portfolio_risk_enforcement_enabled
                 await self.state.storage.log(
-                    "Portfolio risk shadow pre-trade",
+                    "Portfolio risk pre-trade",
                     {
                         "symbol": plan.symbol,
                         "decision": audit.decision,
                         "reasons": audit.reasons,
                         "fingerprint": audit.fingerprint,
-                        "enforcement_enabled": False,
+                        "enforcement_enabled": enforcement_enabled,
                     },
                     level="WARNING" if audit.decision == "WOULD_REJECT" else "INFO",
                 )
+                rejection = self._portfolio_risk_rejection(audit)
+                if rejection:
+                    self.rejected += 1
+                    rejection_reasons[rejection] = rejection_reasons.get(rejection, 0) + 1
+                    continue
 
             return await self._submit(plan, timeframe=result.timeframe.value)
 
@@ -352,6 +358,14 @@ class AutoTrader:
             "NO_ACCEPTED_SIGNAL",
             self._rejection_summary(rejection_reasons),
         )
+
+    def _portfolio_risk_rejection(self, audit: Any) -> str | None:
+        """Return a fail-closed reason only when enforcement is explicitly enabled."""
+        if not self.state.portfolio_risk_enforcement_enabled:
+            return None
+        if audit.decision != "WOULD_ALLOW":
+            return "; ".join(audit.reasons) or "Portfolio risk từ chối entry mới"
+        return None
 
     async def _submit(self, plan: OrderPlan, *, timeframe: str) -> dict[str, object]:
         self.last_status = "SUBMITTING"
