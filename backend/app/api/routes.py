@@ -562,6 +562,15 @@ async def exchange_snapshot() -> dict[str, object]:
         ).model_dump(mode="json")
 
 
+@router.get("/exchange/gateway")
+async def exchange_gateway_status() -> dict[str, object]:
+    return {
+        "demo": state.demo_exchange.gateway.status(),
+        "live": state.live_exchange.gateway.status(),
+        "market": state.market_client.gateway.status(),
+    }
+
+
 @router.post("/exchange/reconcile")
 async def exchange_reconcile() -> dict[str, object]:
     adapter = state.live_exchange if state.trading_mode == TradingMode.LIVE else state.demo_exchange

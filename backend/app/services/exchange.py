@@ -23,6 +23,12 @@ from app.domain.models import (
     Side,
     TradingMode,
 )
+from app.services.binance_gateway import (
+    BinanceGateway,
+    CircuitOpenError,
+    RateLimitBudgetExceeded,
+    gateway_for,
+)
 
 
 class ExchangeError(Exception):
@@ -73,6 +79,7 @@ class BinanceFuturesAdapter(ExchangeAdapter):
         stream_url: str = "wss://demo-fstream.binance.com",
         recv_window: int = 5000,
         mode: TradingMode = TradingMode.DEMO,
+        gateway: BinanceGateway | None = None,
     ) -> None:
         self.api_key = api_key
         self.api_secret = api_secret
@@ -80,6 +87,7 @@ class BinanceFuturesAdapter(ExchangeAdapter):
         self.stream_url = stream_url.rstrip("/")
         self.recv_window = recv_window
         self.mode = mode
+        self.gateway = gateway or gateway_for(self.base_url)
         self._submitted_client_ids: set[str] = set()
         self._listen_key: str | None = None
         self.snapshot_cache = ExchangeSnapshot(mode=mode)
@@ -685,7 +693,11 @@ class BinanceFuturesAdapter(ExchangeAdapter):
         cached = self._symbol_filters.get(symbol)
         if cached:
             return cached
-        data = await self._request("GET", "/fapi/v1/exchangeInfo", signed=False)
+        payload = self.gateway.cached("/fapi/v1/exchangeInfo", None)
+        if payload is None:
+            payload = await self._request("GET", "/fapi/v1/exchangeInfo", signed=False)
+            self.gateway.store("/fapi/v1/exchangeInfo", None, payload)
+        data = payload
         for item in data.get("symbols", []):
             if item.get("symbol") != symbol:
                 continue
@@ -1073,27 +1085,49 @@ class BinanceFuturesAdapter(ExchangeAdapter):
             params["recvWindow"] = self.recv_window
             params["signature"] = self._signature(params)
         headers = {"X-MBX-APIKEY": self.api_key}
-        async with httpx.AsyncClient(timeout=10) as client:
-            response = await client.request(
-                method,
-                f"{self.base_url}{path}",
-                headers=headers,
-                params=params if method == "GET" else None,
-                data=params if method != "GET" else None,
-            )
+        try:
+            await self.gateway.acquire(method, path, signed=signed)
+        except CircuitOpenError as exc:
+            raise ExchangeError(f"Binance gateway đang khóa circuit breaker: {exc}") from exc
+        except RateLimitBudgetExceeded as exc:
+            raise ExchangeError(f"Vượt ngân sách rate limit Binance: {exc}") from exc
+        try:
+            async with httpx.AsyncClient(timeout=10) as client:
+                response = await client.request(
+                    method,
+                    f"{self.base_url}{path}",
+                    headers=headers,
+                    params=params if method == "GET" else None,
+                    data=params if method != "GET" else None,
+                )
+        except httpx.HTTPError as exc:
+            self.gateway.record_failure()
+            raise ExchangeError(f"Binance request lỗi mạng: {exc}") from exc
         if response.status_code >= 400:
+            self.gateway.record_failure(
+                status_code=response.status_code,
+                retry_after_seconds=_retry_after_seconds(response),
+            )
             raise ExchangeError(f"Binance {response.status_code}: {response.text}")
+        self.gateway.record_success()
         return response.json()
 
     async def _sync_time_if_needed(self, *, force: bool = False) -> None:
         local_before = int(time.time() * 1000)
         if not force and local_before - self._last_time_sync_ms < 30_000:
             return
-        async with httpx.AsyncClient(timeout=5) as client:
-            response = await client.get(f"{self.base_url}/fapi/v1/time")
+        await self.gateway.acquire("GET", "/fapi/v1/time", signed=False)
+        try:
+            async with httpx.AsyncClient(timeout=5) as client:
+                response = await client.get(f"{self.base_url}/fapi/v1/time")
+        except httpx.HTTPError as exc:
+            self.gateway.record_failure()
+            raise ExchangeError(f"Binance time sync lỗi mạng: {exc}") from exc
         local_after = int(time.time() * 1000)
         if response.status_code >= 400:
+            self.gateway.record_failure(status_code=response.status_code)
             raise ExchangeError(f"Binance {response.status_code}: {response.text}")
+        self.gateway.record_success()
         server_time = int(response.json()["serverTime"])
         # Midpoint removes most request latency from the estimated server offset.
         local_midpoint = (local_before + local_after) // 2
@@ -1204,6 +1238,14 @@ def _optional_float(value: Any) -> float | None:
         return None
     parsed = float(value)
     return parsed if parsed > 0 else None
+
+
+def _retry_after_seconds(response: httpx.Response) -> float | None:
+    value = response.headers.get("Retry-After")
+    try:
+        return float(value) if value is not None else None
+    except ValueError:
+        return None
 
 
 async def _sleep_backoff(attempt: int) -> None:
