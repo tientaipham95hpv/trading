@@ -182,11 +182,25 @@ async def positions() -> dict[str, object]:
 async def trades() -> dict[str, object]:
     if state.trading_mode in {TradingMode.DEMO, TradingMode.LIVE}:
         adapter = _current_adapter()
-        income_rows = await adapter.income_history(income_type="REALIZED_PNL", limit=1000)
-        symbols = sorted({str(row.get("symbol") or "") for row in income_rows if row.get("symbol")})
-        rows = []
-        for symbol in symbols:
-            rows.extend(await adapter.trade_history(symbol, limit=1000))
+        try:
+            income_rows = await adapter.income_history(income_type="REALIZED_PNL", limit=1000)
+            symbols = sorted(
+                {str(row.get("symbol") or "") for row in income_rows if row.get("symbol")}
+            )
+            rows = []
+            for symbol in symbols:
+                rows.extend(await adapter.trade_history(symbol, limit=1000))
+        except ExchangeError as exc:
+            await state.storage.log(
+                "Trades dùng fallback do exchange rate-limit",
+                {"mode": state.trading_mode.value, "error": str(exc)},
+                level="WARNING",
+            )
+            return {
+                "items": [item.model_dump(mode="json") for item in state.execution.trades],
+                "degraded": True,
+                "reason": str(exc),
+            }
         rows.sort(key=lambda row: int(_float(row.get("time"))), reverse=True)
         reset_at = state.performance_reset_at_for()
         if reset_at is not None:
@@ -201,11 +215,23 @@ async def exit_analytics() -> ExitAnalyticsResponse:
     """Phân tích lịch sử thoát lệnh; chỉ đọc, không tác động execution/risk/config."""
     if state.trading_mode in {TradingMode.DEMO, TradingMode.LIVE}:
         adapter = _current_adapter()
-        income = _income_since_reset(await adapter.income_history(limit=1000))
-        symbols = sorted({str(row.get("symbol")) for row in income if row.get("symbol")})
-        rows: list[dict[str, object]] = []
-        for symbol in symbols:
-            rows.extend(await adapter.trade_history(symbol, limit=1000))
+        try:
+            income = _income_since_reset(await adapter.income_history(limit=1000))
+            symbols = sorted({str(row.get("symbol")) for row in income if row.get("symbol")})
+            rows: list[dict[str, object]] = []
+            for symbol in symbols:
+                rows.extend(await adapter.trade_history(symbol, limit=1000))
+        except ExchangeError as exc:
+            await state.storage.log(
+                "Exit analytics dùng fallback do exchange rate-limit",
+                {"mode": state.trading_mode.value, "error": str(exc)},
+                level="WARNING",
+            )
+            return ExitAnalyticsService().analyze(
+                [],
+                [],
+                source=f"Exchange history temporarily unavailable: {exc}",
+            )
         reset_at = state.performance_reset_at_for()
         if reset_at is not None:
             cutoff_ms = int(reset_at.timestamp() * 1000)
