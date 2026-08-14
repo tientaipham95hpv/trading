@@ -174,7 +174,16 @@ async def smart_entry(limit: int = Query(default=100, ge=1, le=500)) -> dict[str
 
 @router.get("/positions")
 async def positions() -> dict[str, object]:
-    snapshot = await _current_exchange_snapshot()
+    adapter = _current_adapter()
+    try:
+        snapshot = await adapter.snapshot()
+    except ExchangeError as exc:
+        await state.storage.log(
+            "Positions dùng exchange cache",
+            {"mode": state.trading_mode.value, "error": str(exc)},
+            level="WARNING",
+        )
+        snapshot = adapter.snapshot_cache
     return {"items": _exchange_positions_for_app(snapshot)}
 
 
