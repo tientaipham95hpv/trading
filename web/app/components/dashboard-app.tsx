@@ -323,7 +323,7 @@ export function DashboardApp({ page }: { page: PageKey }) {
               liveAllowed={status?.live_readiness.allowed ?? false}
               onDone={refresh}
             />
-            <BotControls onDone={refresh} />
+            <BotControls onDone={refresh} status={status} />
             <Pill
               label="Chế độ"
               value={normalizeMode(status?.mode)}
@@ -779,7 +779,7 @@ function CommandCenter({
             onDone={onDone}
           />
           <LiveQuickActions onDone={onDone} status={status} />
-          <BotControls onDone={onDone} />
+          <BotControls onDone={onDone} status={status} />
         </div>
       </div>
     </section>
@@ -1994,7 +1994,13 @@ function SettingsPage({
   );
 }
 
-function BotControls({ onDone }: { onDone: () => Promise<void> }) {
+function BotControls({
+  onDone,
+  status,
+}: {
+  onDone: () => Promise<void>;
+  status: StatusPayload | null;
+}) {
   const [busy, setBusy] = useState<string | null>(null);
   async function act(action: "start" | "pause" | "stop") {
     setBusy(action);
@@ -2035,7 +2041,25 @@ function BotControls({ onDone }: { onDone: () => Promise<void> }) {
       setBusy(null);
     }
   }
+  async function resetSafeMode() {
+    if (
+      !window.confirm(
+        "Reset SAFE_MODE sau khi backend kiểm tra exchange và SL bảo vệ?",
+      )
+    )
+      return;
+    setBusy("reset-safe-mode");
+    try {
+      const response = await api.resetSafeMode();
+      if (!response.accepted && response.reason) window.alert(response.reason);
+      await onDone();
+    } finally {
+      setBusy(null);
+    }
+  }
   const disabled = busy !== null;
+  const canResetSafeMode =
+    status?.bot_state === "SAFE_MODE" || status?.safe_mode === true;
   return (
     <div className="flex flex-wrap gap-2">
       <div className="flex rounded-md border border-white/15 bg-white/10 p-1 shadow-sm">
@@ -2067,6 +2091,19 @@ function BotControls({ onDone }: { onDone: () => Promise<void> }) {
           <Square size={16} />
         </ActionIcon>
       </div>
+      {canResetSafeMode && (
+        <div className="flex rounded-md border border-amber-300/40 bg-amber-400/10 p-1 shadow-sm">
+          <ActionIcon
+            busy={busy === "reset-safe-mode"}
+            disabled={disabled}
+            label="Reset SAFE_MODE"
+            onClick={() => void resetSafeMode()}
+            tone="warning"
+          >
+            <RefreshCw size={16} />
+          </ActionIcon>
+        </div>
+      )}
       <div className="flex rounded-md border border-red-400/30 bg-white/10 p-1 shadow-sm">
         <ActionIcon
           busy={busy === "pause-new-trades"}

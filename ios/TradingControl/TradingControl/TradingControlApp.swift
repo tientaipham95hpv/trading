@@ -373,6 +373,17 @@ private struct ModeControlPanel: View {
                 .disabled(model.isRefreshing)
             }
             .font(.subheadline.bold())
+
+            if model.status?.botState == "SAFE_MODE" || model.status?.safeMode == true {
+                Button {
+                    Task { await model.resetSafeMode() }
+                } label: {
+                    Label("Reset SAFE_MODE", systemImage: "arrow.clockwise.shield")
+                }
+                .buttonStyle(.borderedProminent)
+                .tint(.orange)
+                .disabled(model.isRefreshing)
+            }
         }
         .padding()
         .liquidGlass()

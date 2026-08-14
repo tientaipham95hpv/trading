@@ -80,6 +80,11 @@ public actor TradingAPI {
     }
 
     @discardableResult
+    public func resetSafeMode() async throws -> ControlResponse {
+        try await post("/api/safe-mode/reset")
+    }
+
+    @discardableResult
     public func tradingControl(_ action: TradingControlAction) async throws -> ControlResponse {
         try await post("/api/controls/\(action.rawValue)")
     }

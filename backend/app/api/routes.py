@@ -440,6 +440,39 @@ async def bot_stop() -> dict[str, object]:
     return {"bot_state": state.bot_state}
 
 
+@router.post("/safe-mode/reset")
+async def reset_safe_mode() -> dict[str, object]:
+    adapter = state.live_exchange if state.trading_mode == TradingMode.LIVE else state.demo_exchange
+    try:
+        snapshot = await adapter.snapshot()
+    except (ExchangeCredentialsError, ExchangeError) as exc:
+        return {"accepted": False, "reason": f"Không lấy được snapshot exchange: {exc}"}
+
+    if snapshot.safe_mode:
+        return {
+            "accepted": False,
+            "reason": snapshot.safe_mode_reason or "Exchange vẫn đang SAFE_MODE",
+        }
+
+    unprotected = state.auto_trader._unprotected_exchange_positions(snapshot)
+    if unprotected:
+        return {
+            "accepted": False,
+            "reason": f"Vị thế chưa có SL bảo vệ: {', '.join(unprotected)}",
+        }
+
+    if state.bot_state == BotState.SAFE_MODE:
+        state.bot_state = BotState.PAUSED
+    adapter.snapshot_cache.safe_mode = False
+    adapter.snapshot_cache.safe_mode_reason = None
+    await state.storage.log(
+        "SAFE_MODE đã reset từ dashboard",
+        {"mode": state.trading_mode.value, "bot_state": state.bot_state.value},
+        level="WARNING",
+    )
+    return {"accepted": True, "bot_state": state.bot_state}
+
+
 @router.post("/mode/{mode}")
 async def set_mode(mode: TradingMode) -> dict[str, object]:
     if mode == TradingMode.DEMO and state.safe_mode:

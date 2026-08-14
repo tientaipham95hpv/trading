@@ -155,6 +155,18 @@ public final class TradingViewModel: ObservableObject {
         }
     }
 
+    public func resetSafeMode() async {
+        do {
+            let allowed = try await biometricGate.authorizeSensitiveAction(reason: "Xác thực Face ID để reset SAFE_MODE.")
+            guard allowed else { return }
+            let response = try await api.resetSafeMode()
+            await refreshAll()
+            errorMessage = response.accepted ? "SAFE_MODE đã reset. Kiểm tra lại rồi bấm Chạy." : (response.reason ?? "Không reset được SAFE_MODE")
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+
     public func emergencyStop() async {
         do {
             let allowed = try await biometricGate.authorizeSensitiveAction(reason: "Xác thực Face ID để bật dừng khẩn cấp.")

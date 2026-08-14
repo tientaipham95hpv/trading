@@ -92,6 +92,12 @@ export const api = {
     request<{ bot_state: StatusPayload["bot_state"] }>(`/api/bot/${action}`, {
       method: "POST",
     }),
+  resetSafeMode: () =>
+    request<{
+      accepted: boolean;
+      bot_state?: StatusPayload["bot_state"];
+      reason?: string;
+    }>("/api/safe-mode/reset", { method: "POST" }),
   mode: (mode: "DEMO" | "LIVE") =>
     request<{ accepted: boolean; mode?: string; reason?: string }>(
       `/api/mode/${mode}`,
