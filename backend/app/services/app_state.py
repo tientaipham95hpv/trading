@@ -7,6 +7,7 @@ from app.domain.models import BotSettings, BotState, EmergencyStopState, Trading
 from app.services.auto_trader import AutoTrader
 from app.services.backtest import BacktestService
 from app.services.binance_client import BinanceMarketDataClient
+from app.services.equity import EquityTracker
 from app.services.exchange import BinanceFuturesAdapter
 from app.services.execution import ExecutionService
 from app.services.notifications import NotificationService
@@ -123,6 +124,7 @@ class AppState:
         self.user_stream = UserStreamWatchdog(self)
         self.stability = DemoStabilityService(self)
         self.smart_entry_collector = SmartEntryOutcomeCollector(self)
+        self.equity_tracker = EquityTracker(self)
 
     @property
     def safe_mode(self) -> bool:

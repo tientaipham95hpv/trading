@@ -165,6 +165,23 @@ class SmartEntryCollectionStateRow(Base):
     )
 
 
+class EquitySnapshotRow(Base):
+    __tablename__ = "equity_snapshots"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    mode: Mapped[str] = mapped_column(String(16), index=True)
+    equity: Mapped[float] = mapped_column(Float)
+    balance: Mapped[float] = mapped_column(Float, default=0)
+    margin_balance: Mapped[float] = mapped_column(Float, default=0)
+    unrealized_pnl: Mapped[float] = mapped_column(Float, default=0)
+    open_positions: Mapped[int] = mapped_column(Integer, default=0)
+    source: Mapped[str] = mapped_column(String(16), default="SNAPSHOT")
+    taken_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(UTC)
+    )
+
+
 class IncidentRow(Base):
     __tablename__ = "incidents"
 
@@ -552,6 +569,59 @@ class Storage:
         async with self.session_factory() as session:
             session.add(LogRow(level=level, message=message, payload=payload))
             await session.commit()
+
+    async def save_equity_snapshot(self, payload: dict[str, Any]) -> None:
+        """Lưu equity snapshot; bỏ qua nếu không thay đổi trong vòng 5 phút."""
+        async with self.session_factory() as session:
+            latest = (
+                await session.execute(
+                    select(EquitySnapshotRow)
+                    .where(EquitySnapshotRow.mode == str(payload["mode"]))
+                    .order_by(EquitySnapshotRow.id.desc())
+                    .limit(1)
+                )
+            ).scalar_one_or_none()
+            now = datetime.now(UTC)
+            if latest and abs(latest.equity - float(payload["equity"])) < 1e-9:
+                age = (now - latest.taken_at).total_seconds()
+                if age < 300:
+                    return
+            session.add(
+                EquitySnapshotRow(
+                    mode=str(payload["mode"]),
+                    equity=float(payload["equity"]),
+                    balance=float(payload.get("balance", 0)),
+                    margin_balance=float(payload.get("margin_balance", 0)),
+                    unrealized_pnl=float(payload.get("unrealized_pnl", 0)),
+                    open_positions=int(payload.get("open_positions", 0)),
+                    source=str(payload.get("source", "SNAPSHOT")),
+                    taken_at=now,
+                )
+            )
+            await session.commit()
+
+    async def equity_history(
+        self, mode: str, *, limit: int = 500, since: datetime | None = None
+    ) -> list[dict[str, Any]]:
+        async with self.session_factory() as session:
+            query = select(EquitySnapshotRow).where(EquitySnapshotRow.mode == mode)
+            if since is not None:
+                query = query.where(EquitySnapshotRow.taken_at >= since)
+            rows = (
+                await session.execute(query.order_by(EquitySnapshotRow.id.desc()).limit(limit))
+            ).scalars()
+            return [
+                {
+                    "equity": row.equity,
+                    "balance": row.balance,
+                    "margin_balance": row.margin_balance,
+                    "unrealized_pnl": row.unrealized_pnl,
+                    "open_positions": row.open_positions,
+                    "source": row.source,
+                    "taken_at": row.taken_at.isoformat() if row.taken_at else None,
+                }
+                for row in reversed(list(rows))
+            ]
 
     async def save_stability_snapshot(self, payload: dict[str, Any]) -> None:
         async with self.session_factory() as session:

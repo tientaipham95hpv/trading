@@ -26,10 +26,12 @@ async def startup() -> None:
     state.user_stream.start()
     state.stability.start()
     state.smart_entry_collector.start()
+    state.equity_tracker.start()
 
 
 @app.on_event("shutdown")
 async def shutdown() -> None:
+    await state.equity_tracker.stop()
     await state.smart_entry_collector.stop()
     await state.stability.stop()
     await state.user_stream.stop()

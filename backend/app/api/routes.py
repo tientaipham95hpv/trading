@@ -285,6 +285,18 @@ async def register_push_device(device: PushDeviceRegistration) -> dict[str, obje
     return {"accepted": True, "platform": device.platform}
 
 
+@router.get("/equity/history")
+async def equity_history(limit: int = 500) -> dict[str, object]:
+    limit = max(1, min(limit, 5000))
+    points = await state.equity_tracker.history(state.trading_mode.value, limit=limit)
+    return {"mode": state.trading_mode.value, "points": points}
+
+
+@router.get("/equity/analytics")
+async def equity_analytics() -> dict[str, object]:
+    return await state.equity_tracker.analytics(state.trading_mode.value)
+
+
 @router.get("/performance")
 async def performance() -> dict[str, object]:
     if state.trading_mode in {TradingMode.DEMO, TradingMode.LIVE}:
