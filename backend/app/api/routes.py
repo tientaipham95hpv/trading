@@ -20,7 +20,7 @@ from app.domain.models import (
     TradingMode,
 )
 from app.services.app_state import state
-from app.services.capital_risk import capital_risk_profile
+from app.services.capital_risk import capital_risk_profile_for_mode
 from app.services.exchange import ExchangeCredentialsError, ExchangeError
 from app.services.exit_analytics import (
     ExitAnalyticsService,
@@ -33,6 +33,17 @@ router = APIRouter(prefix="/api")
 
 @router.get("/status")
 async def status() -> dict[str, object]:
+    adapter = state.live_exchange if state.trading_mode == TradingMode.LIVE else state.demo_exchange
+    account_equity = max(
+        adapter.snapshot_cache.balance.margin_balance
+        or adapter.snapshot_cache.balance.available,
+        0.0,
+    )
+    capital_profile = capital_risk_profile_for_mode(
+        account_equity,
+        mode=state.trading_mode.value,
+        settings=state.bot_settings,
+    )
     return {
         "mode": state.trading_mode,
         "live_enabled": state.live_trading_enabled,
@@ -40,35 +51,19 @@ async def status() -> dict[str, object]:
         "emergency_stop": state.emergency_stop.active,
         "safe_mode": state.safe_mode,
         "safe_mode_reason": state.safe_mode_reason,
-        "exchange": (
-            state.live_exchange if state.trading_mode == TradingMode.LIVE else state.demo_exchange
-        ).snapshot_cache.model_dump(mode="json"),
-        "capital_risk": capital_risk_profile(
-            max(
-                (
-                    state.live_exchange
-                    if state.trading_mode == TradingMode.LIVE
-                    else state.demo_exchange
-                ).snapshot_cache.balance.margin_balance
-                or (
-                    state.live_exchange
-                    if state.trading_mode == TradingMode.LIVE
-                    else state.demo_exchange
-                ).snapshot_cache.balance.available,
-                0.0,
-            )
-        ).snapshot(),
+        "exchange": adapter.snapshot_cache.model_dump(mode="json"),
+        "capital_risk": capital_profile.snapshot(),
         "risk": {
-            "max_leverage": state.bot_settings.max_leverage,
-            "risk_per_trade": state.bot_settings.risk_per_trade,
-            "max_risk_per_trade": state.bot_settings.max_risk_per_trade,
+            "max_leverage": capital_profile.max_leverage,
+            "risk_per_trade": capital_profile.risk_per_trade,
+            "max_risk_per_trade": capital_profile.max_risk_per_trade,
             "max_total_open_risk": state.bot_settings.max_total_open_risk,
-            "max_margin_per_trade": state.bot_settings.max_margin_per_trade,
-            "max_total_margin": state.bot_settings.max_total_margin,
-            "max_daily_loss": state.bot_settings.max_daily_loss,
-            "max_weekly_drawdown": state.bot_settings.max_weekly_drawdown,
-            "max_open_positions": state.bot_settings.max_open_positions,
-            "max_portfolio_exposure": state.bot_settings.max_portfolio_exposure,
+            "max_margin_per_trade": capital_profile.max_margin_per_trade,
+            "max_total_margin": capital_profile.max_total_margin,
+            "max_daily_loss": capital_profile.max_daily_loss,
+            "max_weekly_drawdown": capital_profile.max_weekly_drawdown,
+            "max_open_positions": capital_profile.max_open_positions,
+            "max_portfolio_exposure": capital_profile.max_portfolio_exposure,
             "max_correlated_positions": state.bot_settings.max_correlated_positions,
             "max_loss_streak": state.bot_settings.max_loss_streak,
             "minimum_risk_reward": state.bot_settings.minimum_risk_reward,

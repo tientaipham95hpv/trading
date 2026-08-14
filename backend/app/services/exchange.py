@@ -147,7 +147,16 @@ class BinanceFuturesAdapter(ExchangeAdapter):
         take_profit_orders = []
         try:
             tp_created = 0
+            reference_price = await self._take_profit_reference_price(plan, entry)
+            filters = await self._filters_for(plan.symbol)
             for index, take_profit in enumerate(plan.take_profits):
+                if not self._take_profit_is_actionable(
+                    plan.side,
+                    take_profit,
+                    reference_price=reference_price,
+                    price_tick=filters["price_tick"],
+                ):
+                    continue
                 quantity = await self._take_profit_quantity_for_plan(
                     plan, index, len(plan.take_profits)
                 )
@@ -777,6 +786,41 @@ class BinanceFuturesAdapter(ExchangeAdapter):
             payload["quantity"] = _format_number(quantity)
             payload["reduceOnly"] = "true"
         return await self._signed("POST", "/fapi/v1/algoOrder", payload)
+
+    async def _take_profit_reference_price(
+        self, plan: OrderPlan, entry: dict[str, Any]
+    ) -> float:
+        try:
+            positions = await self.positions(plan.symbol)
+        except ExchangeError:
+            positions = []
+        for position in positions:
+            if position.symbol == plan.symbol and position.mark_price > 0:
+                return position.mark_price
+        fills = entry.get("fills")
+        fill_price = None
+        if isinstance(fills, list) and fills:
+            first_fill = fills[0]
+            if isinstance(first_fill, dict):
+                fill_price = first_fill.get("price")
+        return float(
+            entry.get("avgPrice") or entry.get("price") or fill_price or plan.entry_price or 0
+        )
+
+    @staticmethod
+    def _take_profit_is_actionable(
+        side: Side,
+        take_profit: float,
+        *,
+        reference_price: float,
+        price_tick: Decimal,
+    ) -> bool:
+        if reference_price <= 0:
+            return True
+        buffer = float(price_tick) if price_tick > 0 else 0.0
+        if side == Side.LONG:
+            return take_profit > reference_price + buffer
+        return take_profit < reference_price - buffer
 
     async def _take_profit_quantity_for_plan(
         self, plan: OrderPlan, index: int, total: int

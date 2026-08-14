@@ -1,4 +1,5 @@
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
+from typing import Any
 
 # Operational planning rate, intentionally fixed so risk does not change with FX noise.
 VND_PER_USDT = 26_000.0
@@ -35,7 +36,7 @@ class CapitalRiskProfile:
         result = asdict(self)
         result.update(
             {
-                "mode": "AUTO_CONSERVATIVE",
+                "mode": self.name,
                 "vnd_per_usdt": VND_PER_USDT,
                 "risk_amount_usdt": self.risk_amount_usdt,
                 "risk_amount_vnd": self.risk_amount_vnd,
@@ -57,32 +58,83 @@ def capital_risk_profile(equity_usdt: float) -> CapitalRiskProfile:
         observed = "ABOVE_20M_VND"
 
     live_allowed = equity_vnd >= MIN_LIVE_CAPITAL_VND
-    if not live_allowed:
-        reason = "Vốn Futures dưới 1.000.000 VND quy đổi; chặn lệnh LIVE"
-    elif observed == "1M_TO_5M_VND":
-        reason = "Profile vốn 1–5 triệu VND"
-    else:
-        reason = (
-            f"Vốn thuộc bậc {observed}, nhưng AUTO_CONSERVATIVE giữ trần rủi ro "
-            "bậc 1–5 triệu cho tới khi có gate hiệu suất được phê duyệt"
-        )
+    reason = "Vốn Futures dưới 1.000.000 VND quy đổi; chặn lệnh LIVE"
+    name = "LIVE_BLOCKED_BELOW_1M"
+    risk_per_trade = 0.0025
+    max_risk_per_trade = 0.005
+    max_leverage = 3
+    max_open_positions = 1
+    max_margin_per_trade = 0.10
+    max_total_margin = 0.15
+    max_daily_loss = 0.02
+    max_weekly_drawdown = 0.05
+    max_portfolio_exposure = 0.30
 
-    # AUTO_CONSERVATIVE deliberately caps risk-taking parameters at the first live tier.
-    # Equity still scales every order's monetary risk and position quantity.
+    if live_allowed and observed == "1M_TO_5M_VND":
+        name = "LIVE_TIER_1M_TO_5M"
+        reason = "LIVE tự chỉnh theo vốn 1–5 triệu VND: ưu tiên bảo toàn vốn."
+    elif observed == "5M_TO_20M_VND":
+        name = "LIVE_TIER_5M_TO_20M"
+        risk_per_trade = 0.0035
+        max_risk_per_trade = 0.006
+        max_leverage = 5
+        max_open_positions = 2
+        max_margin_per_trade = 0.12
+        max_total_margin = 0.25
+        max_daily_loss = 0.03
+        max_weekly_drawdown = 0.06
+        max_portfolio_exposure = 0.50
+        reason = "LIVE tự chỉnh theo vốn 5–20 triệu VND: tăng room vừa phải."
+    elif observed == "ABOVE_20M_VND":
+        name = "LIVE_TIER_ABOVE_20M"
+        risk_per_trade = 0.005
+        max_risk_per_trade = 0.0075
+        max_leverage = 7
+        max_open_positions = 3
+        max_margin_per_trade = 0.15
+        max_total_margin = 0.35
+        max_daily_loss = 0.04
+        max_weekly_drawdown = 0.08
+        max_portfolio_exposure = 0.75
+        reason = "LIVE tự chỉnh theo vốn trên 20 triệu VND: linh hoạt hơn nhưng vẫn thấp hơn DEMO."
+
     return CapitalRiskProfile(
-        name="AUTO_CONSERVATIVE_1M_TO_5M",
+        name=name,
         observed_tier=observed,
         equity_usdt=equity_usdt,
         equity_vnd=equity_vnd,
-        risk_per_trade=0.0025,
-        max_risk_per_trade=0.005,
-        max_leverage=3,
-        max_open_positions=1,
-        max_margin_per_trade=0.10,
-        max_total_margin=0.15,
-        max_daily_loss=0.02,
-        max_weekly_drawdown=0.05,
-        max_portfolio_exposure=0.30,
+        risk_per_trade=risk_per_trade,
+        max_risk_per_trade=max_risk_per_trade,
+        max_leverage=max_leverage,
+        max_open_positions=max_open_positions,
+        max_margin_per_trade=max_margin_per_trade,
+        max_total_margin=max_total_margin,
+        max_daily_loss=max_daily_loss,
+        max_weekly_drawdown=max_weekly_drawdown,
+        max_portfolio_exposure=max_portfolio_exposure,
         live_allowed=live_allowed,
         reason=reason,
+    )
+
+
+def capital_risk_profile_for_mode(
+    equity_usdt: float, *, mode: str, settings: Any
+) -> CapitalRiskProfile:
+    profile = capital_risk_profile(equity_usdt)
+    if mode != "DEMO":
+        return profile
+
+    return replace(
+        profile,
+        name="DEMO_SETTINGS",
+        risk_per_trade=settings.risk_per_trade,
+        max_risk_per_trade=settings.max_risk_per_trade,
+        max_leverage=min(int(settings.max_leverage), 10),
+        max_open_positions=settings.max_open_positions,
+        max_margin_per_trade=settings.max_margin_per_trade,
+        max_total_margin=settings.max_total_margin,
+        max_daily_loss=settings.max_daily_loss,
+        max_weekly_drawdown=settings.max_weekly_drawdown,
+        max_portfolio_exposure=settings.max_portfolio_exposure,
+        reason="DEMO dùng giới hạn từ BotSettings; profile vốn chỉ dùng để quan sát.",
     )

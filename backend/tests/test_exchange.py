@@ -148,6 +148,33 @@ async def test_binance_demo_places_entry_sl_and_reduce_only_take_profits():
     assert any(params.get("reduceOnly") == "true" for _, _, params in adapter.calls)
 
 
+async def test_take_profit_skips_levels_that_would_immediately_trigger():
+    adapter = FakeBinanceAdapter()
+    adapter.position_risk = [
+        {
+            "symbol": "BTCUSDT",
+            "positionAmt": "-0.01",
+            "entryPrice": "100",
+            "markPrice": "104",
+            "unRealizedProfit": "0",
+            "leverage": "2",
+            "marginType": "isolated",
+        }
+    ]
+
+    result = await adapter.submit_order_plan(
+        plan(side=Side.SHORT, stop_loss=110.0, take_profits=[105.0, 103.0, 100.0])
+    )
+
+    assert result.accepted is True
+    trigger_prices = [
+        params.get("triggerPrice")
+        for _, path, params in adapter.calls
+        if path == "/fapi/v1/algoOrder" and params.get("type") == "TAKE_PROFIT_MARKET"
+    ]
+    assert trigger_prices == ["103", "100"]
+
+
 async def test_sl_failure_closes_position_and_returns_critical_alert():
     adapter = FakeBinanceAdapter()
     adapter.sl_exists = False

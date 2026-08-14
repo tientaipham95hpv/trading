@@ -15,7 +15,10 @@ from app.domain.models import (
     Timeframe,
     TradingMode,
 )
-from app.services.capital_risk import CapitalRiskProfile, capital_risk_profile
+from app.services.capital_risk import (
+    CapitalRiskProfile,
+    capital_risk_profile_for_mode,
+)
 from app.services.exchange import ExchangeCredentialsError, ExchangeError
 from app.services.risk_engine import RiskEngine
 from app.services.smart_entry import SmartEntryAnalytics
@@ -107,7 +110,7 @@ class AutoTrader:
 
         snapshot = None
         account_equity = self.state.execution.performance().equity
-        profile = capital_risk_profile(account_equity)
+        profile = self._capital_profile(account_equity)
         self.active_capital_profile = profile
         active_symbols: set[str] = set()
         open_position_count = len(self.state.execution.open_positions())
@@ -123,7 +126,7 @@ class AutoTrader:
                 account_equity = max(
                     snapshot.balance.margin_balance or snapshot.balance.available, 1.0
                 )
-                profile = capital_risk_profile(account_equity)
+                profile = self._capital_profile(account_equity)
                 self.active_capital_profile = profile
             except (ExchangeCredentialsError, ExchangeError) as exc:
                 self.rejected += 1
@@ -764,6 +767,13 @@ class AutoTrader:
             extreme_volatility_atr_fraction=settings.extreme_volatility_atr_fraction,
             stale_data_seconds=settings.stale_data_seconds,
             minimum_risk_reward=settings.minimum_risk_reward,
+        )
+
+    def _capital_profile(self, account_equity: float) -> CapitalRiskProfile:
+        return capital_risk_profile_for_mode(
+            account_equity,
+            mode=self.state.trading_mode.value,
+            settings=self.state.bot_settings,
         )
 
     def _candidate_has_enough_confirmation(self, result: Any) -> tuple[bool, str]:
