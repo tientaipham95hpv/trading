@@ -30,13 +30,13 @@ import Testing
         "max_leverage": 5,
         "risk_per_trade": 0.005,
         "max_risk_per_trade": 0.01,
-        "max_total_open_risk": 0.03,
-        "max_margin_per_trade": 0.10,
-        "max_total_margin": 0.30,
+        "max_total_open_risk": 0.05,
+        "max_margin_per_trade": 0.15,
+        "max_total_margin": 0.50,
         "max_daily_loss": 0.04,
         "max_weekly_drawdown": 0.08,
-        "max_open_positions": 4,
-        "max_portfolio_exposure": 0.30,
+        "max_open_positions": 5,
+        "max_portfolio_exposure": 1.00,
         "max_correlated_positions": 2,
         "max_loss_streak": 3,
         "minimum_risk_reward": 1.8
@@ -62,7 +62,7 @@ import Testing
     #expect(status.liveEnabled == false)
     #expect(status.botState == "PAUSED")
     #expect(status.exchange.connection == "DISCONNECTED")
-    #expect(status.risk.maxOpenPositions == 4)
+    #expect(status.risk.maxOpenPositions == 5)
 }
 
 @Test func scannerRealtimeEnvelopeDecodesItems() async throws {
