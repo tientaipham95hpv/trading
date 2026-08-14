@@ -471,15 +471,15 @@ function Dashboard({
         <SignalFocus scanner={scanner} />
       </div>
       <DataPanel title="Đường vốn">
-        <div className="mb-3 flex items-center justify-between gap-3">
-          <span className="text-sm font-semibold text-slate-400">
-            Số dư {money(performance?.balance)}
-          </span>
-          <span
-            className={`text-sm font-black ${(performance?.realized_pnl ?? 0) >= 0 ? "text-emerald-300" : "text-red-300"}`}
-          >
-            Đã chốt {money(performance?.realized_pnl)}
-          </span>
+        <div className="mb-3 grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
+          <CompactMetric label="Vốn ban đầu" value={money(performance?.initial_capital)} />
+          <CompactMetric label="Số dư" value={money(performance?.balance)} />
+          <CompactMetric label="Equity" value={money(performance?.equity)} />
+          <CompactMetric
+            label="Đã chốt"
+            tone={(performance?.realized_pnl ?? 0) >= 0 ? "good" : "bad"}
+            value={money(performance?.realized_pnl)}
+          />
         </div>
         <EquityChart values={equitySeries} />
       </DataPanel>
@@ -2534,6 +2534,33 @@ function Metric({
   );
 }
 
+function CompactMetric({
+  label,
+  tone = "neutral",
+  value,
+}: {
+  label: string;
+  tone?: "neutral" | "good" | "bad";
+  value: string;
+}) {
+  const color =
+    tone === "good"
+      ? "text-emerald-300"
+      : tone === "bad"
+        ? "text-red-300"
+        : "text-slate-100";
+  return (
+    <div className="min-w-0 rounded-md border border-white/10 bg-white/[0.035] px-3 py-2">
+      <p className="truncate text-[11px] font-black uppercase text-slate-500">
+        {label}
+      </p>
+      <strong className={`mt-1 block break-words text-sm leading-tight ${color}`}>
+        {value}
+      </strong>
+    </div>
+  );
+}
+
 function NumberField({
   label,
   onChange,
@@ -2651,7 +2678,13 @@ function EmptyState({ message, title }: { title: string; message: string }) {
 }
 
 function buildEquitySeries(performance: Performance | null) {
-  return performance ? [performance.equity] : [];
+  if (!performance) return [];
+  const realizedBalance = performance.initial_capital + performance.net_pnl;
+  return [
+    performance.initial_capital,
+    realizedBalance,
+    performance.equity,
+  ].filter((value) => Number.isFinite(value));
 }
 
 function profitFactor(performance: Performance | null) {

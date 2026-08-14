@@ -1092,7 +1092,8 @@ class BinanceFuturesAdapter(ExchangeAdapter):
         async with httpx.AsyncClient(timeout=5) as client:
             response = await client.get(f"{self.base_url}/fapi/v1/time")
         local_after = int(time.time() * 1000)
-        response.raise_for_status()
+        if response.status_code >= 400:
+            raise ExchangeError(f"Binance {response.status_code}: {response.text}")
         server_time = int(response.json()["serverTime"])
         # Midpoint removes most request latency from the estimated server offset.
         local_midpoint = (local_before + local_after) // 2

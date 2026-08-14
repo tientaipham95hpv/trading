@@ -254,9 +254,17 @@ async def register_push_device(device: PushDeviceRegistration) -> dict[str, obje
 async def performance() -> dict[str, object]:
     if state.trading_mode in {TradingMode.DEMO, TradingMode.LIVE}:
         adapter = _current_adapter()
-        snapshot = await adapter.snapshot()
-        income = await adapter.income_history(limit=200)
-        income = _income_since_reset(income)
+        try:
+            snapshot = await adapter.snapshot()
+            income = _income_since_reset(await adapter.income_history(limit=200))
+        except ExchangeError as exc:
+            await state.storage.log(
+                "Performance dùng exchange cache",
+                {"mode": state.trading_mode.value, "error": str(exc)},
+                level="WARNING",
+            )
+            snapshot = adapter.snapshot_cache
+            income = []
         performance = _exchange_performance(
             snapshot, income, initial_capital=state.performance_initial_capital_for()
         )
@@ -783,8 +791,15 @@ async def _channel_payload(channel: str) -> dict[str, object]:
             "items": _exchange_positions_for_app(_current_adapter().snapshot_cache),
         }
     if channel == "performance":
-        # Keep this legacy channel cheap. Clients refresh full performance via
-        # the REST endpoint at a much lower cadence.
+        # Keep this legacy channel cheap. In DEMO/LIVE it must still reflect
+        # the active exchange cache, not PAPER's simulation balance.
+        if state.trading_mode in {TradingMode.DEMO, TradingMode.LIVE}:
+            performance = _exchange_performance(
+                _current_adapter().snapshot_cache,
+                [],
+                initial_capital=state.performance_initial_capital_for(),
+            )
+            return {"channel": channel, "data": performance.model_dump(mode="json")}
         return {
             "channel": channel,
             "data": state.execution.performance().model_dump(mode="json"),
