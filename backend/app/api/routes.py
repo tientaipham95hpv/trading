@@ -566,6 +566,17 @@ async def exchange_snapshot() -> dict[str, object]:
 async def exchange_reconcile() -> dict[str, object]:
     adapter = state.live_exchange if state.trading_mode == TradingMode.LIVE else state.demo_exchange
     try:
+        snapshot = await adapter.snapshot()
+        exchange_symbols = {
+            position.symbol for position in snapshot.positions if abs(position.quantity) > 0
+        }
+        pruned = state.execution.prune_positions_not_on_exchange(exchange_symbols)
+        if pruned:
+            await state.storage.log(
+                "Đóng vị thế local không còn trên Binance (manual reconcile)",
+                {"mode": state.trading_mode.value, "symbols": pruned},
+                level="WARNING",
+            )
         snapshot = await adapter.reconcile(
             [position.model_dump(mode="json") for position in state.execution.open_positions()]
         )

@@ -63,3 +63,17 @@ async def test_short_stop_loss_and_fee_slippage_reduce_pnl():
     assert trades[0].reason == "SL"
     assert trades[0].net_pnl < trades[0].gross_pnl
     assert service.performance().fees_paid > 0
+
+
+async def test_prune_positions_not_on_exchange_closes_stale_local_positions():
+    service = ExecutionService(BotSettings(slippage_bps=0, taker_fee_rate=0))
+    await service.submit_order_plan(long_plan(client_order_id="sim-A", symbol="AAAUSDT"))
+    await service.submit_order_plan(long_plan(client_order_id="sim-B", symbol="BBBUSDT"))
+
+    pruned = service.prune_positions_not_on_exchange({"BBBUSDT"})
+
+    assert pruned == ["AAAUSDT"]
+    open_symbols = {position.symbol for position in service.open_positions()}
+    assert open_symbols == {"BBBUSDT"}
+    # Pruning again is a no-op because the position is already CLOSED.
+    assert service.prune_positions_not_on_exchange({"BBBUSDT"}) == []

@@ -112,6 +112,18 @@ class UserStreamWatchdog:
         # symbol reconciliation performed after a process restart.
         initial_snapshot = await adapter.snapshot()
         self._restore_managed_positions(initial_snapshot)
+        exchange_symbols = {
+            position.symbol
+            for position in initial_snapshot.positions
+            if abs(position.quantity) > 0
+        }
+        pruned = self.state.execution.prune_positions_not_on_exchange(exchange_symbols)
+        if pruned:
+            await self.state.storage.log(
+                "Đóng vị thế local không còn trên Binance",
+                {"mode": self.state.trading_mode.value, "symbols": pruned},
+                level="WARNING",
+            )
         local_positions = (
             [position.model_dump(mode="json") for position in self.state.execution.open_positions()]
             if hasattr(self.state, "execution")

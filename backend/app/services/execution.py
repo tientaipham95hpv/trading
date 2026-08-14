@@ -116,6 +116,22 @@ class ExecutionService:
             and (symbol is None or position.symbol == symbol)
         ]
 
+    def prune_positions_not_on_exchange(self, exchange_symbols: set[str]) -> list[str]:
+        """Drop local OPEN positions that Binance no longer holds.
+
+        DEMO/LIVE positions are authoritative on the exchange. A position that
+        closed remotely (TP/SL/manual) but stayed OPEN locally makes symbol
+        reconciliation latch SAFE_MODE forever.
+        """
+        pruned: list[str] = []
+        for position in self.positions:
+            if position.status == PositionStatus.OPEN and position.symbol not in exchange_symbols:
+                position.status = PositionStatus.CLOSED
+                position.remaining_quantity = 0.0
+                position.closed_at = datetime.now(UTC)
+                pruned.append(position.symbol)
+        return pruned
+
     def cancel_open_orders(self) -> list[PaperOrder]:
         self.orders = [
             order.model_copy(update={"status": OrderStatus.CANCELED})
