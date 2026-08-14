@@ -196,7 +196,7 @@ export function DashboardApp({ page }: { page: PageKey }) {
         attempts.set(channel, 0);
         markLive();
       };
-      socket.onmessage = (event) => {
+      socket.onmessage = async (event) => {
         markLive();
         const payload = JSON.parse(event.data) as RealtimePayload;
         if (channel === "system" && payload.data) {
@@ -211,7 +211,11 @@ export function DashboardApp({ page }: { page: PageKey }) {
           setPositions(payload.items);
         }
         if (channel === "performance" && payload.data) {
-          setPerformance(payload.data as Performance);
+          try {
+            setPerformance(await api.performance());
+          } catch {
+            setPerformance(payload.data as Performance);
+          }
         }
       };
       socket.onerror = () => setWsState("STALE");
@@ -301,7 +305,7 @@ export function DashboardApp({ page }: { page: PageKey }) {
       </aside>
 
       <section className="min-w-0">
-        <header className="sticky top-0 z-10 flex flex-col gap-3 border-b border-white/10 bg-[#0b111d]/95 px-4 py-3 shadow-sm shadow-black/30 backdrop-blur md:px-5 md:py-4 xl:flex-row xl:items-center xl:justify-between">
+        <header className="z-10 flex flex-col gap-3 border-b border-white/10 bg-[#0b111d]/95 px-4 py-3 shadow-sm shadow-black/30 backdrop-blur md:sticky md:top-0 md:px-5 md:py-4 xl:flex-row xl:items-center xl:justify-between">
           <div className="min-w-0">
             <p className="text-xs font-bold uppercase text-cyan-300">
               Control Surface
@@ -562,7 +566,7 @@ function CriticalOverview({
             value={money(unrealized)}
             tone={unrealized >= 0 ? "good" : "bad"}
           />
-          <Metric label="Tổng lệnh" value={String(performance?.total_trades ?? 0)} />
+          <Metric label="Lệnh đã đóng" value={String(performance?.total_trades ?? 0)} />
           <Metric label="Lệnh thắng" value={String(performance?.winning_trades ?? 0)} tone="good" />
           <Metric label="Lệnh thua" value={String(performance?.losing_trades ?? 0)} tone="bad" />
           <Metric
@@ -2275,7 +2279,7 @@ function StatusLine({
   ].filter(Boolean);
   return (
     <p
-      className="mt-1 max-w-3xl truncate text-sm font-semibold text-slate-400"
+      className="mt-1 max-w-3xl text-sm font-semibold leading-snug text-slate-400 md:truncate"
       title={parts.join(" • ")}
     >
       {isRefreshing ? "Đang đồng bộ dữ liệu..." : parts.join(" • ")}
