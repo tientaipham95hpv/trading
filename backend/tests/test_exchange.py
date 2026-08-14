@@ -175,6 +175,34 @@ async def test_take_profit_skips_levels_that_would_immediately_trigger():
     assert trigger_prices == ["103", "100"]
 
 
+async def test_invalid_post_entry_stop_loss_closes_without_safe_mode_alert():
+    adapter = FakeBinanceAdapter()
+    adapter.position_risk = [
+        {
+            "symbol": "BTCUSDT",
+            "positionAmt": "-0.01",
+            "entryPrice": "100",
+            "markPrice": "111",
+            "unRealizedProfit": "0",
+            "leverage": "2",
+            "marginType": "isolated",
+        }
+    ]
+
+    result = await adapter.submit_order_plan(
+        plan(side=Side.SHORT, stop_loss=110.0, take_profits=[95.0])
+    )
+
+    assert result.accepted is False
+    assert result.status == "DEMO_SL_INVALID_POSITION_CLOSED"
+    assert result.critical_alert is None
+    assert any(
+        params.get("newClientOrderId") == "demo-BTCUSDT-1-close"
+        for _, path, params in adapter.calls
+        if path == "/fapi/v1/order"
+    )
+
+
 async def test_sl_failure_closes_position_and_returns_critical_alert():
     adapter = FakeBinanceAdapter()
     adapter.sl_exists = False

@@ -132,6 +132,21 @@ class BinanceFuturesAdapter(ExchangeAdapter):
         await self.change_leverage(plan.symbol, plan.leverage)
 
         entry = await self._place_entry(plan)
+        reference_price = await self._post_entry_reference_price(plan, entry)
+        filters = await self._filters_for(plan.symbol)
+        if not self._stop_loss_is_actionable(
+            plan.side,
+            plan.stop_loss,
+            reference_price=reference_price,
+            price_tick=filters["price_tick"],
+        ):
+            await self._close_position_market(plan)
+            return ExchangeExecutionResult(
+                accepted=False,
+                status=f"{self.mode.value}_SL_INVALID_POSITION_CLOSED",
+                client_order_id=plan.client_order_id,
+                order=self._normalize_order(entry).model_dump(mode="json"),
+            )
         sl_order = await self._ensure_stop_loss(plan)
         if sl_order is None:
             await self._close_position_market(plan)
@@ -147,8 +162,6 @@ class BinanceFuturesAdapter(ExchangeAdapter):
         take_profit_orders = []
         try:
             tp_created = 0
-            reference_price = await self._take_profit_reference_price(plan, entry)
-            filters = await self._filters_for(plan.symbol)
             for index, take_profit in enumerate(plan.take_profits):
                 if not self._take_profit_is_actionable(
                     plan.side,
@@ -787,9 +800,7 @@ class BinanceFuturesAdapter(ExchangeAdapter):
             payload["reduceOnly"] = "true"
         return await self._signed("POST", "/fapi/v1/algoOrder", payload)
 
-    async def _take_profit_reference_price(
-        self, plan: OrderPlan, entry: dict[str, Any]
-    ) -> float:
+    async def _post_entry_reference_price(self, plan: OrderPlan, entry: dict[str, Any]) -> float:
         try:
             positions = await self.positions(plan.symbol)
         except ExchangeError:
@@ -806,6 +817,21 @@ class BinanceFuturesAdapter(ExchangeAdapter):
         return float(
             entry.get("avgPrice") or entry.get("price") or fill_price or plan.entry_price or 0
         )
+
+    @staticmethod
+    def _stop_loss_is_actionable(
+        side: Side,
+        stop_loss: float,
+        *,
+        reference_price: float,
+        price_tick: Decimal,
+    ) -> bool:
+        if reference_price <= 0:
+            return True
+        buffer = float(price_tick) if price_tick > 0 else 0.0
+        if side == Side.LONG:
+            return stop_loss < reference_price - buffer
+        return stop_loss > reference_price + buffer
 
     @staticmethod
     def _take_profit_is_actionable(
