@@ -1,0 +1,144 @@
+{
+  "status": "ADVISORY_ONLY_READ_ONLY",
+  "pre_specified_architecture": "SHORT_ONLY_SHARED_GLOBAL_SELECTOR",
+  "objective": "net expectancy after fees/slippage/funding minus 0.5*cell dispersion minus 0.5*cell downside; minimum 24 validation trades and 3 cells",
+  "baseline": {
+    "trades": 133,
+    "net_pnl": -618.1213098639058,
+    "pf": 0.6696539834582872,
+    "expectancy": -4.647528645593277,
+    "avg_r": -0.1879100793780073,
+    "profitable_folds": 4,
+    "folds_total": 18,
+    "by_side": {
+      "LONG": {
+        "trades": 74,
+        "net_pnl": -509.2217541113123,
+        "pf": 0.5318678123859071,
+        "expectancy": -6.881375055558275,
+        "avg_r": -0.2759568907642592
+      },
+      "SHORT": {
+        "trades": 59,
+        "net_pnl": -108.89955575259356,
+        "pf": 0.8609839347606066,
+        "expectancy": -1.8457551822473484,
+        "avg_r": -0.0774784854359286
+      }
+    },
+    "by_dataset": {
+      "BTCUSDT/1h": {
+        "trades": 10,
+        "net_pnl": -26.71925371996356,
+        "pf": 0.6899989661499055,
+        "expectancy": -2.6719253719963563,
+        "avg_r": -0.10637124661279813
+      },
+      "BTCUSDT/4h": {
+        "trades": 37,
+        "net_pnl": -147.8692063906447,
+        "pf": 0.7385155924864201,
+        "expectancy": -3.996465037584992,
+        "avg_r": -0.16156635346457188
+      },
+      "ETHUSDT/1h": {
+        "trades": 23,
+        "net_pnl": -139.24917309128296,
+        "pf": 0.5523568563941881,
+        "expectancy": -6.054311873534041,
+        "avg_r": -0.24348070117375392
+      },
+      "ETHUSDT/4h": {
+        "trades": 32,
+        "net_pnl": -175.35471183383729,
+        "pf": 0.6036074829945306,
+        "expectancy": -5.479834744807415,
+        "avg_r": -0.22302332456720506
+      },
+      "SOLUSDT/1h": {
+        "trades": 12,
+        "net_pnl": -113.55171960183927,
+        "pf": 0.4810939993140475,
+        "expectancy": -9.462643300153273,
+        "avg_r": -0.3845810811790125
+      },
+      "SOLUSDT/4h": {
+        "trades": 19,
+        "net_pnl": -15.377245226338104,
+        "pf": 0.9377856554958844,
+        "expectancy": -0.8093286961230581,
+        "avg_r": -0.0315051329296199
+      }
+    }
+  },
+  "v2": {
+    "trades": 59,
+    "net_pnl": -108.89955575259356,
+    "pf": 0.8609839347606066,
+    "expectancy": -1.8457551822473484,
+    "avg_r": -0.0774784854359286,
+    "profitable_folds": 6,
+    "folds_total": 18,
+    "by_side": {
+      "SHORT": {
+        "trades": 59,
+        "net_pnl": -108.89955575259356,
+        "pf": 0.8609839347606066,
+        "expectancy": -1.8457551822473484,
+        "avg_r": -0.0774784854359286
+      }
+    },
+    "by_dataset": {
+      "BTCUSDT/1h": {
+        "trades": 4,
+        "net_pnl": -45.15403300338855,
+        "pf": 0.2136550265500074,
+        "expectancy": -11.288508250847137,
+        "avg_r": -0.4509301175875426
+      },
+      "BTCUSDT/4h": {
+        "trades": 19,
+        "net_pnl": -61.43777051331325,
+        "pf": 0.7903422069871094,
+        "expectancy": -3.23356686912175,
+        "avg_r": -0.1381024102613911
+      },
+      "ETHUSDT/1h": {
+        "trades": 5,
+        "net_pnl": -41.77759580055239,
+        "pf": 0.2948814246685347,
+        "expectancy": -8.355519160110477,
+        "avg_r": -0.3375203644862705
+      },
+      "ETHUSDT/4h": {
+        "trades": 11,
+        "net_pnl": -17.569396291072948,
+        "pf": 0.8869533511878314,
+        "expectancy": -1.5972178446429952,
+        "avg_r": -0.060917316013880965
+      },
+      "SOLUSDT/1h": {
+        "trades": 7,
+        "net_pnl": -25.064702671535144,
+        "pf": 0.7713503576863522,
+        "expectancy": -3.580671810219306,
+        "avg_r": -0.14447111941088164
+      },
+      "SOLUSDT/4h": {
+        "trades": 13,
+        "net_pnl": 82.10394252726871,
+        "pf": 1.7559403479691307,
+        "expectancy": 6.315687886712978,
+        "avg_r": 0.24810967377361762
+      }
+    }
+  },
+  "selection_stability": {
+    "unique_configs": 1,
+    "modal_share": 1.0,
+    "counts": {
+      "SHORT_ONLY_EXISTING_LOCKED_CONFIG": 18
+    }
+  },
+  "decision": "REJECT"
+}

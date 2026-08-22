@@ -1,0 +1,22 @@
+{
+  "status": "BLOCKED_INSUFFICIENT_FRESH_DISJOINT_DATA",
+  "decision": "NO_OOS_RUN_NO_CANDIDATE",
+  "checked_at_utc": "2026-08-22T02:18:50.996000+00:00",
+  "preregistration": "reports/btc_short_only_preregistration.md",
+  "hypothesis": "BTCUSDT-only, SHORT-only; unchanged V3 signal/grid/risk/exits/costs",
+  "prior_locked_sources": [
+    "reports/oos_attribution.json",
+    "reports/strategy_v3_trend_pullback.json"
+  ],
+  "prior_locked_max_timestamp": 1786780799999,
+  "prior_locked_max_utc": "2026-08-15T07:59:59.999000+00:00",
+  "fresh_data_rule": "completed BTCUSDT 1h candles must open strictly after prior_locked_max_timestamp",
+  "fresh_completed_candles": 162,
+  "fresh_window_start_utc": "2026-08-15T08:00:00+00:00",
+  "fresh_window_end_utc": "2026-08-22T01:59:59.999000+00:00",
+  "minimum_candles_for_frozen_v3_walk_forward": 1200,
+  "missing_candles": 1038,
+  "estimated_earliest_eligible_utc": "2026-10-04T08:00:00Z",
+  "reason": "The frozen V3 runner requires at least 1200 candles before creating three expanding train/validation/OOS folds. Running earlier would weaken or change the preregistered protocol, so no OOS metrics were generated.",
+  "runtime_mutation": false
+}

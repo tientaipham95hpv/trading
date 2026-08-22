@@ -1,0 +1,386 @@
+{
+  "status": "ADVISORY_ONLY_READ_ONLY",
+  "source": "reports/oos_attribution.json",
+  "source_trade_count": 133,
+  "methodology": [
+    "Uses the frozen OOS trade ledger only; no runtime/API access.",
+    "All exclusions are post-hoc diagnostics, not validation-selected rules and therefore cannot be promoted.",
+    "A future candidate requires fresh disjoint walk-forward validation."
+  ],
+  "baseline": {
+    "metrics": {
+      "trades": 133,
+      "net_pnl": -618.1213098639058,
+      "pf": 0.6696539834582872,
+      "expectancy": -4.647528645593277,
+      "avg_r": -0.1879100793780073,
+      "win_rate": 0.48120300751879697,
+      "stop_loss_trades": 113,
+      "stop_loss_pnl": -1390.4138177117125
+    },
+    "by_fold": {
+      "1": {
+        "trades": 41,
+        "net_pnl": -166.2656957690941,
+        "pf": 0.6988362844650458,
+        "expectancy": -4.0552608724169295,
+        "avg_r": -0.16653055632681757,
+        "win_rate": 0.4878048780487805,
+        "stop_loss_trades": 35,
+        "stop_loss_pnl": -402.4160832107498
+      },
+      "2": {
+        "trades": 48,
+        "net_pnl": -81.8222303073604,
+        "pf": 0.8759011095794499,
+        "expectancy": -1.7046297980700083,
+        "avg_r": -0.06681233619988285,
+        "win_rate": 0.5,
+        "stop_loss_trades": 38,
+        "stop_loss_pnl": -487.75515878688134
+      },
+      "3": {
+        "trades": 44,
+        "net_pnl": -370.0333837874514,
+        "pf": 0.4391093167038052,
+        "expectancy": -8.409849631532985,
+        "avg_r": -0.3399385365972971,
+        "win_rate": 0.45454545454545453,
+        "stop_loss_trades": 40,
+        "stop_loss_pnl": -500.2425757140813
+      }
+    }
+  },
+  "hypothesis_breakdown": {
+    "side": {
+      "LONG": {
+        "trades": 74,
+        "net_pnl": -509.2217541113123,
+        "pf": 0.5318678123859071,
+        "expectancy": -6.881375055558275,
+        "avg_r": -0.2759568907642593,
+        "win_rate": 0.4594594594594595,
+        "stop_loss_trades": 66,
+        "stop_loss_pnl": -825.8289831444145
+      },
+      "SHORT": {
+        "trades": 59,
+        "net_pnl": -108.89955575259356,
+        "pf": 0.8609839347606066,
+        "expectancy": -1.8457551822473484,
+        "avg_r": -0.0774784854359286,
+        "win_rate": 0.5084745762711864,
+        "stop_loss_trades": 47,
+        "stop_loss_pnl": -564.584834567298
+      }
+    },
+    "symbol": {
+      "BTCUSDT": {
+        "trades": 47,
+        "net_pnl": -174.58846011060825,
+        "pf": 0.7320989073950488,
+        "expectancy": -3.71464808745975,
+        "avg_r": -0.14982271370887534,
+        "win_rate": 0.48936170212765956,
+        "stop_loss_trades": 37,
+        "stop_loss_pnl": -547.9265829536361
+      },
+      "ETHUSDT": {
+        "trades": 55,
+        "net_pnl": -314.6038849251202,
+        "pf": 0.5824479331596817,
+        "expectancy": -5.720070635002186,
+        "avg_r": -0.23157822751176185,
+        "win_rate": 0.4909090909090909,
+        "stop_loss_trades": 50,
+        "stop_loss_pnl": -511.1560424656719
+      },
+      "SOLUSDT": {
+        "trades": 31,
+        "net_pnl": -128.92896482817739,
+        "pf": 0.7233252341052081,
+        "expectancy": -4.158998865425077,
+        "avg_r": -0.168179693542288,
+        "win_rate": 0.45161290322580644,
+        "stop_loss_trades": 26,
+        "stop_loss_pnl": -331.33119229240447
+      }
+    },
+    "stop_loss": {
+      "all_stop_losses": {
+        "trades": 113,
+        "net_pnl": -1390.4138177117125,
+        "pf": 0.25691339435175103,
+        "expectancy": -12.304547059395686,
+        "avg_r": -0.49781251478312305,
+        "win_rate": 0.3893805309734513,
+        "stop_loss_trades": 113,
+        "stop_loss_pnl": -1390.4138177117125
+      },
+      "non_stop_exits": {
+        "trades": 20,
+        "net_pnl": 772.2925078478065,
+        "pf": null,
+        "expectancy": 38.61462539239032,
+        "avg_r": 1.5630386806608965,
+        "win_rate": 1.0,
+        "stop_loss_trades": 0,
+        "stop_loss_pnl": 0
+      }
+    }
+  },
+  "post_hoc_exclusion_diagnostics": [
+    {
+      "name": "SHORT_only",
+      "metrics": {
+        "trades": 59,
+        "net_pnl": -108.89955575259356,
+        "pf": 0.8609839347606066,
+        "expectancy": -1.8457551822473484,
+        "avg_r": -0.0774784854359286,
+        "win_rate": 0.5084745762711864,
+        "stop_loss_trades": 47,
+        "stop_loss_pnl": -564.584834567298,
+        "profitable_folds": 1,
+        "folds_total": 3,
+        "eligible_for_future_preregistered_test": false
+      },
+      "by_fold": {
+        "1": {
+          "trades": 17,
+          "net_pnl": -147.52908973630215,
+          "pf": 0.4880475652828458,
+          "expectancy": -8.678181749194245,
+          "avg_r": -0.36164168483650494,
+          "win_rate": 0.35294117647058826,
+          "stop_loss_trades": 15,
+          "stop_loss_pnl": -226.53124475355472
+        },
+        "2": {
+          "trades": 20,
+          "net_pnl": 126.12218502581456,
+          "pf": 1.57920775200634,
+          "expectancy": 6.306109251290728,
+          "avg_r": 0.25425826638494664,
+          "win_rate": 0.6,
+          "stop_loss_trades": 13,
+          "stop_loss_pnl": -159.89520825053273
+        },
+        "3": {
+          "trades": 22,
+          "net_pnl": -87.49265104210595,
+          "pf": 0.6846435519365268,
+          "expectancy": -3.9769386837320884,
+          "avg_r": -0.15947669664536976,
+          "win_rate": 0.5454545454545454,
+          "stop_loss_trades": 19,
+          "stop_loss_pnl": -178.15838156321053
+        }
+      },
+      "verdict": "DESCRIPTIVE_ONLY_REJECT_POST_HOC"
+    },
+    {
+      "name": "BTC_only",
+      "metrics": {
+        "trades": 47,
+        "net_pnl": -174.58846011060825,
+        "pf": 0.7320989073950488,
+        "expectancy": -3.71464808745975,
+        "avg_r": -0.14982271370887534,
+        "win_rate": 0.48936170212765956,
+        "stop_loss_trades": 37,
+        "stop_loss_pnl": -547.9265829536361,
+        "profitable_folds": 0,
+        "folds_total": 3,
+        "eligible_for_future_preregistered_test": false
+      },
+      "by_fold": {
+        "1": {
+          "trades": 19,
+          "net_pnl": -23.33566039901163,
+          "pf": 0.9013626256086676,
+          "expectancy": -1.2281926525795595,
+          "avg_r": -0.05175912187482071,
+          "win_rate": 0.5263157894736842,
+          "stop_loss_trades": 15,
+          "stop_loss_pnl": -179.7128952789833
+        },
+        "2": {
+          "trades": 17,
+          "net_pnl": -55.164824197394,
+          "pf": 0.7782691782261081,
+          "expectancy": -3.244989658670235,
+          "avg_r": -0.12769166437883928,
+          "win_rate": 0.47058823529411764,
+          "stop_loss_trades": 13,
+          "stop_loss_pnl": -219.38815730837092
+        },
+        "3": {
+          "trades": 11,
+          "net_pnl": -96.08797551420264,
+          "pf": 0.42226289131172234,
+          "expectancy": -8.735270501291149,
+          "avg_r": -0.35340781220502543,
+          "win_rate": 0.45454545454545453,
+          "stop_loss_trades": 9,
+          "stop_loss_pnl": -148.82553036628184
+        }
+      },
+      "verdict": "DESCRIPTIVE_ONLY_REJECT_POST_HOC"
+    },
+    {
+      "name": "exclude_ETH_SOL",
+      "metrics": {
+        "trades": 47,
+        "net_pnl": -174.58846011060825,
+        "pf": 0.7320989073950488,
+        "expectancy": -3.71464808745975,
+        "avg_r": -0.14982271370887534,
+        "win_rate": 0.48936170212765956,
+        "stop_loss_trades": 37,
+        "stop_loss_pnl": -547.9265829536361,
+        "profitable_folds": 0,
+        "folds_total": 3,
+        "eligible_for_future_preregistered_test": false
+      },
+      "by_fold": {
+        "1": {
+          "trades": 19,
+          "net_pnl": -23.33566039901163,
+          "pf": 0.9013626256086676,
+          "expectancy": -1.2281926525795595,
+          "avg_r": -0.05175912187482071,
+          "win_rate": 0.5263157894736842,
+          "stop_loss_trades": 15,
+          "stop_loss_pnl": -179.7128952789833
+        },
+        "2": {
+          "trades": 17,
+          "net_pnl": -55.164824197394,
+          "pf": 0.7782691782261081,
+          "expectancy": -3.244989658670235,
+          "avg_r": -0.12769166437883928,
+          "win_rate": 0.47058823529411764,
+          "stop_loss_trades": 13,
+          "stop_loss_pnl": -219.38815730837092
+        },
+        "3": {
+          "trades": 11,
+          "net_pnl": -96.08797551420264,
+          "pf": 0.42226289131172234,
+          "expectancy": -8.735270501291149,
+          "avg_r": -0.35340781220502543,
+          "win_rate": 0.45454545454545453,
+          "stop_loss_trades": 9,
+          "stop_loss_pnl": -148.82553036628184
+        }
+      },
+      "verdict": "DESCRIPTIVE_ONLY_REJECT_POST_HOC"
+    },
+    {
+      "name": "SHORT_and_BTC_only",
+      "metrics": {
+        "trades": 23,
+        "net_pnl": -106.59180351670179,
+        "pf": 0.6958526051931728,
+        "expectancy": -4.6344262398566,
+        "avg_r": -0.19250722892680877,
+        "win_rate": 0.43478260869565216,
+        "stop_loss_trades": 17,
+        "stop_loss_pnl": -322.08896710703914,
+        "profitable_folds": 1,
+        "folds_total": 3,
+        "eligible_for_future_preregistered_test": false
+      },
+      "by_fold": {
+        "1": {
+          "trades": 8,
+          "net_pnl": -111.02748873939207,
+          "pf": 0.296250562351889,
+          "expectancy": -13.878436092424009,
+          "avg_r": -0.5726664496257889,
+          "win_rate": 0.25,
+          "stop_loss_trades": 7,
+          "stop_loss_pnl": -150.49835255991752
+        },
+        "2": {
+          "trades": 8,
+          "net_pnl": 56.90088608774554,
+          "pf": 1.694549155583066,
+          "expectancy": 7.112610760968193,
+          "avg_r": 0.28304041663745144,
+          "win_rate": 0.625,
+          "stop_loss_trades": 5,
+          "stop_loss_pnl": -66.38785882998714
+        },
+        "3": {
+          "trades": 7,
+          "net_pnl": -52.465200865055266,
+          "pf": 0.5263609803816304,
+          "expectancy": -7.495028695007895,
+          "avg_r": -0.30152257162998597,
+          "win_rate": 0.42857142857142855,
+          "stop_loss_trades": 5,
+          "stop_loss_pnl": -105.20275571713447
+        }
+      },
+      "verdict": "DESCRIPTIVE_ONLY_REJECT_POST_HOC"
+    },
+    {
+      "name": "exclude_LONG_ETH_SOL",
+      "metrics": {
+        "trades": 83,
+        "net_pnl": -176.89621234650002,
+        "pf": 0.8369001556976977,
+        "expectancy": -2.1312796668253013,
+        "avg_r": -0.08656905927373887,
+        "win_rate": 0.5180722891566265,
+        "stop_loss_trades": 67,
+        "stop_loss_pnl": -790.4224504138949,
+        "profitable_folds": 1,
+        "folds_total": 3,
+        "eligible_for_future_preregistered_test": false
+      },
+      "by_fold": {
+        "1": {
+          "trades": 28,
+          "net_pnl": -59.83726139592172,
+          "pf": 0.8369486627756834,
+          "expectancy": -2.1370450498543474,
+          "avg_r": -0.09107144145842383,
+          "win_rate": 0.5,
+          "stop_loss_trades": 23,
+          "stop_loss_pnl": -255.7457874726205
+        },
+        "2": {
+          "trades": 29,
+          "net_pnl": 14.056474740675014,
+          "pf": 1.0365467362499763,
+          "expectancy": 0.4847060255405177,
+          "avg_r": 0.022416679315829423,
+          "win_rate": 0.5172413793103449,
+          "stop_loss_trades": 21,
+          "stop_loss_pnl": -312.89550672891653
+        },
+        "3": {
+          "trades": 26,
+          "net_pnl": -131.1154256912533,
+          "pf": 0.6062456556455549,
+          "expectancy": -5.042900988125127,
+          "avg_r": -0.20328135611705817,
+          "win_rate": 0.5384615384615384,
+          "stop_loss_trades": 23,
+          "stop_loss_pnl": -221.7811562123579
+        }
+      },
+      "verdict": "DESCRIPTIVE_ONLY_REJECT_POST_HOC"
+    }
+  ],
+  "verdict": {
+    "long_hypothesis": "SUPPORTED descriptively: LONG PF and avg-R are materially worse than SHORT, but SHORT remains unprofitable.",
+    "eth_sol_hypothesis": "SUPPORTED descriptively: BTC is the only non-negative symbol aggregate; ETH and SOL are negative.",
+    "stop_loss_hypothesis": "SUPPORTED: stop-loss exits are the loss source, but removing them is not an executable strategy change.",
+    "candidate": "NO_PROMOTABLE_CANDIDATE. The most favorable simple post-hoc subset must still be re-tested against fresh, disjoint data; no rule is enabled or changed.",
+    "next_experiment": "Preregister one minimal experiment: BTC-only, SHORT-only with unchanged sizing/exits; compare to frozen baseline over new disjoint 3-fold walk-forward data. Require PF>1.2, positive expectancy/avg-R, >=2/3 profitable folds, >=30 trades before a DEMO forward test."
+  }
+}
