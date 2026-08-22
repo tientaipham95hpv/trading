@@ -41,6 +41,7 @@ class AutoTrader:
         self.data_quality_blocked = 0
         self.last_data_quality: dict[str, object] | None = None
         self.active_capital_profile: CapitalRiskProfile | None = None
+        self._cycle_lock = asyncio.Lock()
 
     def start(self) -> None:
         if self.task and not self.task.done():
@@ -94,6 +95,13 @@ class AutoTrader:
             await asyncio.sleep(self.interval_seconds)
 
     async def run_once(self) -> dict[str, object]:
+        """Chỉ cho phép một trading cycle chạy trong mỗi process."""
+        if self._cycle_lock.locked():
+            return await self._skip("BUSY", "Một vòng auto-trade khác đang chạy")
+        async with self._cycle_lock:
+            return await self._run_once_locked()
+
+    async def _run_once_locked(self) -> dict[str, object]:
         self.cycles += 1
         self.last_run_at = datetime.now(UTC)
 
@@ -137,7 +145,7 @@ class AutoTrader:
                     "CLEANED_ORPHAN_ORDERS",
                     f"Đã hủy order mồ côi cho {', '.join(orphan_symbols)}; chờ chu kỳ sau mới xét lệnh mới",
                 )
-            unprotected_symbols = self._unprotected_exchange_positions(snapshot)
+            unprotected_symbols = set(adapter.unprotected_bot_positions(snapshot))
             if unprotected_symbols:
                 try:
                     repairs = await adapter.repair_missing_stop_losses(snapshot)
@@ -148,13 +156,32 @@ class AutoTrader:
                             level="WARNING",
                         )
                         snapshot = await adapter.snapshot()
-                        unprotected_symbols = self._unprotected_exchange_positions(snapshot)
+                        unprotected_symbols = set(adapter.unprotected_bot_positions(snapshot))
                 except Exception as exc:  # noqa: BLE001 - watchdog vẫn phải khóa an toàn
                     await self.state.storage.log(
                         "Phục hồi Stop Loss thất bại", {"error": str(exc)}, level="ERROR"
                     )
             if unprotected_symbols:
-                reason = f"SAFE_MODE: vị thế không có SL bảo vệ: {', '.join(unprotected_symbols)}"
+                try:
+                    closed = await adapter.close_unprotected_bot_positions(
+                        snapshot, set(unprotected_symbols)
+                    )
+                except Exception as exc:  # noqa: BLE001 - giữ watchdog ở trạng thái fail-closed
+                    closed = []
+                    await self.state.storage.log(
+                        "Đóng vị thế thiếu Stop Loss thất bại",
+                        {"error": str(exc), "symbols": unprotected_symbols},
+                        level="CRITICAL",
+                    )
+                if closed:
+                    await self.state.storage.log(
+                        "Đã đóng vị thế bot không còn Stop Loss",
+                        {"mode": self.state.trading_mode.value, "actions": closed},
+                        level="CRITICAL",
+                    )
+                    snapshot = await adapter.snapshot()
+                    unprotected_symbols = set(adapter.unprotected_bot_positions(snapshot))
+                reason = f"SAFE_MODE: vị thế không có SL bảo vệ: {', '.join(sorted(unprotected_symbols))}"
                 self.state.enter_safe_mode(reason)
                 await self.state.storage.log(
                     "Auto-trader protection watchdog entered safe mode",
@@ -213,18 +240,31 @@ class AutoTrader:
             )
 
         self.last_status = "SCANNING"
-        results = await self.state.scanner.scan(limit=40)
+        results = await self.state.scanner.scan(
+            limit=40, timeframes=[Timeframe.M15, Timeframe.H1, Timeframe.H4]
+        )
         for result in results:
             await self.state.storage.save_signal(result.model_dump(mode="json"))
 
-        candidates = [item for item in results if item.action != SignalAction.NO_TRADE]
+        candidates = self._mtf_candidates(results)
+        mtf_rejections = candidates[1]
+        candidates = candidates[0]
+        # Candidate telemetry only. Tasks are never awaited or read by the trading path.
+        evaluator = getattr(self.state, "ai_shadow_evaluator", None)
+        if evaluator is not None:
+            for result in candidates:
+                task = asyncio.create_task(evaluator.evaluate_and_log(result))
+                task.add_done_callback(self._shadow_task_done)
+        # Smart Entry is a write-behind audit trail. An analytics database issue
+        # must never delay, reject, or submit an actual order. Its task has no
+        # result consumed by the execution path below.
         for result in candidates:
-            evidence = SmartEntryAnalytics.evaluate(result, mode=self.state.trading_mode.value)
-            await self.state.storage.save_smart_entry_event(evidence)
+            task = asyncio.create_task(self._record_smart_entry_evidence(result))
+            task.add_done_callback(self._shadow_task_done)
         if not candidates:
             return await self._skip("NO_SIGNAL", "Scanner chưa có tín hiệu đủ điểm")
 
-        rejection_reasons: dict[str, int] = {}
+        rejection_reasons: dict[str, int] = dict(mtf_rejections)
         for result in candidates:
             if result.symbol in active_symbols:
                 reason = "Symbol đang có vị thế hoặc lệnh mở"
@@ -297,7 +337,7 @@ class AutoTrader:
                 weekly_drawdown_fraction=self._weekly_drawdown_fraction(),
                 portfolio_exposure_fraction=portfolio_exposure_fraction,
                 correlated_positions=correlated_positions,
-                loss_streak=self._loss_streak(),
+                loss_streak=self._loss_streak(result.symbol),
                 market_regime=result.regime,
                 atr_fraction=(result.indicators.atr / result.price)
                 if result.indicators.atr
@@ -404,6 +444,12 @@ class AutoTrader:
     async def _submit(self, plan: OrderPlan, *, timeframe: str) -> dict[str, object]:
         self.last_status = "SUBMITTING"
         self.last_symbol = plan.symbol
+        if plan.symbol not in self.state.bot_settings.whitelist:
+            self.rejected += 1
+            return await self._skip(
+                "SYMBOL_NOT_ALLOWED",
+                f"{plan.symbol} nằm ngoài allowlist BTCUSDT, ETHUSDT, SOLUSDT",
+            )
         if self.state.trading_mode in {TradingMode.DEMO, TradingMode.LIVE}:
             adapter = (
                 self.state.live_exchange
@@ -411,6 +457,15 @@ class AutoTrader:
                 else self.state.demo_exchange
             )
             try:
+                # Refresh immediately before submit. This closes the stale-snapshot
+                # window and fail-closes whenever any position already exists.
+                latest_snapshot = await adapter.snapshot()
+                if latest_snapshot.positions:
+                    self.rejected += 1
+                    return await self._skip(
+                        "WAITING_POSITION",
+                        "Chỉ cho phép tối đa 1 vị thế đang mở",
+                    )
                 result = await adapter.submit_order_plan(plan)
             except (ExchangeCredentialsError, ExchangeError) as exc:
                 self.rejected += 1
@@ -420,6 +475,16 @@ class AutoTrader:
                 await self._record_lifecycle_open(plan, result, timeframe=timeframe)
             if result.critical_alert:
                 self.state.enter_safe_mode(result.critical_alert)
+                await self.state.notifications.alert(
+                    NotificationEvent.SAFE_MODE,
+                    title="SAFE_MODE",
+                    body=result.critical_alert,
+                    data={
+                        "mode": self.state.trading_mode.value,
+                        "symbol": plan.symbol,
+                        "client_order_id": result.client_order_id,
+                    },
+                )
                 await self.state.storage.log(
                     result.critical_alert, result.model_dump(mode="json"), level="CRITICAL"
                 )
@@ -440,6 +505,12 @@ class AutoTrader:
                 result.status, result.critical_alert or "Exchange không accept order"
             )
 
+        if self.state.execution.open_positions():
+            self.rejected += 1
+            return await self._skip(
+                "WAITING_POSITION",
+                "Chỉ cho phép tối đa 1 vị thế mô phỏng đang mở",
+            )
         before_fills = len(self.state.execution.fills)
         before_trades = len(self.state.execution.trades)
         result = await self.state.execution.submit_order_plan(plan)
@@ -554,15 +625,47 @@ class AutoTrader:
         )
 
     async def _notify_position_open(self, plan: OrderPlan) -> None:
-        notification = self.state.notifications.build(
+        notification = await self.state.notifications.alert(
             NotificationEvent.POSITION_OPEN,
-            title="Position open",
+            title="Mở vị thế",
             body=f"{plan.symbol} {plan.side.value}",
-            data={"client_order_id": plan.client_order_id, "mode": self.state.trading_mode.value},
+            data={
+                "client_order_id": plan.client_order_id,
+                "mode": self.state.trading_mode.value,
+                "symbol": plan.symbol,
+                "side": plan.side.value,
+                "quantity": plan.quantity,
+                "entry_price": plan.entry_price,
+                "stop_loss": plan.stop_loss,
+                "take_profits": plan.take_profits,
+            },
         )
         await self.state.storage.log(
             "APNs-ready notification", notification.model_dump(mode="json"), level="INFO"
         )
+
+    @staticmethod
+    def _shadow_task_done(task: asyncio.Task[None]) -> None:
+        # Consume failures so a provider outage cannot affect the auto-trader.
+        if not task.cancelled():
+            task.exception()
+
+    async def _record_smart_entry_evidence(self, result: Any) -> None:
+        """Best-effort, audit-only persistence kept outside the order path."""
+        try:
+            evidence = SmartEntryAnalytics.evaluate(result, mode=self.state.trading_mode.value)
+            await self.state.storage.save_smart_entry_event(evidence)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:  # noqa: BLE001 - audit failure must be execution-neutral
+            try:
+                await self.state.storage.log(
+                    "Smart Entry shadow evidence not saved",
+                    {"error": str(exc), "shadow_only": True},
+                    level="WARNING",
+                )
+            except Exception:  # noqa: BLE001 - logging is also non-critical here
+                return
 
     async def _skip(self, status: str, reason: str) -> dict[str, object]:
         self.last_status = status
@@ -738,8 +841,10 @@ class AutoTrader:
             profile.max_risk_per_trade if profile else self.state.bot_settings.max_risk_per_trade
         )
         risk_fraction = min(target, maximum)
+        if self.state.trading_mode == TradingMode.DEMO:
+            risk_fraction = min(max(risk_fraction, 0.001), 0.0025)
         if max(result.long_score, result.short_score) < 85:
-            risk_fraction = min(risk_fraction, 0.0035)
+            risk_fraction = min(risk_fraction, 0.0025)
         if correlated_positions > 0:
             risk_fraction *= 0.5
         return max(0.001, risk_fraction)
@@ -766,7 +871,9 @@ class AutoTrader:
             max_loss_streak=settings.max_loss_streak,
             extreme_volatility_atr_fraction=settings.extreme_volatility_atr_fraction,
             stale_data_seconds=settings.stale_data_seconds,
-            minimum_risk_reward=settings.minimum_risk_reward,
+            minimum_risk_reward=max(settings.minimum_risk_reward, 2.0),
+            taker_fee_rate=settings.taker_fee_rate,
+            slippage_bps=settings.slippage_bps,
         )
 
     def _capital_profile(self, account_equity: float) -> CapitalRiskProfile:
@@ -781,18 +888,92 @@ class AutoTrader:
         reasons = set(result.reasons)
         if result.timeframe not in {Timeframe.M15, Timeframe.H1, Timeframe.H4}:
             return False, "Bỏ qua khung nhiễu 1m/5m"
-        if score < 80:
-            return False, "Score dưới 80 sau reset"
-        if (result.risk_reward or 0.0) < 2.0:
-            return False, "RR dưới 2.0 sau reset"
+        minimum_score = max(85, self.state.bot_settings.min_score_to_trade)
+        high_risk_symbols = {
+            symbol.strip().upper()
+            for symbol in self.state.settings.scanner_high_risk_symbols.split(",")
+            if symbol.strip()
+        }
+        if result.symbol.upper() in high_risk_symbols:
+            minimum_score = max(minimum_score, self.state.settings.scanner_high_risk_min_score)
+        if score < minimum_score:
+            return False, f"Score dưới {minimum_score} sau reset"
+        minimum_risk_reward = getattr(self.state.bot_settings, "minimum_risk_reward", 2.0)
+        if (result.risk_reward or 0.0) < minimum_risk_reward:
+            return False, f"RR dưới {minimum_risk_reward:.1f} sau phí/đệm"
         if result.regime in {MarketRegime.HIGH_VOL, MarketRegime.PANIC}:
             return False, "Tránh vùng biến động cao/panic"
+        indicators = getattr(result, "indicators", None)
+        atr = getattr(indicators, "atr", 0.0) or 0.0
+        ema20 = getattr(indicators, "ema20", None)
+        price = getattr(result, "price", None)
+        if price is not None and ema20 and atr and abs(price - ema20) / atr > 2.0:
+            return False, "Giá chạy quá xa EMA20 (>2 ATR)"
         if result.regime in {MarketRegime.TRENDING_UP, MarketRegime.TRENDING_DOWN}:
             return True, "Trend rõ"
         breakout = any(reason.startswith("Breakout") for reason in reasons)
         if breakout and "Volume tăng" in reasons and "ADX xác nhận trend" in reasons:
             return True, "Breakout có volume và ADX"
         return False, "Chưa đủ xác nhận trend/breakout"
+
+    def _mtf_candidates(self, results: list[Any]) -> tuple[list[Any], dict[str, int]]:
+        """Use 4h for regime, 1h for setup confirmation, and 15m only as entry trigger.
+
+        This intentionally fails closed: a missing, neutral, or contradictory higher
+        timeframe cannot be compensated for by a strong 15m score.
+        """
+        by_symbol_frame = {(item.symbol, item.timeframe): item for item in results}
+        accepted: list[Any] = []
+        rejected: dict[str, int] = {}
+        for trigger in results:
+            if trigger.timeframe != Timeframe.M15 or trigger.action == SignalAction.NO_TRADE:
+                continue
+            h1 = by_symbol_frame.get((trigger.symbol, Timeframe.H1))
+            h4 = by_symbol_frame.get((trigger.symbol, Timeframe.H4))
+            if h1 is None or h4 is None:
+                reason = "Thiếu nến đóng xác nhận 1h/4h"
+            elif h4.regime in {MarketRegime.HIGH_VOL, MarketRegime.PANIC}:
+                reason = "4h volatility cao/panic"
+            elif h4.regime not in {MarketRegime.TRENDING_UP, MarketRegime.TRENDING_DOWN}:
+                reason = "4h không có xu hướng rõ"
+            elif h1.regime in {MarketRegime.HIGH_VOL, MarketRegime.PANIC}:
+                reason = "1h volatility cao/panic"
+            elif h1.regime != h4.regime:
+                reason = "1h không xác nhận xu hướng 4h"
+            elif h1.action != trigger.action or trigger.action != self._regime_action(h4.regime):
+                reason = "15m/1h/4h không cùng chiều"
+            elif not self._is_h1_pullback_or_breakout(h1):
+                reason = "1h chưa có vùng pullback/breakout hợp lệ"
+            else:
+                atr = trigger.indicators.atr or 0.0
+                ema20 = trigger.indicators.ema20
+                if ema20 and atr and abs(trigger.price - ema20) / atr > 2.0:
+                    reason = "15m chạy quá xa EMA20 (>2 ATR)"
+                elif atr / max(trigger.price, 1e-12) > (
+                    self.state.bot_settings.extreme_volatility_atr_fraction
+                ):
+                    reason = "15m volatility vượt ngưỡng ATR"
+                else:
+                    accepted.append(trigger)
+                    continue
+            rejected[reason] = rejected.get(reason, 0) + 1
+        return accepted, rejected
+
+    @staticmethod
+    def _regime_action(regime: MarketRegime) -> SignalAction:
+        if regime == MarketRegime.TRENDING_UP:
+            return SignalAction.LONG
+        if regime == MarketRegime.TRENDING_DOWN:
+            return SignalAction.SHORT
+        return SignalAction.NO_TRADE
+
+    @staticmethod
+    def _is_h1_pullback_or_breakout(result: Any) -> bool:
+        strategy = (getattr(result, "strategy", None) or "").lower()
+        reasons = {reason.lower() for reason in getattr(result, "reasons", [])}
+        pullback = "pullback" in strategy
+        breakout = "breakout" in strategy or any("breakout" in reason for reason in reasons)
+        return pullback or breakout
 
     @staticmethod
     def _rejection_summary(reasons: dict[str, int]) -> str:
@@ -802,11 +983,31 @@ class AutoTrader:
         details = "; ".join(f"{reason} ({count})" for reason, count in ranked[:3])
         return f"Có tín hiệu nhưng chưa đủ điều kiện: {details}"
 
-    def _loss_streak(self) -> int:
-        streak = 0
-        for trade in reversed(self.state.execution.trades):
-            if trade.net_pnl < 0:
-                streak += 1
+    def _loss_streak(self, symbol: str | None = None) -> int:
+        """Count losing lifecycles, scoped to the candidate symbol when supplied."""
+        lifecycle_pnl: list[tuple[float, datetime]] = []
+        lifecycle_key: tuple[object, ...] | None = None
+        for trade in self.state.execution.trades:
+            if symbol is not None and trade.symbol != symbol:
+                continue
+            key = (trade.symbol, trade.side, trade.created_at)
+            if key != lifecycle_key:
+                lifecycle_pnl.append((trade.net_pnl, trade.created_at))
+                lifecycle_key = key
             else:
+                pnl, created_at = lifecycle_pnl[-1]
+                lifecycle_pnl[-1] = (pnl + trade.net_pnl, created_at)
+        streak = 0
+        latest_loss_at: datetime | None = None
+        for net_pnl, created_at in reversed(lifecycle_pnl):
+            if net_pnl >= 0:
                 break
-        return streak
+            latest_loss_at = latest_loss_at or created_at
+            streak += 1
+        settings = getattr(self.state, "bot_settings", None)
+        if latest_loss_at is None or settings is None:
+            return streak
+        cooldown_seconds = settings.loss_streak_cooldown_minutes * 60
+        if (datetime.now(UTC) - latest_loss_at).total_seconds() >= cooldown_seconds:
+            return 0
+        return min(streak, settings.max_loss_streak)

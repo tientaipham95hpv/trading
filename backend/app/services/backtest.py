@@ -1,20 +1,23 @@
 import hashlib
 import json
 import math
+from bisect import bisect_right
 from dataclasses import dataclass
-from itertools import product
+from itertools import pairwise, product
 from statistics import mean, pstdev
 from uuid import uuid4
 
 from app.domain.models import (
     BacktestMetrics,
     BacktestOptimizerCandidate,
+    BacktestOptimizerFold,
     BacktestOptimizerReport,
     BacktestOptimizerRequest,
     BacktestPoint,
     BacktestRunReport,
     BacktestRunRequest,
     BacktestSegment,
+    BacktestSignalFunnel,
     BacktestStrategyConfig,
     BacktestStrategyReport,
     BacktestTrade,
@@ -34,6 +37,14 @@ class _SignalFeature:
     short_score: int
     regime: MarketRegime
     atr: float
+    close: float
+    ema20: float | None
+    reasons: tuple[str, ...]
+
+
+_MTF_INTERVALS = ("15m", "1h", "4h")
+_INTERVAL_MS = {"15m": 900_000, "1h": 3_600_000, "4h": 14_400_000}
+
 
 @dataclass
 class _Position:
@@ -60,17 +71,16 @@ class BacktestService:
         self.latest: BacktestRunReport | None = None
         self.latest_optimizer: BacktestOptimizerReport | None = None
 
-    def run(self, candles: list[Candle], request: BacktestRunRequest) -> BacktestRunReport:
-        if len(candles) < 250:
+    def run(
+        self, candles: dict[str, list[Candle]], request: BacktestRunRequest
+    ) -> BacktestRunReport:
+        candles = self._validate_mtf_data(candles)
+        trigger_candles = candles["15m"]
+        if len(trigger_candles) < 250:
             raise ValueError("Cần ít nhất 250 nến đã đóng để backtest")
-        ordered = sorted(candles, key=lambda row: row.open_time)
-        dataset_hash = hashlib.sha256(
-            json.dumps(
-                [[c.open_time, c.open, c.high, c.low, c.close, c.volume] for c in ordered],
-                separators=(",", ":"),
-            ).encode()
-        ).hexdigest()
-        features = self._precompute_features(ordered)
+        ordered = trigger_candles
+        dataset_hash = self._dataset_fingerprint(candles)
+        features = self._precompute_mtf_features(candles)
         report = BacktestRunReport(
             id=str(uuid4()),
             symbol=request.symbol.upper(),
@@ -91,20 +101,17 @@ class BacktestService:
         return report
 
     def optimize(
-        self, candles: list[Candle], request: BacktestOptimizerRequest
+        self, candles: dict[str, list[Candle]], request: BacktestOptimizerRequest
     ) -> BacktestOptimizerReport:
-        if len(candles) < 250:
+        candles = self._validate_mtf_data(candles)
+        trigger_candles = candles["15m"]
+        if len(trigger_candles) < 250:
             raise ValueError("Cần ít nhất 250 nến đã đóng để tối ưu")
-        ordered = sorted(candles, key=lambda row: row.open_time)
-        dataset_hash = hashlib.sha256(
-            json.dumps(
-                [[c.open_time, c.open, c.high, c.low, c.close, c.volume] for c in ordered],
-                separators=(",", ":"),
-            ).encode()
-        ).hexdigest()
-        scored: list[tuple[float, bool, list[str], float, BacktestStrategyReport]] = []
+        ordered = trigger_candles
+        dataset_hash = self._dataset_fingerprint(candles)
         baseline = request.run.baseline
-        features = self._precompute_features(ordered)
+        features = self._precompute_mtf_features(candles)
+        configs = []
         for min_score, stop_atr, risk in product(
             sorted(set(request.min_scores)),
             sorted(set(request.stop_atr_multipliers)),
@@ -118,44 +125,180 @@ class BacktestService:
                     "risk_fraction": risk,
                 }
             )
-            report = self._simulate(ordered, request.run, config, features)
-            validation = next(item for item in report.segments if item.name == "VALIDATION")
-            oos = next(item for item in report.segments if item.name == "OUT_OF_SAMPLE")
-            profitable_windows = sum(item.metrics.pnl > 0 for item in report.walk_forward)
-            window_ratio = profitable_windows / len(report.walk_forward) if report.walk_forward else 0
-            reasons = []
-            if oos.metrics.trades < request.minimum_oos_trades:
-                reasons.append(
-                    f"OOS chỉ có {oos.metrics.trades}/{request.minimum_oos_trades} giao dịch"
+            configs.append(config)
+
+        # The first OOS begins only after the configured initial train + validation
+        # region. Each later fold uses an expanding history, with the same-size
+        # validation block immediately before its test. Nothing at/after test_start
+        # participates in selection.
+        first_test = int(
+            len(ordered) * (request.run.train_fraction + request.run.validation_fraction)
+        )
+        test_size = max(1, math.ceil((len(ordered) - first_test) / request.folds))
+        validation_size = max(1, int(len(ordered) * request.run.validation_fraction))
+        folds = []
+        candidate_rows: list[
+            tuple[float, bool, list[str], float, BacktestSegment, BacktestStrategyReport]
+        ] = []
+        # A locked OOS prefix is exactly the scoring prefix of the next fold.
+        # Cache by immutable config fingerprint + prefix length so that simulation
+        # is reused without letting any candle at/after the requested end leak in.
+        simulation_cache: dict[tuple[str, int], BacktestStrategyReport] = {}
+
+        def simulate_prefix(config: BacktestStrategyConfig, end: int) -> BacktestStrategyReport:
+            fingerprint = hashlib.sha256(config.model_dump_json().encode()).hexdigest()
+            key = (fingerprint, end)
+            if key not in simulation_cache:
+                simulation_cache[key] = self._simulate(ordered[:end], request.run, config, features)
+            return simulation_cache[key]
+
+        for number in range(request.folds):
+            test_start = first_test + number * test_size
+            if test_start >= len(ordered):
+                break
+            test_end = min(len(ordered), test_start + test_size)
+            validation_start = max(211, test_start - validation_size)
+            scored_fold = []
+            for config in configs:
+                report = simulate_prefix(config, test_start)
+                validation = self._segment_for_range(
+                    report.trades,
+                    ordered,
+                    validation_start,
+                    test_start,
+                    request.run.initial_capital,
+                    "VALIDATION",
                 )
-            if validation.metrics.pnl <= 0:
-                reasons.append("Validation PNL không dương")
-            if oos.metrics.pnl <= 0:
-                reasons.append("OOS PNL không dương")
-            if window_ratio < 0.5:
-                reasons.append("Dưới 50% cửa sổ walk-forward có lãi")
-            eligible = not reasons
-            score = (
-                oos.average_r * 35
-                + validation.average_r * 25
-                + min(oos.metrics.profit_factor, 5) * 8
-                + min(validation.metrics.profit_factor, 5) * 5
-                + window_ratio * 20
-                - oos.max_drawdown_percent * 2
-                - validation.max_drawdown_percent
+                eligible = validation.metrics.trades >= request.minimum_validation_trades
+                score = self._validation_score(validation)
+                scored_fold.append((eligible, score, config, report, validation))
+            scored_fold.sort(key=lambda row: (row[0], row[1]), reverse=True)
+            eligible, score, config, report, validation = scored_fold[0]
+            reasons = (
+                []
+                if eligible
+                else [
+                    (
+                        f"Validation chỉ có {validation.metrics.trades}/"
+                        f"{request.minimum_validation_trades} giao dịch"
+                    )
+                ]
             )
-            scored.append((score, eligible, reasons, window_ratio, report))
-        scored.sort(key=lambda item: (item[1], item[0]), reverse=True)
+            locked_report = simulate_prefix(config, test_end)
+            test = self._segment_for_range(
+                locked_report.trades,
+                ordered,
+                test_start,
+                test_end,
+                request.run.initial_capital,
+                f"OOS-{number + 1}",
+            )
+            folds.append(
+                BacktestOptimizerFold(
+                    number=number + 1,
+                    train_start=0,
+                    train_end=validation_start,
+                    validation_start=validation_start,
+                    validation_end=test_start,
+                    test_start=test_start,
+                    test_end=test_end,
+                    selected_config=config,
+                    selected_config_fingerprint=hashlib.sha256(
+                        config.model_dump_json().encode()
+                    ).hexdigest(),
+                    validation_score=score,
+                    validation_trades=validation.metrics.trades,
+                    test=test,
+                )
+            )
+        # Gate every candidate on its own chronological, stitched OOS trades. The
+        # config is fixed before each test range and each simulation ends at that
+        # range boundary, so later candles cannot influence entries or forced exits.
+        for config in configs:
+            validation_report = simulate_prefix(config, first_test)
+            validation = self._segment_for_range(
+                validation_report.trades,
+                ordered,
+                max(211, first_test - validation_size),
+                first_test,
+                request.run.initial_capital,
+                "VALIDATION",
+            )
+            score = self._validation_score(validation)
+            reasons = []
+            if validation.metrics.trades < request.minimum_validation_trades:
+                reasons.append(
+                    f"Validation chỉ có {validation.metrics.trades}/"
+                    f"{request.minimum_validation_trades} giao dịch"
+                )
+
+            stitched_trades: list[BacktestTrade] = []
+            profitable_windows = 0
+            evaluated_windows = 0
+            for fold in folds:
+                report = simulate_prefix(config, fold.test_end)
+                fold_trades = self._trades_for_range(
+                    report.trades, ordered, fold.test_start, fold.test_end
+                )
+                stitched_trades.extend(fold_trades)
+                fold_metrics, _, _ = self._trade_metrics(fold_trades, request.run.initial_capital)
+                profitable_windows += fold_metrics.pnl > 0
+                evaluated_windows += 1
+            metrics, average_r, drawdown = self._trade_metrics(
+                stitched_trades, request.run.initial_capital
+            )
+            metrics.out_of_sample_trades = metrics.trades
+            stitched = BacktestSegment(
+                name="STITCHED_OOS",
+                start_time=(ordered[folds[0].test_start].open_time if folds else None),
+                end_time=(ordered[folds[-1].test_end - 1].close_time if folds else None),
+                metrics=metrics,
+                average_r=average_r,
+                max_drawdown_percent=drawdown,
+            )
+            if metrics.trades < request.minimum_oos_trades:
+                reasons.append(
+                    f"Stitched OOS chỉ có {metrics.trades}/{request.minimum_oos_trades} giao dịch"
+                )
+            if not metrics.profit_factor > 1.2:
+                reasons.append("Stitched OOS profit factor phải > 1.2")
+            if not metrics.expectancy > 0:
+                reasons.append("Stitched OOS expectancy phải > 0")
+            if drawdown > request.max_oos_drawdown_percent:
+                reasons.append(
+                    f"Stitched OOS drawdown {drawdown:.2f}% vượt ngưỡng "
+                    f"{request.max_oos_drawdown_percent:.2f}%"
+                )
+            candidate_rows.append(
+                (
+                    score,
+                    not reasons,
+                    reasons,
+                    profitable_windows / evaluated_windows if evaluated_windows else 0.0,
+                    stitched,
+                    validation_report,
+                )
+            )
+
+        candidate_rows.sort(key=lambda row: (row[1], row[0]), reverse=True)
         candidates = [
             BacktestOptimizerCandidate(
                 rank=index,
                 score=score,
                 eligible=eligible,
                 rejection_reasons=reasons,
-                profitable_walk_forward_ratio=window_ratio,
+                profitable_walk_forward_ratio=profitable_ratio,
+                stitched_oos=stitched,
                 report=strategy,
             )
-            for index, (score, eligible, reasons, window_ratio, strategy) in enumerate(scored, 1)
+            for index, (
+                score,
+                eligible,
+                reasons,
+                profitable_ratio,
+                stitched,
+                strategy,
+            ) in enumerate(candidate_rows, 1)
         ]
         result = BacktestOptimizerReport(
             id=str(uuid4()),
@@ -165,11 +308,42 @@ class BacktestService:
             evaluated_candidates=len(candidates),
             eligible_candidates=sum(item.eligible for item in candidates),
             minimum_oos_trades=request.minimum_oos_trades,
+            max_oos_drawdown_percent=request.max_oos_drawdown_percent,
             candidates=candidates,
+            folds=folds,
             candidate_applied=False,
         )
         self.latest_optimizer = result
         return result
+
+    @staticmethod
+    def _trades_for_range(trades, candles, start, end):
+        return [
+            trade
+            for trade in trades
+            if candles[start].open_time <= trade.entry_time <= candles[end - 1].close_time
+        ]
+
+    def _segment_for_range(self, trades, candles, start, end, capital, name):
+        selected = self._trades_for_range(trades, candles, start, end)
+        metrics, average_r, drawdown = self._trade_metrics(selected, capital)
+        return BacktestSegment(
+            name=name,
+            start_time=candles[start].open_time,
+            end_time=candles[end - 1].close_time,
+            metrics=metrics,
+            average_r=average_r,
+            max_drawdown_percent=drawdown,
+        )
+
+    @staticmethod
+    def _validation_score(segment: BacktestSegment) -> float:
+        return (
+            segment.average_r * 40
+            + min(segment.metrics.profit_factor, 5) * 10
+            + segment.metrics.pnl / 100
+            - segment.max_drawdown_percent * 2
+        )
 
     def _precompute_features(self, candles: list[Candle]) -> dict[int, _SignalFeature]:
         features: dict[int, _SignalFeature] = {}
@@ -177,21 +351,112 @@ class BacktestService:
             history = candles[: index + 1]
             indicators = calculate_indicators(history)
             regime = detect_regime(history, indicators)
-            long_score, short_score, _ = score_market(history, indicators, regime)
+            long_score, short_score, reasons = score_market(history, indicators, regime)
             features[index] = _SignalFeature(
                 long_score=long_score,
                 short_score=short_score,
                 regime=regime,
                 atr=indicators.atr or candles[index].close * 0.01,
+                close=candles[index].close,
+                ema20=indicators.ema20,
+                reasons=tuple(reasons),
             )
         return features
+
+    @staticmethod
+    def _dataset_fingerprint(candles: dict[str, list[Candle]]) -> str:
+        payload = {
+            frame: [
+                [c.open_time, c.close_time, c.open, c.high, c.low, c.close, c.volume]
+                for c in candles[frame]
+            ]
+            for frame in _MTF_INTERVALS
+        }
+        return hashlib.sha256(
+            json.dumps(payload, separators=(",", ":"), sort_keys=True).encode()
+        ).hexdigest()
+
+    @staticmethod
+    def _validate_mtf_data(candles: dict[str, list[Candle]]) -> dict[str, list[Candle]]:
+        if not isinstance(candles, dict) or any(frame not in candles for frame in _MTF_INTERVALS):
+            raise ValueError("Backtest MTF cần đủ nến đóng 15m, 1h và 4h")
+        ordered: dict[str, list[Candle]] = {}
+        for frame in _MTF_INTERVALS:
+            rows = sorted(candles[frame], key=lambda candle: candle.open_time)
+            if len(rows) < 212:
+                raise ValueError(f"Không đủ nến đóng {frame} để tính MTF causal")
+            if any(row.close_time < row.open_time for row in rows):
+                raise ValueError(f"Nến {frame} có thời gian đóng không hợp lệ")
+            if any(right.open_time <= left.close_time for left, right in pairwise(rows)):
+                raise ValueError(f"Nến {frame} bị trùng hoặc sai thứ tự")
+            ordered[frame] = rows
+        return ordered
+
+    def _precompute_mtf_features(
+        self, candles: dict[str, list[Candle]]
+    ) -> dict[int, tuple[_SignalFeature, _SignalFeature, _SignalFeature] | None]:
+        frame_features = {
+            frame: self._precompute_features(candles[frame]) for frame in _MTF_INTERVALS
+        }
+        closes = {frame: [row.close_time for row in candles[frame]] for frame in ("1h", "4h")}
+        aligned: dict[int, tuple[_SignalFeature, _SignalFeature, _SignalFeature] | None] = {}
+        for index, trigger in enumerate(candles["15m"]):
+            m15 = frame_features["15m"].get(index)
+            h1_index = bisect_right(closes["1h"], trigger.close_time) - 1
+            h4_index = bisect_right(closes["4h"], trigger.close_time) - 1
+            h1 = frame_features["1h"].get(h1_index)
+            h4 = frame_features["4h"].get(h4_index)
+            stale = (
+                h1_index < 0
+                or h4_index < 0
+                or trigger.close_time - candles["1h"][h1_index].close_time >= _INTERVAL_MS["1h"]
+                or trigger.close_time - candles["4h"][h4_index].close_time >= _INTERVAL_MS["4h"]
+            )
+            aligned[index] = None if stale or not (m15 and h1 and h4) else (m15, h1, h4)
+        return aligned
+
+    @staticmethod
+    def _feature_action(feature: _SignalFeature, minimum_score: int) -> SignalAction:
+        if feature.long_score >= minimum_score and feature.long_score > feature.short_score:
+            return SignalAction.LONG
+        if feature.short_score >= minimum_score and feature.short_score > feature.long_score:
+            return SignalAction.SHORT
+        return SignalAction.NO_TRADE
+
+    def _mtf_action(
+        self,
+        features: tuple[_SignalFeature, _SignalFeature, _SignalFeature] | None,
+        minimum_score: int,
+    ) -> SignalAction:
+        if features is None:
+            return SignalAction.NO_TRADE
+        m15, h1, h4 = features
+        if h4.regime not in {MarketRegime.TRENDING_UP, MarketRegime.TRENDING_DOWN}:
+            return SignalAction.NO_TRADE
+        if h1.regime != h4.regime or h1.regime in {MarketRegime.HIGH_VOL, MarketRegime.PANIC}:
+            return SignalAction.NO_TRADE
+        expected = (
+            SignalAction.LONG if h4.regime == MarketRegime.TRENDING_UP else SignalAction.SHORT
+        )
+        if self._feature_action(m15, minimum_score) != expected:
+            return SignalAction.NO_TRADE
+        if self._feature_action(h1, minimum_score) != expected:
+            return SignalAction.NO_TRADE
+        breakout = any("breakout" in reason.lower() for reason in h1.reasons)
+        pullback = bool(h1.ema20 and abs(h1.close - h1.ema20) <= h1.atr)
+        if not (breakout or pullback):
+            return SignalAction.NO_TRADE
+        if m15.ema20 and m15.atr and abs(m15.close - m15.ema20) / m15.atr > 2:
+            return SignalAction.NO_TRADE
+        return expected
 
     def _simulate(
         self,
         candles: list[Candle],
         request: BacktestRunRequest,
         config: BacktestStrategyConfig,
-        features: dict[int, _SignalFeature] | None = None,
+        features: dict[int, tuple[_SignalFeature, _SignalFeature, _SignalFeature] | None]
+        | None = None,
     ) -> BacktestStrategyReport:
         if len(config.take_profit_r_multiples) != len(config.take_profit_fractions):
             raise ValueError("Số mốc TP và tỷ lệ chốt lời phải bằng nhau")
@@ -239,16 +504,10 @@ class BacktestService:
                     curve.append(BacktestPoint(time=closed.exit_time, equity=equity))
                     position = None
             if position is None and pending is None and index < len(candles) - 1:
-                feature = (features or self._precompute_features(candles))[index]
-                regime = feature.regime
-                long_score, short_score = feature.long_score, feature.short_score
-                action = SignalAction.NO_TRADE
-                if long_score >= config.min_score and long_score > short_score:
-                    action = SignalAction.LONG
-                elif short_score >= config.min_score and short_score > long_score:
-                    action = SignalAction.SHORT
-                if action != SignalAction.NO_TRADE and regime != MarketRegime.PANIC:
-                    atr = feature.atr
+                mtf = features.get(index) if features else None
+                action = self._mtf_action(mtf, config.min_score)
+                if action != SignalAction.NO_TRADE and mtf is not None:
+                    atr = mtf[0].atr
                     distance = max(atr * config.stop_atr_multiplier, candle.close * 0.004)
                     pending = (Side(action.value), candle.close_time, distance)
         if position:
@@ -256,7 +515,48 @@ class BacktestService:
             trade = self._close(position, final.close, final.close_time, "Hết dữ liệu", request)
             trades.append(trade)
             curve.append(BacktestPoint(time=trade.exit_time, equity=equity + trade.net_pnl))
-        return self._report(candles, request, config, trades, curve)
+        report = self._report(candles, request, config, trades, curve)
+        report.signal_funnel = self._signal_funnel(features or {}, config.min_score, len(candles))
+        return report
+
+    def _signal_funnel(
+        self,
+        features: dict[int, tuple[_SignalFeature, _SignalFeature, _SignalFeature] | None],
+        minimum_score: int,
+        candle_count: int,
+    ) -> BacktestSignalFunnel:
+        funnel = BacktestSignalFunnel(evaluated=max(0, candle_count - 211))
+        for index in range(210, candle_count - 1):
+            mtf = features.get(index)
+            if mtf is None:
+                continue
+            funnel.mtf_aligned += 1
+            m15, h1, h4 = mtf
+            if h4.regime not in {MarketRegime.TRENDING_UP, MarketRegime.TRENDING_DOWN}:
+                continue
+            funnel.h4_trending += 1
+            if h1.regime != h4.regime or h1.regime in {MarketRegime.HIGH_VOL, MarketRegime.PANIC}:
+                continue
+            funnel.h1_regime_aligned += 1
+            expected = (
+                SignalAction.LONG if h4.regime == MarketRegime.TRENDING_UP else SignalAction.SHORT
+            )
+            if self._feature_action(m15, minimum_score) != expected:
+                continue
+            funnel.trigger_score_passed += 1
+            if self._feature_action(h1, minimum_score) != expected:
+                continue
+            funnel.h1_score_passed += 1
+            breakout = any("breakout" in reason.lower() for reason in h1.reasons)
+            pullback = bool(h1.ema20 and abs(h1.close - h1.ema20) <= h1.atr)
+            if not (breakout or pullback):
+                continue
+            funnel.setup_passed += 1
+            if m15.ema20 and m15.atr and abs(m15.close - m15.ema20) / m15.atr > 2:
+                continue
+            funnel.extension_passed += 1
+            funnel.actionable += 1
+        return funnel
 
     def _process_candle(
         self,
@@ -374,20 +674,27 @@ class BacktestService:
                     max_drawdown_percent=segment_dd,
                 )
             )
+        # Rolling-origin evaluation: after the initial train block, each chronological
+        # test fold is evaluated exactly once.  The information set expands after a
+        # fold completes; no future fold is used to score an earlier one.
         walk_forward = []
-        oos_start = boundaries[2]
-        size = max(1, math.ceil((len(candles) - oos_start) / request.walk_forward_windows))
-        for number, start in enumerate(range(oos_start, len(candles), size), 1):
-            end = min(len(candles), start + size)
+        first_test = boundaries[1]
+        remaining = len(candles) - first_test
+        fold_size = max(1, math.ceil(remaining / request.walk_forward_windows))
+        for number in range(request.walk_forward_windows):
+            start = first_test + number * fold_size
+            if start >= len(candles):
+                break
+            end = min(len(candles), start + fold_size)
             selected = [
-                t
-                for t in trades
-                if candles[start].open_time <= t.entry_time <= candles[end - 1].close_time
+                trade
+                for trade in trades
+                if candles[start].open_time <= trade.entry_time <= candles[end - 1].close_time
             ]
             metric, avg_r, segment_dd = self._trade_metrics(selected, request.initial_capital)
             walk_forward.append(
                 BacktestSegment(
-                    name=f"WF-{number}",
+                    name=f"WF-{number + 1}-TRAIN-0:{start}-TEST-{start}:{end}",
                     start_time=candles[start].open_time,
                     end_time=candles[end - 1].close_time,
                     metrics=metric,

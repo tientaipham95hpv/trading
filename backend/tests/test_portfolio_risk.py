@@ -131,15 +131,11 @@ def test_portfolio_enforcement_is_opt_in_and_fail_closed():
     assert shadow._portfolio_risk_rejection(audit) is None
     assert enforced._portfolio_risk_rejection(audit) == "Vượt gross exposure"
     assert (
-        enforced._portfolio_risk_rejection(
-            SimpleNamespace(decision="WOULD_REJECT", reasons=[])
-        )
+        enforced._portfolio_risk_rejection(SimpleNamespace(decision="WOULD_REJECT", reasons=[]))
         == "Portfolio risk từ chối entry mới"
     )
     assert (
-        enforced._portfolio_risk_rejection(
-            SimpleNamespace(decision="WOULD_ALLOW", reasons=[])
-        )
+        enforced._portfolio_risk_rejection(SimpleNamespace(decision="WOULD_ALLOW", reasons=[]))
         is None
     )
 
@@ -246,3 +242,102 @@ def test_correlation_requires_complete_aligned_coverage_and_fails_safe_in_vietna
     assert result.correlation.missing_symbols == ["ETHUSDT"]
     assert "Không đủ dữ liệu nến đã đóng" in result.reasons[-1]
     assert result.would_reject_new_entries is True
+
+
+def test_loss_streak_groups_partial_close_fills_by_lifecycle():
+    from datetime import UTC, datetime, timedelta
+
+    from app.domain.models import TradeRecord
+
+    closed_at = datetime(2026, 8, 15, tzinfo=UTC)
+
+    def trade(identifier: str, pnl: float, at: datetime) -> TradeRecord:
+        return TradeRecord(
+            id=identifier,
+            symbol="BTCUSDT",
+            side=Side.SHORT,
+            entry_price=100,
+            exit_price=101,
+            quantity=1,
+            gross_pnl=pnl,
+            fee=0,
+            slippage=0,
+            net_pnl=pnl,
+            reason="TP" if pnl > 0 else "SL",
+            created_at=at,
+        )
+
+    # Two partial fills at one timestamp are one winning lifecycle, followed by
+    # two independent losing lifecycles. Fill-counting would incorrectly return 3.
+    trades = [
+        trade("win-1", 2, closed_at),
+        trade("win-2", 1, closed_at),
+        trade("loss-1", -1, closed_at + timedelta(minutes=1)),
+        trade("loss-2a", -1, closed_at + timedelta(minutes=2)),
+        trade("loss-2b", -1, closed_at + timedelta(minutes=2)),
+    ]
+    state = SimpleNamespace(
+        portfolio_risk_enforcement_enabled=True,
+        execution=SimpleNamespace(trades=trades),
+    )
+
+    assert AutoTrader(state)._loss_streak() == 2
+
+
+def test_high_risk_symbol_is_watchlisted_not_hard_blacklisted():
+    from app.domain.models import MarketRegime, Timeframe
+
+    state = SimpleNamespace(
+        portfolio_risk_enforcement_enabled=True,
+        bot_settings=SimpleNamespace(min_score_to_trade=85),
+        settings=SimpleNamespace(
+            scanner_high_risk_symbols="AVAXUSDT,ADAUSDT",
+            scanner_high_risk_min_score=90,
+        ),
+    )
+    trader = AutoTrader(state)
+
+    base = {
+        "symbol": "AVAXUSDT",
+        "short_score": 0,
+        "timeframe": Timeframe.H1,
+        "risk_reward": 2.2,
+        "regime": MarketRegime.TRENDING_UP,
+        "reasons": [],
+    }
+    accepted, reason = trader._candidate_has_enough_confirmation(
+        SimpleNamespace(**base, long_score=89)
+    )
+    assert accepted is False
+    assert "90" in reason
+
+    accepted, reason = trader._candidate_has_enough_confirmation(
+        SimpleNamespace(**base, long_score=92)
+    )
+    assert accepted is True
+    assert reason == "Trend rõ"
+
+
+@pytest.mark.asyncio
+async def test_risk_endpoint_reports_runtime_enforcement(monkeypatch):
+    from app.api import routes
+    from app.domain.models import ExchangeSnapshot
+
+    snapshot = ExchangeSnapshot()
+    monkeypatch.setattr(routes.state, "portfolio_risk_enforcement_enabled", True)
+    monkeypatch.setattr(routes.state.demo_exchange, "snapshot_cache", snapshot)
+    monkeypatch.setattr(routes.state.storage, "portfolio_risk_audits", lambda _limit: _async([]))
+    monkeypatch.setattr(routes.state.storage, "portfolio_risk_audit_summary", lambda: _async({}))
+    monkeypatch.setattr(routes, "status", lambda: _async({"risk": {}}))
+
+    result = await routes.risk()
+
+    assert result["portfolio"]["mode"] == "ENFORCED"
+    assert result["portfolio"]["enforcement_enabled"] is True
+
+
+def _async(value):
+    async def result():
+        return value
+
+    return result()

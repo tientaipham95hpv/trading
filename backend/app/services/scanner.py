@@ -20,20 +20,15 @@ from app.services.indicators import calculate_indicators
 
 
 class MarketDataClient(Protocol):
-    async def exchange_info(self) -> Mapping[str, Any]:
-        ...
+    async def exchange_info(self) -> Mapping[str, Any]: ...
 
-    async def ticker_24h(self) -> list[Mapping[str, Any]]:
-        ...
+    async def ticker_24h(self) -> list[Mapping[str, Any]]: ...
 
-    async def book_ticker(self) -> list[Mapping[str, Any]]:
-        ...
+    async def book_ticker(self) -> list[Mapping[str, Any]]: ...
 
-    async def premium_index(self) -> list[Mapping[str, Any]]:
-        ...
+    async def premium_index(self) -> list[Mapping[str, Any]]: ...
 
-    async def klines(self, symbol: str, interval: str, limit: int = 250) -> list[Candle]:
-        ...
+    async def klines(self, symbol: str, interval: str, limit: int = 250) -> list[Candle]: ...
 
 
 class FuturesScanner:
@@ -42,6 +37,7 @@ class FuturesScanner:
         self.settings = settings or BotSettings()
         self.last_markets: list[SymbolCandidate] = []
         self.last_results: list[ScannerResult] = []
+        self.last_scan_at: datetime | None = None
 
     async def scan_usdm_pairs(self) -> list[SymbolCandidate]:
         payload, tickers, book_tickers, premium_indexes = await asyncio.gather(
@@ -77,9 +73,7 @@ class FuturesScanner:
             mid = (bid + ask) / 2 if bid and ask else last
             spread_bps = ((ask - bid) / mid * 10_000) if mid and ask and bid else 0.0
             onboard_date = item.get("onboardDate")
-            listing_age_days = (
-                (now_ms - float(onboard_date)) / 86_400_000 if onboard_date else None
-            )
+            listing_age_days = (now_ms - float(onboard_date)) / 86_400_000 if onboard_date else None
             candidate = SymbolCandidate(
                 symbol=symbol,
                 base_asset=item["baseAsset"],
@@ -122,6 +116,7 @@ class FuturesScanner:
         results = [result for result in await asyncio.gather(*jobs) if result is not None]
         results.sort(key=lambda result: max(result.long_score, result.short_score), reverse=True)
         self.last_results = results
+        self.last_scan_at = datetime.now(UTC)
         return results
 
     def signal_from_result(self, result: ScannerResult) -> StrategySignal | None:

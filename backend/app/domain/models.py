@@ -1,7 +1,8 @@
 from datetime import UTC, datetime
 from enum import StrEnum
+from typing import Literal
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 
 class TradingMode(StrEnum):
@@ -423,6 +424,25 @@ class ExitAnalyticsSummary(BaseModel):
     net_realized_pnl: float = 0.0
 
 
+class LifecycleAnalyticsSummary(BaseModel):
+    lifecycle_ids: int = 0
+    opened_lifecycles: int = 0
+    terminal_lifecycles: int = 0
+    verified_lifecycles: int = 0
+    coverage: float = Field(default=0.0, ge=0, le=1)
+    wins: int = 0
+    losses: int = 0
+    breakeven: int = 0
+    winrate: float = 0.0
+    realized_pnl: float = 0.0
+    commission: float = 0.0
+    net_pnl: float = 0.0
+    profit_factor: float | None = None
+    expectancy: float | None = None
+    max_drawdown: float | None = None
+    max_loss_streak: int | None = None
+
+
 class ExitExcursionMetrics(BaseModel):
     lifecycles: int = 0
     mae_r: float | None = None
@@ -438,6 +458,10 @@ class ExitAnalyticsResponse(BaseModel):
     by_close_reason: list[ExitAnalyticsBreakdown] = Field(default_factory=list)
     by_side: list[ExitAnalyticsBreakdown] = Field(default_factory=list)
     by_symbol: list[ExitAnalyticsBreakdown] = Field(default_factory=list)
+    lifecycle_summary: LifecycleAnalyticsSummary = Field(default_factory=LifecycleAnalyticsSummary)
+    lifecycle_by_reason: list[ExitAnalyticsBreakdown] = Field(default_factory=list)
+    lifecycle_by_side: list[ExitAnalyticsBreakdown] = Field(default_factory=list)
+    lifecycle_by_symbol: list[ExitAnalyticsBreakdown] = Field(default_factory=list)
     realized_r: float | None = None
     excursion: ExitExcursionMetrics = Field(default_factory=ExitExcursionMetrics)
     realized_r_availability: ExitAnalyticsAvailability
@@ -448,45 +472,103 @@ class ExitAnalyticsResponse(BaseModel):
 
 
 class BotSettings(BaseModel):
-    whitelist: list[str] = Field(default_factory=list)
-    blacklist: list[str] = Field(default_factory=list)
+    # Validation universe is deliberately small until a strategy earns expansion.
+    whitelist: list[str] = Field(default_factory=lambda: ["BTCUSDT", "ETHUSDT", "SOLUSDT"])
+    blacklist: list[str] = Field(
+        default_factory=lambda: [
+            "PROMUSDT",
+            "ZECUSDT",
+            "XMRUSDT",
+            "SUIUSDT",
+            "UNIUSDT",
+            "KAITOUSDT",
+        ]
+    )
     min_quote_volume: float = 50_000_000
     max_spread_bps: float = 8.0
     min_listing_age_days: int = 30
     scan_timeframes: list[Timeframe] = Field(
         default_factory=lambda: [
-            Timeframe.M1,
-            Timeframe.M5,
             Timeframe.M15,
             Timeframe.H1,
             Timeframe.H4,
         ]
     )
-    min_score_to_trade: int = 70
+    min_score_to_trade: int = 85
     simulation_initial_balance: float = 10_000.0
     taker_fee_rate: float = 0.0005
     maker_fee_rate: float = 0.0002
     slippage_bps: float = 2.0
     funding_rate_per_8h: float = 0.0001
     max_leverage: int = Field(default=5, ge=1, le=10)
-    risk_per_trade: float = Field(default=0.005, gt=0, le=0.005)
-    max_risk_per_trade: float = Field(default=0.0075, gt=0, le=0.01)
-    max_total_open_risk: float = Field(default=0.05, gt=0, le=0.10)
-    max_margin_per_trade: float = Field(default=0.15, gt=0, le=1.0)
-    max_total_margin: float = Field(default=0.50, gt=0, le=1.0)
+    risk_per_trade: float = Field(default=0.001, gt=0, le=0.005)
+    max_risk_per_trade: float = Field(default=0.0025, gt=0, le=0.01)
+    max_total_open_risk: float = Field(default=0.0025, gt=0, le=0.10)
+    max_margin_per_trade: float = Field(default=0.10, gt=0, le=1.0)
+    max_total_margin: float = Field(default=0.25, gt=0, le=1.0)
     max_daily_loss: float = Field(default=0.04, gt=0, le=0.04)
     max_weekly_drawdown: float = Field(default=0.08, gt=0, le=0.08)
-    max_open_positions: int = Field(default=5, ge=1, le=10)
-    max_portfolio_exposure: float = Field(default=1.00, gt=0, le=1.0)
-    max_symbol_exposure: float = Field(default=0.20, gt=0, le=1.0)
+    # Validation mode permits exactly one position: no pyramiding or hedging.
+    max_open_positions: int = Field(default=1, ge=1, le=1)
+    max_portfolio_exposure: float = Field(default=0.50, gt=0, le=1.0)
+    max_symbol_exposure: float = Field(default=0.15, gt=0, le=1.0)
     max_directional_exposure: float = Field(default=0.30, gt=0, le=1.0)
     max_symbol_open_risk: float = Field(default=0.015, gt=0, le=0.10)
     max_correlated_positions: int = Field(default=2, ge=1, le=2)
-    max_loss_streak: int = Field(default=3, ge=1, le=3)
+    max_loss_streak: int = Field(default=2, ge=1, le=3)
     loss_streak_cooldown_minutes: int = Field(default=60, ge=1, le=1440)
     extreme_volatility_atr_fraction: float = Field(default=0.06, gt=0, le=0.06)
     stale_data_seconds: int = Field(default=180, ge=10, le=180)
-    minimum_risk_reward: float = Field(default=1.8, ge=1.8)
+    minimum_risk_reward: float = Field(default=2.5, ge=1.8)
+
+    @field_validator("whitelist", "blacklist")
+    @classmethod
+    def normalize_symbol_universe(cls, symbols: list[str]) -> list[str]:
+        normalized = [symbol.strip().upper() for symbol in symbols if symbol.strip()]
+        if len(normalized) != len(set(normalized)):
+            raise ValueError("Whitelist/blacklist không được có symbol trùng lặp")
+        if any(not symbol.endswith("USDT") for symbol in normalized):
+            raise ValueError("Universe chỉ hỗ trợ hợp đồng USDT")
+        return normalized
+
+    @model_validator(mode="after")
+    def validate_restricted_universe(self) -> "BotSettings":
+        if not self.whitelist:
+            raise ValueError("Whitelist không được để trống khi đang ở chế độ kiểm chứng")
+        overlap = set(self.whitelist) & set(self.blacklist)
+        if overlap:
+            raise ValueError(
+                f"Symbol không thể vừa whitelist vừa blacklist: {', '.join(sorted(overlap))}"
+            )
+        return self
+
+
+class AIShadowConfigUpdate(BaseModel):
+    enabled: bool | None = None
+    model: str | None = Field(default=None, min_length=1, max_length=120)
+    outcome_horizon: int | None = Field(default=None, ge=4, le=96)
+    minimum_training_samples: int | None = Field(default=None, ge=50, le=10000)
+
+    @field_validator("model")
+    @classmethod
+    def normalize_model(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("model không được để trống")
+        return normalized
+
+
+class AIShadowConfigResponse(BaseModel):
+    enabled: bool
+    model: str
+    outcome_horizon: int
+    minimum_training_samples: int
+    mode: Literal["SHADOW_ONLY"] = "SHADOW_ONLY"
+    shadow_only: Literal[True] = True
+    read_only: Literal[True] = True
+    execution_enabled: Literal[False] = False
 
 
 class ExchangeConnectionState(StrEnum):
@@ -645,12 +727,36 @@ class BacktestStrategyConfig(BaseModel):
     stop_atr_multiplier: float = Field(default=1.2, gt=0, le=10)
     take_profit_r_multiples: list[float] = Field(default_factory=lambda: [1.0, 1.8, 2.6])
     take_profit_fractions: list[float] = Field(default_factory=lambda: [0.4, 0.3, 0.3])
+    regime_filter: bool = True
+    simple_exit: bool = False
+
+
+class BacktestSignalFunnel(BaseModel):
+    evaluated: int = 0
+    mtf_aligned: int = 0
+    h4_trending: int = 0
+    h1_regime_aligned: int = 0
+    trigger_score_passed: int = 0
+    h1_score_passed: int = 0
+    setup_passed: int = 0
+    extension_passed: int = 0
+    actionable: int = 0
+    rejection_reasons: dict[str, int] = Field(default_factory=dict)
+
+
+class BacktestSignalFunnelAggregate(BaseModel):
+    full: BacktestSignalFunnel = Field(default_factory=BacktestSignalFunnel)
+    train: BacktestSignalFunnel = Field(default_factory=BacktestSignalFunnel)
+    validation: BacktestSignalFunnel = Field(default_factory=BacktestSignalFunnel)
+    out_of_sample: BacktestSignalFunnel = Field(default_factory=BacktestSignalFunnel)
 
 
 class BacktestRunRequest(BaseModel):
     symbol: str = Field(default="BTCUSDT", min_length=3, max_length=30)
     interval: Timeframe = Timeframe.M15
     limit: int = Field(default=1000, ge=250, le=5000)
+    history_days: int | None = Field(default=None, ge=30, le=730)
+    lookback_days: int | None = Field(default=None, ge=365, le=730)
     initial_capital: float = Field(default=10_000, gt=0)
     taker_fee_rate: float = Field(default=0.0005, ge=0, le=0.01)
     slippage_bps: float = Field(default=2.0, ge=0, le=100)
@@ -661,10 +767,22 @@ class BacktestRunRequest(BaseModel):
     baseline: BacktestStrategyConfig = Field(default_factory=BacktestStrategyConfig)
     candidate: BacktestStrategyConfig | None = None
 
+    @field_validator("symbol")
+    @classmethod
+    def validate_backtest_symbol(cls, value: str) -> str:
+        normalized = value.strip().upper()
+        if normalized not in {"BTCUSDT", "ETHUSDT", "SOLUSDT"}:
+            raise ValueError("Backtest chỉ hỗ trợ BTCUSDT, ETHUSDT và SOLUSDT")
+        return normalized
+
     @model_validator(mode="after")
     def validate_splits(self) -> "BacktestRunRequest":
+        if self.interval != Timeframe.M15:
+            raise ValueError("Backtest MTF chỉ hỗ trợ timeline 15m")
         if self.train_fraction + self.validation_fraction >= 1:
             raise ValueError("Train + Validation phải nhỏ hơn 1")
+        if self.lookback_days is not None and self.history_days is not None:
+            raise ValueError("Chỉ dùng một trong lookback_days hoặc history_days")
         return self
 
 
@@ -709,6 +827,10 @@ class BacktestStrategyReport(BaseModel):
     walk_forward: list[BacktestSegment] = Field(default_factory=list)
     trades: list[BacktestTrade] = Field(default_factory=list)
     equity_curve: list[BacktestPoint] = Field(default_factory=list)
+    signal_funnel: BacktestSignalFunnel = Field(default_factory=BacktestSignalFunnel)
+    signal_funnels: BacktestSignalFunnelAggregate = Field(
+        default_factory=BacktestSignalFunnelAggregate
+    )
 
 
 class BacktestRunReport(BaseModel):
@@ -724,16 +846,20 @@ class BacktestRunReport(BaseModel):
     baseline: BacktestStrategyReport
     candidate: BacktestStrategyReport | None = None
     candidate_applied: bool = False
+    ablations: dict[str, BacktestStrategyReport] = Field(default_factory=dict)
 
 
 class BacktestOptimizerRequest(BaseModel):
     """Bounded experiment grid; results are advisory and never mutate runtime settings."""
 
     run: BacktestRunRequest = Field(default_factory=BacktestRunRequest)
-    min_scores: list[int] = Field(default_factory=lambda: [65, 70, 75])
-    stop_atr_multipliers: list[float] = Field(default_factory=lambda: [1.0, 1.2, 1.5])
-    risk_fractions: list[float] = Field(default_factory=lambda: [0.003, 0.005])
-    minimum_oos_trades: int = Field(default=3, ge=1, le=100)
+    min_scores: list[int] = Field(default_factory=lambda: [75, 80, 85, 90])
+    stop_atr_multipliers: list[float] = Field(default_factory=lambda: [1.2, 1.5, 1.8])
+    risk_fractions: list[float] = Field(default_factory=lambda: [0.0025])
+    folds: int = Field(default=3, ge=1, le=10)
+    minimum_validation_trades: int = Field(default=3, ge=1, le=100)
+    minimum_oos_trades: int = Field(default=100, ge=100, le=100_000)
+    max_oos_drawdown_percent: float = Field(default=20.0, gt=0, le=100)
     max_candidates: int = Field(default=12, ge=1, le=24)
 
     @model_validator(mode="after")
@@ -763,8 +889,24 @@ class BacktestOptimizerCandidate(BaseModel):
     score: float
     eligible: bool
     rejection_reasons: list[str] = Field(default_factory=list)
-    profitable_walk_forward_ratio: float = 0.0
+    profitable_walk_forward_ratio: float = Field(default=0.0, ge=0, le=1)
+    stitched_oos: BacktestSegment
     report: BacktestStrategyReport
+
+
+class BacktestOptimizerFold(BaseModel):
+    number: int
+    train_start: int
+    train_end: int
+    validation_start: int
+    validation_end: int
+    test_start: int
+    test_end: int
+    selected_config: BacktestStrategyConfig
+    selected_config_fingerprint: str
+    validation_score: float
+    validation_trades: int
+    test: BacktestSegment
 
 
 class BacktestOptimizerReport(BaseModel):
@@ -776,8 +918,12 @@ class BacktestOptimizerReport(BaseModel):
     evaluated_candidates: int
     eligible_candidates: int
     minimum_oos_trades: int
-    selection_policy: str = "VALIDATION_OOS_STABILITY_V1"
+    minimum_oos_profit_factor: float = 1.2
+    minimum_oos_expectancy: float = 0.0
+    max_oos_drawdown_percent: float
+    selection_policy: str = "ROLLING_TRAIN_VALIDATION_OOS_V2_FAIL_CLOSED"
     candidates: list[BacktestOptimizerCandidate] = Field(default_factory=list)
+    folds: list[BacktestOptimizerFold] = Field(default_factory=list)
     candidate_applied: bool = False
 
 

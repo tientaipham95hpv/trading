@@ -39,6 +39,71 @@ def test_unverifiable_r_and_excursions_are_explicitly_unavailable():
     assert result.missed_r_availability.available is False
 
 
+def test_lifecycle_metrics_dedupe_partial_and_final_update_for_same_trade():
+    events = [
+        {
+            "event_type": "OPEN",
+            "lifecycle_id": "x",
+            "symbol": "BTCUSDT",
+            "side": "LONG",
+            "risk_verifiable": True,
+            "initial_risk": 20,
+        },
+        {
+            "event_type": "PARTIAL_CLOSE",
+            "lifecycle_id": "x",
+            "event_at": "2026-01-01T00:01:00+00:00",
+            "order_id": "10",
+            "trade_id": "7",
+            "realized_pnl": 10,
+            "commission": 0.5,
+            "reason": "TAKE_PROFIT",
+        },
+        {
+            "event_type": "CLOSE_FILL",
+            "lifecycle_id": "x",
+            "event_at": "2026-01-01T00:01:00+00:00",
+            "order_id": "10",
+            "trade_id": "7",
+            "realized_pnl": 10,
+            "commission": 0.5,
+            "reason": "TAKE_PROFIT",
+            "lifecycle_state": "CLOSED",
+            "side": "SELL",
+        },
+    ]
+    result = ExitAnalyticsService().analyze([], [], lifecycle_events=events)
+    assert result.lifecycle_summary.terminal_lifecycles == 1
+    assert result.lifecycle_summary.verified_lifecycles == 1
+    assert result.lifecycle_summary.coverage == 1
+    assert result.lifecycle_summary.realized_pnl == pytest.approx(10)
+    assert result.lifecycle_summary.commission == pytest.approx(0.5)
+    assert result.lifecycle_summary.net_pnl == pytest.approx(9.5)
+    assert result.lifecycle_summary.expectancy == pytest.approx(9.5)
+    assert result.realized_r == pytest.approx(0.5)
+
+
+def test_lifecycle_metrics_expose_missing_open_coverage_without_inference():
+    events = [
+        {
+            "event_type": "CLOSE_FILL",
+            "lifecycle_id": "legacy",
+            "event_at": "2026-01-01T00:01:00+00:00",
+            "order_id": "10",
+            "trade_id": "7",
+            "realized_pnl": -10,
+            "commission": 0.5,
+            "reason": "STOP_LOSS",
+        }
+    ]
+    result = ExitAnalyticsService().analyze([], [], lifecycle_events=events)
+    assert result.lifecycle_summary.terminal_lifecycles == 1
+    assert result.lifecycle_summary.verified_lifecycles == 0
+    assert result.lifecycle_summary.coverage == 0
+    assert result.lifecycle_summary.expectancy is None
+    assert result.lifecycle_summary.max_loss_streak is None
+
+
 def test_realized_r_uses_only_matched_verifiable_lifecycle_evidence():
     events = [
         {

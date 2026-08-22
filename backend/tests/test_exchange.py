@@ -1,7 +1,7 @@
 from decimal import Decimal
 from typing import Any
 
-from app.domain.models import MarginType, OrderPlan, Side
+from app.domain.models import MarginType, OrderPlan, Side, TradingMode
 from app.services.exchange import BinanceFuturesAdapter, ExchangeError
 from app.services.user_stream import UserStreamWatchdog
 
@@ -23,8 +23,8 @@ def plan(**overrides):
 
 
 class FakeBinanceAdapter(BinanceFuturesAdapter):
-    def __init__(self) -> None:
-        super().__init__(api_key="key", api_secret="secret")
+    def __init__(self, mode: TradingMode = TradingMode.DEMO) -> None:
+        super().__init__(api_key="key", api_secret="secret", mode=mode)
         self.calls: list[tuple[str, str, dict[str, Any]]] = []
         self.sl_exists = True
         self.position_risk: list[dict[str, Any]] = []
@@ -129,6 +129,62 @@ class FakeStorage:
         return None
 
 
+async def test_three_bot_positions_each_get_individual_protective_stop_recovery_close():
+    from app.domain.models import ExchangeOrder, ExchangePosition, ExchangeSnapshot
+
+    adapter = FakeBinanceAdapter()
+    snapshot = ExchangeSnapshot(
+        mode=TradingMode.DEMO,
+        positions=[
+            ExchangePosition(symbol="BTCUSDT", side="LONG", quantity=0.01, entry_price=100),
+            ExchangePosition(symbol="ETHUSDT", side="SHORT", quantity=0.2, entry_price=2000),
+            ExchangePosition(symbol="SOLUSDT", side="LONG", quantity=1.5, entry_price=150),
+        ],
+        orders=[
+            ExchangeOrder(
+                symbol="BTCUSDT",
+                order_id=1,
+                client_order_id="demo-BTCUSDT-1-tp-0",
+                side="SELL",
+                order_type="TAKE_PROFIT_MARKET",
+                status="NEW",
+                stop_price=105,
+            ),
+            ExchangeOrder(
+                symbol="ETHUSDT",
+                order_id=2,
+                client_order_id="demo-ETHUSDT-1-tp-0",
+                side="BUY",
+                order_type="TAKE_PROFIT_MARKET",
+                status="NEW",
+                stop_price=1900,
+            ),
+            ExchangeOrder(
+                symbol="SOLUSDT",
+                order_id=3,
+                client_order_id="demo-SOLUSDT-1-tp-0",
+                side="SELL",
+                order_type="TAKE_PROFIT_MARKET",
+                status="NEW",
+                stop_price=160,
+            ),
+        ],
+    )
+
+    actions = await adapter.close_unprotected_bot_positions(
+        snapshot, {"BTCUSDT", "ETHUSDT", "SOLUSDT"}
+    )
+
+    assert [action["symbol"] for action in actions] == ["BTCUSDT", "ETHUSDT", "SOLUSDT"]
+    close_orders = [
+        params
+        for method, path, params in adapter.calls
+        if method == "POST" and path == "/fapi/v1/order" and params.get("type") == "MARKET"
+    ]
+    assert [params["quantity"] for params in close_orders] == ["0.01", "0.2", "1.5"]
+    assert [params["side"] for params in close_orders] == ["SELL", "BUY", "SELL"]
+
+
 async def test_binance_demo_places_entry_sl_and_reduce_only_take_profits():
     adapter = FakeBinanceAdapter()
 
@@ -203,7 +259,7 @@ async def test_invalid_post_entry_stop_loss_closes_without_safe_mode_alert():
     )
 
 
-async def test_sl_failure_closes_position_and_returns_critical_alert():
+async def test_demo_sl_failure_closes_position_and_enters_safe_mode():
     adapter = FakeBinanceAdapter()
     adapter.sl_exists = False
 
@@ -211,6 +267,7 @@ async def test_sl_failure_closes_position_and_returns_critical_alert():
 
     assert result.accepted is False
     assert result.critical_alert is not None
+    assert adapter.snapshot_cache.safe_mode is True
     assert any(
         params.get("newClientOrderId") == "demo-BTCUSDT-1-close"
         for _, path, params in adapter.calls
@@ -222,6 +279,16 @@ async def test_sl_failure_closes_position_and_returns_critical_alert():
         if path in {"/fapi/v1/order", "/fapi/v1/algoOrder"}
         and (params.get("newClientOrderId") or params.get("clientAlgoId"))
     )
+
+
+async def test_live_sl_failure_closes_position_and_returns_critical_alert():
+    adapter = FakeBinanceAdapter(mode=TradingMode.LIVE)
+    adapter.sl_exists = False
+
+    result = await adapter.submit_order_plan(plan())
+
+    assert result.accepted is False
+    assert result.critical_alert is not None
 
 
 async def test_reconcile_mismatch_enters_safe_mode():
@@ -559,6 +626,55 @@ async def test_manage_stops_serializes_concurrent_calls_per_symbol():
     assert len(posts) == 1
     assert posts[0]["quantity"] == "0.006"
     assert sum(len(result) for result in results) == 1
+
+
+async def test_manage_stops_protects_three_independent_positions():
+    adapter = FakeBinanceAdapter()
+    symbols = ("BTCUSDT", "ETHUSDT", "SOLUSDT")
+    for symbol in symbols:
+        adapter._symbol_filters[symbol] = adapter._symbol_filters["BTCUSDT"].copy()
+    adapter.position_risk = [
+        {
+            "symbol": symbol,
+            "positionAmt": "0.01",
+            "entryPrice": "100",
+            "markPrice": "107",
+            "unRealizedProfit": "0.042",
+            "liquidationPrice": "80",
+            "leverage": "5",
+            "marginType": "isolated",
+        }
+        for symbol in symbols
+    ]
+    adapter.open_algo_orders = [
+        {
+            "symbol": symbol,
+            "algoId": index,
+            "clientAlgoId": f"demo-{symbol}-1-tp-{tp_index}",
+            "side": "SELL",
+            "orderType": "TAKE_PROFIT_MARKET",
+            "algoStatus": "NEW",
+            "quantity": "0.003",
+            "actualQty": "0",
+            "reduceOnly": True,
+            "triggerPrice": str(110 + tp_index * 10),
+        }
+        for index, (symbol, tp_index) in enumerate(
+            ((symbol, tp_index) for symbol in symbols for tp_index in (0, 1)),
+            start=1,
+        )
+    ]
+
+    actions = await adapter.manage_open_position_stops()
+
+    stop_posts = [
+        params
+        for method, path, params in adapter.calls
+        if method == "POST" and path == "/fapi/v1/algoOrder" and params.get("type") == "STOP_MARKET"
+    ]
+    assert {params["symbol"] for params in stop_posts} == set(symbols)
+    assert {action["symbol"] for action in actions} == set(symbols)
+    assert all(params["quantity"] == "0.01" for params in stop_posts)
 
 
 async def test_redeploy_queries_exchange_before_entry_submit():

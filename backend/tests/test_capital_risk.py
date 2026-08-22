@@ -33,7 +33,7 @@ def test_five_to_twenty_million_uses_middle_live_tier():
     assert profile.name == "LIVE_TIER_5M_TO_20M"
     assert profile.risk_per_trade == 0.0035
     assert profile.max_leverage == 5
-    assert profile.max_open_positions == 2
+    assert profile.max_open_positions == 1
     assert profile.max_portfolio_exposure == 0.50
 
 
@@ -43,7 +43,7 @@ def test_larger_capital_auto_raises_live_risk_below_demo_limits():
     assert profile.name == "LIVE_TIER_ABOVE_20M"
     assert profile.risk_per_trade == 0.005
     assert profile.max_leverage == 7
-    assert profile.max_open_positions == 3
+    assert profile.max_open_positions == 1
     assert profile.max_portfolio_exposure == 0.75
     assert "thấp hơn DEMO" in profile.reason
 
@@ -66,9 +66,8 @@ def test_non_positive_equity_is_normalized_and_live_blocked():
         assert profile.live_allowed is False
 
 
-def test_demo_profile_uses_configured_flexible_limits():
+def test_demo_profile_hard_caps_positions_at_one():
     settings = BotSettings(
-        max_open_positions=5,
         max_leverage=10,
         max_total_open_risk=0.05,
         max_margin_per_trade=0.15,
@@ -84,13 +83,13 @@ def test_demo_profile_uses_configured_flexible_limits():
 
     assert profile.name == "DEMO_SETTINGS"
     assert profile.max_leverage == 10
-    assert profile.max_open_positions == 5
+    assert profile.max_open_positions == 1
     assert profile.max_total_margin == 0.50
     assert profile.max_portfolio_exposure == 1.00
 
 
-def test_live_profile_ignores_demo_settings_and_uses_capital_tier():
-    settings = BotSettings(max_open_positions=3, max_leverage=10)
+def test_live_profile_hard_caps_positions_at_one():
+    settings = BotSettings(max_leverage=10)
 
     profile = capital_risk_profile_for_mode(
         25_000_000 / VND_PER_USDT,
@@ -99,5 +98,17 @@ def test_live_profile_ignores_demo_settings_and_uses_capital_tier():
     )
 
     assert profile.name == "LIVE_TIER_ABOVE_20M"
-    assert profile.max_open_positions == 3
+    assert profile.max_open_positions == 1
     assert profile.max_leverage == 7
+
+
+def test_validation_universe_requires_a_nonempty_usdt_whitelist():
+    try:
+        BotSettings(whitelist=[])
+    except ValueError as exc:
+        assert "Whitelist không được để trống" in str(exc)
+    else:
+        raise AssertionError("Không được cho phép scanner universe rỗng")
+
+    settings = BotSettings(whitelist=["btcusdt"], blacklist=[])
+    assert settings.whitelist == ["BTCUSDT"]

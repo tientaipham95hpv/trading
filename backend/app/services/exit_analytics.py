@@ -8,6 +8,7 @@ from app.domain.models import (
     ExitAnalyticsResponse,
     ExitAnalyticsSummary,
     ExitExcursionMetrics,
+    LifecycleAnalyticsSummary,
 )
 
 
@@ -38,16 +39,12 @@ class ExitAnalyticsService:
             for row in events
             if row.get("event_type") == "OPEN" and row.get("risk_verifiable") is True
         }
-        closes_by_lifecycle: dict[str, float] = {}
-        for row in events:
-            if row.get("event_type") not in {"CLOSE_FILL", "PARTIAL_CLOSE"}:
-                continue
-            lifecycle_id = str(row.get("lifecycle_id") or "")
-            if not lifecycle_id or row.get("realized_pnl") is None:
-                continue
-            closes_by_lifecycle[lifecycle_id] = closes_by_lifecycle.get(
-                lifecycle_id, 0.0
-            ) + _number(row.get("realized_pnl"))
+        lifecycle_rows = _verified_completed_lifecycles(events)
+        closes_by_lifecycle = {
+            lifecycle_id: sum(_number(row.get("realized_pnl")) for row in rows)
+            for lifecycle_id, rows in _deduplicated_close_fills(events).items()
+            if any(row.get("realized_pnl") is not None for row in rows)
+        }
         matched = [key for key in closes_by_lifecycle if key in opens]
         covered_risk = sum(_number(opens[key].get("initial_risk")) for key in matched)
         covered_pnl = sum(closes_by_lifecycle[key] for key in matched)
@@ -70,6 +67,10 @@ class ExitAnalyticsService:
             by_close_reason=self._breakdown(closed, "reason"),
             by_side=self._breakdown(closed, "position_side"),
             by_symbol=self._breakdown(closed, "symbol"),
+            lifecycle_summary=self._lifecycle_summary(events, lifecycle_rows),
+            lifecycle_by_reason=self._lifecycle_breakdown(lifecycle_rows, "reason"),
+            lifecycle_by_side=self._lifecycle_breakdown(lifecycle_rows, "side"),
+            lifecycle_by_symbol=self._lifecycle_breakdown(lifecycle_rows, "symbol"),
             realized_r=realized_r,
             excursion=excursion,
             realized_r_availability=ExitAnalyticsAvailability(
@@ -97,7 +98,8 @@ class ExitAnalyticsService:
             notes=[
                 "Số lần thoát là số close fill, không phải số lifecycle giao dịch đã đóng.",
                 "PnL theo reason/side/symbol lấy từ các close fill có realizedPnl khác 0.",
-                "Commission và funding là tổng theo income history; không phân bổ giả định vào từng nhóm.",
+                "Commission và funding là tổng theo income history; funding không được phân bổ giả định vào lifecycle.",
+                "Lifecycle metrics chỉ dùng terminal close khớp OPEN; execution updates trùng trade được dedupe.",
             ],
         )
 
@@ -110,6 +112,62 @@ class ExitAnalyticsService:
         return [
             ExitAnalyticsBreakdown(key=key, closes=count, realized_pnl=pnl, net_realized_pnl=pnl)
             for key, (count, pnl) in sorted(totals.items())
+        ]
+
+    @staticmethod
+    def _lifecycle_summary(
+        events: list[dict[str, object]], rows: list[dict[str, object]]
+    ) -> LifecycleAnalyticsSummary:
+        lifecycle_ids = {str(row.get("lifecycle_id")) for row in events if row.get("lifecycle_id")}
+        opened = {str(row.get("lifecycle_id")) for row in events if row.get("event_type") == "OPEN"}
+        terminal = set(_terminal_closes(events))
+        pnl = [_number(row.get("net_pnl")) for row in rows]
+        wins = [value for value in pnl if value > 1e-12]
+        losses = [value for value in pnl if value < -1e-12]
+        equity = peak = drawdown = 0.0
+        streak = max_streak = 0
+        for value in pnl:
+            equity += value
+            peak = max(peak, equity)
+            drawdown = max(drawdown, peak - equity)
+            streak = streak + 1 if value < -1e-12 else 0
+            max_streak = max(max_streak, streak)
+        gross_loss = abs(sum(losses))
+        return LifecycleAnalyticsSummary(
+            lifecycle_ids=len(lifecycle_ids),
+            opened_lifecycles=len(opened),
+            terminal_lifecycles=len(terminal),
+            verified_lifecycles=len(rows),
+            coverage=len(rows) / len(terminal) if terminal else 0.0,
+            wins=len(wins),
+            losses=len(losses),
+            breakeven=len(rows) - len(wins) - len(losses),
+            winrate=len(wins) / len(rows) if rows else 0.0,
+            realized_pnl=sum(_number(row.get("realized_pnl")) for row in rows),
+            commission=sum(_number(row.get("commission")) for row in rows),
+            net_pnl=sum(pnl),
+            profit_factor=(sum(wins) / gross_loss if gross_loss else None),
+            expectancy=(sum(pnl) / len(rows) if rows else None),
+            max_drawdown=(drawdown if rows else None),
+            max_loss_streak=(max_streak if rows else None),
+        )
+
+    @staticmethod
+    def _lifecycle_breakdown(
+        rows: list[dict[str, object]], field: str
+    ) -> list[ExitAnalyticsBreakdown]:
+        grouped: dict[str, list[dict[str, object]]] = {}
+        for row in rows:
+            grouped.setdefault(str(row.get(field) or "Không xác định"), []).append(row)
+        return [
+            ExitAnalyticsBreakdown(
+                key=key,
+                closes=len(items),
+                realized_pnl=sum(_number(row.get("realized_pnl")) for row in items),
+                commission=sum(_number(row.get("commission")) for row in items),
+                net_realized_pnl=sum(_number(row.get("net_pnl")) for row in items),
+            )
+            for key, items in sorted(grouped.items())
         ]
 
     @staticmethod
@@ -232,6 +290,76 @@ def excursion_requests(
                 count,
             )
     return requests
+
+
+def _deduplicated_close_fills(
+    events: Iterable[dict[str, object]],
+) -> dict[str, list[dict[str, object]]]:
+    fills: dict[str, dict[tuple[str, str], dict[str, object]]] = {}
+    for row in events:
+        lifecycle_id = str(row.get("lifecycle_id") or "")
+        if not lifecycle_id or row.get("event_type") not in {"PARTIAL_CLOSE", "CLOSE_FILL"}:
+            continue
+        order_id = str(row.get("order_id") or row.get("client_order_id") or "")
+        trade_id = str(row.get("trade_id") or "")
+        identity = (
+            (order_id, trade_id)
+            if trade_id
+            else (
+                order_id,
+                str(
+                    (
+                        _event_ms(row),
+                        row.get("last_fill_quantity"),
+                        row.get("last_fill_price"),
+                        row.get("realized_pnl"),
+                    )
+                ),
+            )
+        )
+        previous = fills.setdefault(lifecycle_id, {}).get(identity)
+        if previous is None or row.get("event_type") == "CLOSE_FILL":
+            fills[lifecycle_id][identity] = row
+    return {lifecycle_id: list(items.values()) for lifecycle_id, items in fills.items()}
+
+
+def _verified_completed_lifecycles(
+    events: Iterable[dict[str, object]],
+) -> list[dict[str, object]]:
+    rows = list(events)
+    opens = {
+        str(row.get("lifecycle_id")): row
+        for row in rows
+        if row.get("event_type") == "OPEN" and row.get("lifecycle_id")
+    }
+    terminal = _terminal_closes(rows)
+    fills = _deduplicated_close_fills(rows)
+    completed: list[dict[str, object]] = []
+    for lifecycle_id, terminal_row in terminal.items():
+        opened = opens.get(lifecycle_id)
+        lifecycle_fills = fills.get(lifecycle_id, [])
+        if not opened or not lifecycle_fills:
+            continue
+        realized = sum(_number(row.get("realized_pnl")) for row in lifecycle_fills)
+        commission = sum(abs(_number(row.get("commission"))) for row in lifecycle_fills)
+        side = str(opened.get("side") or "").upper()
+        if side not in {"LONG", "SHORT"}:
+            order_side = str(terminal_row.get("side") or "").upper()
+            side = "LONG" if order_side == "SELL" else "SHORT" if order_side == "BUY" else ""
+        completed.append(
+            {
+                "lifecycle_id": lifecycle_id,
+                "event_at": terminal_row.get("event_at"),
+                "symbol": opened.get("symbol") or terminal_row.get("symbol"),
+                "side": side or "Không xác định",
+                "reason": terminal_row.get("reason") or "UNKNOWN",
+                "realized_pnl": realized,
+                "commission": commission,
+                "net_pnl": realized - commission,
+            }
+        )
+    completed.sort(key=lambda row: _event_ms(row) or 0)
+    return completed
 
 
 def _terminal_closes(

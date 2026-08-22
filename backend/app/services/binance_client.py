@@ -1,3 +1,4 @@
+from datetime import UTC, datetime
 from itertools import pairwise
 from typing import Any
 
@@ -80,8 +81,11 @@ class BinanceMarketDataClient:
             page = await self._get(
                 "/fapi/v1/klines",
                 params={
-                    "symbol": symbol.upper(), "interval": interval, "startTime": cursor,
-                    "endTime": end_time - 1, "limit": page_limit,
+                    "symbol": symbol.upper(),
+                    "interval": interval,
+                    "startTime": cursor,
+                    "endTime": end_time - 1,
+                    "limit": page_limit,
                 },
                 timeout=30.0,
             )
@@ -104,12 +108,23 @@ class BinanceMarketDataClient:
         if limit < 1 or limit > 5000:
             raise ValueError("Số nến lịch sử phải nằm trong khoảng 1-5000")
         rows: list[list[Any]] = []
-        end_time: int | None = None
+        # Pin every page to one local cutoff so Binance cannot include the current,
+        # still-forming candle and pagination cannot drift while the run is active.
+        cutoff_ms = int(datetime.now(UTC).timestamp() * 1000)
+        interval_ms = _interval_ms(interval)
+        # Binance filters klines by open time. Asking through ``now`` consumes
+        # one slot with the currently-forming candle and leaves the result short.
+        end_time = cutoff_ms - 1
+        if interval_ms is not None:
+            end_time = cutoff_ms - cutoff_ms % interval_ms - 1
         while len(rows) < limit:
             page_limit = min(1000, limit - len(rows))
-            params: dict[str, Any] = {"symbol": symbol.upper(), "interval": interval, "limit": page_limit}
-            if end_time is not None:
-                params["endTime"] = end_time
+            params: dict[str, Any] = {
+                "symbol": symbol.upper(),
+                "interval": interval,
+                "limit": page_limit,
+            }
+            params["endTime"] = end_time
             page = await self._get("/fapi/v1/klines", params=params, timeout=30.0)
             if not isinstance(page, list) or not page:
                 break
@@ -118,8 +133,92 @@ class BinanceMarketDataClient:
             if len(page) < page_limit:
                 break
         by_open_time = {int(row[0]): row for row in rows if len(row) >= 8}
-        candles = self._candles([by_open_time[key] for key in sorted(by_open_time)][-limit:])
+        candles = [
+            candle
+            for candle in self._candles([by_open_time[key] for key in sorted(by_open_time)])
+            if candle.close_time < cutoff_ms
+        ][-limit:]
         self._validate_historical_candles(candles, limit)
+        return candles
+
+    async def historical_klines_days(self, symbol: str, interval: str, days: int) -> list[Candle]:
+        """Fetch one closed, UTC-anchored research window with bounded pagination."""
+        interval_ms = _interval_ms(interval)
+        if interval_ms is None:
+            raise ValueError(f"Interval lịch sử không được hỗ trợ: {interval}")
+        if days < 30 or days > 730:
+            raise ValueError("Cửa sổ lịch sử phải nằm trong khoảng 30-730 ngày")
+        now_ms = int(datetime.now(UTC).timestamp() * 1000)
+        current_open = now_ms - now_ms % interval_ms
+        requested = days * 86_400_000 // interval_ms
+        start_time = current_open - requested * interval_ms
+        rows: list[list[Any]] = []
+        cursor = start_time
+        while cursor < current_open and len(rows) < requested:
+            page = await self._get(
+                "/fapi/v1/klines",
+                params={
+                    "symbol": symbol.upper(),
+                    "interval": interval,
+                    "startTime": cursor,
+                    "endTime": current_open - 1,
+                    "limit": min(1000, requested - len(rows)),
+                },
+                timeout=30.0,
+            )
+            if not isinstance(page, list) or not page:
+                break
+            rows.extend(page)
+            next_cursor = int(page[-1][0]) + interval_ms
+            if next_cursor <= cursor:
+                raise ValueError("Pagination lịch sử không tiến về phía trước")
+            cursor = next_cursor
+        by_open_time = {int(row[0]): row for row in rows if len(row) >= 8}
+        candles = self._candles([by_open_time[key] for key in sorted(by_open_time)])
+        candles = [row for row in candles if start_time <= row.open_time < current_open]
+        self._validate_historical_candles(candles, requested)
+        return candles
+
+    async def historical_klines_range(
+        self, symbol: str, interval: str, start_time: int, end_time: int
+    ) -> list[Candle]:
+        """Fetch an exact common [start,end) range; only fully closed candles pass."""
+        interval_ms = _interval_ms(interval)
+        if interval_ms is None:
+            raise ValueError(f"Interval lịch sử không được hỗ trợ: {interval}")
+        now_ms = int(datetime.now(UTC).timestamp() * 1000)
+        if start_time % interval_ms or end_time % interval_ms or start_time >= end_time:
+            raise ValueError("Range lịch sử phải thẳng hàng timeframe và start < end")
+        if end_time > now_ms - now_ms % interval_ms:
+            raise ValueError("Range lịch sử chứa nến chưa đóng")
+        requested = (end_time - start_time) // interval_ms
+        rows: list[list[Any]] = []
+        cursor = start_time
+        while cursor < end_time and len(rows) < requested:
+            page = await self._get(
+                "/fapi/v1/klines",
+                params={
+                    "symbol": symbol.upper(),
+                    "interval": interval,
+                    "startTime": cursor,
+                    "endTime": end_time - 1,
+                    "limit": min(1000, requested - len(rows)),
+                },
+                timeout=30.0,
+            )
+            if not isinstance(page, list) or not page:
+                break
+            rows.extend(page)
+            next_cursor = int(page[-1][0]) + interval_ms
+            if next_cursor <= cursor:
+                raise ValueError("Pagination lịch sử không tiến về phía trước")
+            cursor = next_cursor
+        by_open_time = {int(row[0]): row for row in rows if len(row) >= 8}
+        candles = self._candles([by_open_time[key] for key in sorted(by_open_time)])
+        candles = [
+            row for row in candles if start_time <= row.open_time and row.close_time < end_time
+        ]
+        self._validate_historical_candles(candles, requested)
         return candles
 
     async def closed_klines(
@@ -130,7 +229,12 @@ class BinanceMarketDataClient:
             raise ValueError("Số nến tương quan phải nằm trong khoảng 2-500")
         rows = await self._get(
             "/fapi/v1/klines",
-            params={"symbol": symbol.upper(), "interval": interval, "endTime": end_time - 1, "limit": limit},
+            params={
+                "symbol": symbol.upper(),
+                "interval": interval,
+                "endTime": end_time - 1,
+                "limit": limit,
+            },
             timeout=15.0,
         )
         candles = [candle for candle in self._candles(rows) if candle.close_time < end_time]
@@ -140,10 +244,18 @@ class BinanceMarketDataClient:
     @staticmethod
     def _candles(rows: list[list[Any]]) -> list[Candle]:
         return [
-            Candle(open_time=int(row[0]), open=float(row[1]), high=float(row[2]),
-                   low=float(row[3]), close=float(row[4]), volume=float(row[5]),
-                   close_time=int(row[6]), quote_volume=float(row[7]))
-            for row in rows if len(row) >= 8
+            Candle(
+                open_time=int(row[0]),
+                open=float(row[1]),
+                high=float(row[2]),
+                low=float(row[3]),
+                close=float(row[4]),
+                volume=float(row[5]),
+                close_time=int(row[6]),
+                quote_volume=float(row[7]),
+            )
+            for row in rows
+            if len(row) >= 8
         ]
 
     @staticmethod
@@ -154,9 +266,13 @@ class BinanceMarketDataClient:
             if current.open_time <= previous.open_time:
                 raise ValueError("Dữ liệu nến không theo thứ tự thời gian")
             if current.open_time != previous.close_time + 1:
-                raise ValueError(f"Thiếu nến lịch sử giữa {previous.open_time} và {current.open_time}")
+                raise ValueError(
+                    f"Thiếu nến lịch sử giữa {previous.open_time} và {current.open_time}"
+                )
         for candle in candles:
-            if candle.low > min(candle.open, candle.close) or candle.high < max(candle.open, candle.close):
+            if candle.low > min(candle.open, candle.close) or candle.high < max(
+                candle.open, candle.close
+            ):
                 raise ValueError(f"OHLC không hợp lệ tại {candle.open_time}")
             if candle.volume < 0 or candle.quote_volume < 0:
                 raise ValueError(f"Volume không hợp lệ tại {candle.open_time}")
@@ -168,3 +284,20 @@ def _retry_after_seconds(response: httpx.Response) -> float | None:
         return float(value) if value is not None else None
     except ValueError:
         return None
+
+
+def _interval_ms(interval: str) -> int | None:
+    return {
+        "1m": 60_000,
+        "3m": 180_000,
+        "5m": 300_000,
+        "15m": 900_000,
+        "30m": 1_800_000,
+        "1h": 3_600_000,
+        "2h": 7_200_000,
+        "4h": 14_400_000,
+        "6h": 21_600_000,
+        "8h": 28_800_000,
+        "12h": 43_200_000,
+        "1d": 86_400_000,
+    }.get(interval)

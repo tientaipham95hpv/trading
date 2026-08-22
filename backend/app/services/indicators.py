@@ -39,16 +39,28 @@ def rsi(values: list[float], period: int = 14) -> float | None:
 def macd(values: list[float]) -> tuple[float | None, float | None, float | None]:
     if len(values) < 35:
         return None, None, None
+
+    # Build both EMA series in one pass. The previous implementation recalculated
+    # each EMA from the beginning for every prefix, making one MACD snapshot O(n²).
+    # These recurrences use the same seed and update formula as ema().
+    fast = sum(values[:12]) / 12
+    fast_multiplier = 2 / 13
+    fast_by_index = {11: fast}
+    for index in range(12, len(values)):
+        fast = (values[index] - fast) * fast_multiplier + fast
+        fast_by_index[index] = fast
+
+    slow = sum(values[:26]) / 26
+    slow_multiplier = 2 / 27
     macd_line: list[float] = []
-    for index in range(26, len(values) + 1):
-        partial = values[:index]
-        fast = ema(partial, 12)
-        slow = ema(partial, 26)
-        if fast is not None and slow is not None:
-            macd_line.append(fast - slow)
+    for index in range(25, len(values)):
+        if index > 25:
+            slow = (values[index] - slow) * slow_multiplier + slow
+        macd_line.append(fast_by_index[index] - slow)
+
     signal = ema(macd_line, 9)
-    latest = macd_line[-1] if macd_line else None
-    histogram = latest - signal if latest is not None and signal is not None else None
+    latest = macd_line[-1]
+    histogram = latest - signal if signal is not None else None
     return latest, signal, histogram
 
 
@@ -67,7 +79,9 @@ def atr(candles: list[Candle], period: int = 14) -> float | None:
     return sum(true_ranges[-period:]) / period
 
 
-def bollinger(values: list[float], period: int = 20) -> tuple[float | None, float | None, float | None]:
+def bollinger(
+    values: list[float], period: int = 20
+) -> tuple[float | None, float | None, float | None]:
     mid = sma(values, period)
     if mid is None:
         return None, None, None
@@ -81,7 +95,9 @@ def vwap(candles: list[Candle]) -> float | None:
     total_volume = sum(candle.volume for candle in candles)
     if total_volume <= 0:
         return None
-    total = sum(((candle.high + candle.low + candle.close) / 3) * candle.volume for candle in candles)
+    total = sum(
+        ((candle.high + candle.low + candle.close) / 3) * candle.volume for candle in candles
+    )
     return total / total_volume
 
 

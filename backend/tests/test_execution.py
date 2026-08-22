@@ -47,7 +47,9 @@ async def test_long_hits_partial_tp_break_even_trailing_and_pnl():
 
 
 async def test_short_stop_loss_and_fee_slippage_reduce_pnl():
-    service = ExecutionService(BotSettings(slippage_bps=10, taker_fee_rate=0.001, funding_rate_per_8h=0))
+    service = ExecutionService(
+        BotSettings(slippage_bps=10, taker_fee_rate=0.001, funding_rate_per_8h=0)
+    )
     await service.submit_order_plan(
         long_plan(
             client_order_id="sim-ETHUSDT-1",

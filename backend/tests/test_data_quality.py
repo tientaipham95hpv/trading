@@ -43,7 +43,10 @@ def test_data_quality_fails_closed_for_gap_and_insufficient_sample():
     now = datetime(2026, 8, 13, tzinfo=UTC)
     evidence = candles(199, now=now)
     evidence[100] = evidence[100].model_copy(
-        update={"open_time": evidence[100].open_time + 1, "close_time": evidence[100].close_time + 1}
+        update={
+            "open_time": evidence[100].open_time + 1,
+            "close_time": evidence[100].close_time + 1,
+        }
     )
 
     assessment = MarketDataQualityGate.evaluate(evidence, Timeframe.M15, now=now)

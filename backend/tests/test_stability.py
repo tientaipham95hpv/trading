@@ -22,7 +22,7 @@ class FakeAdapter:
     async def snapshot(self):
         return self.snapshot_cache
 
-    async def income_history(self, limit=1000):
+    async def income_history(self, *, income_type=None, limit=1000):
         return self._income
 
 

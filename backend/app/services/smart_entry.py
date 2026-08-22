@@ -16,7 +16,9 @@ class SmartEntryAnalytics:
     result is evidence, never an execution input.
     """
 
-    VERSION = "SMART_ENTRY_SHADOW_V1"
+    # V2 keys evidence by the closed candle being audited, rather than by a
+    # volatile scanner snapshot. This is deliberately audit-only.
+    VERSION = "SMART_ENTRY_SHADOW_V2"
 
     @classmethod
     def evaluate(cls, result: ScannerResult, *, mode: str) -> dict[str, Any]:
@@ -43,30 +45,50 @@ class SmartEntryAnalytics:
             reasons.append("Điểm chất lượng entry shadow chưa đạt 70")
 
         decision_at = result.scanned_at.isoformat()
-        identity = {
+        closed_candle_time = cls._closed_candle_time(result.scanned_at, result.timeframe.value)
+        audit_identity = {
             "version": cls.VERSION,
-            "mode": mode,
             "symbol": result.symbol,
             "timeframe": result.timeframe.value,
             "side": result.action.value,
+            "closed_candle_time": closed_candle_time,
+        }
+        audit_fingerprint = hashlib.sha256(
+            json.dumps(audit_identity, sort_keys=True, separators=(",", ":")).encode()
+        ).hexdigest()
+        # Snapshot details are immutable provenance for the first observation.
+        provenance_identity = {
+            **audit_identity,
             "decision_at": decision_at,
             "price": result.price,
             "stop_loss": result.stop_loss,
             "scores": [result.long_score, result.short_score],
             "risk_reward": result.risk_reward,
         }
-        fingerprint = hashlib.sha256(
-            json.dumps(identity, sort_keys=True, separators=(",", ":")).encode()
+        provenance_fingerprint = hashlib.sha256(
+            json.dumps(provenance_identity, sort_keys=True, separators=(",", ":")).encode()
         ).hexdigest()
+        decision_label, decision_description = cls.decision_presentation(decision)
         return {
-            "event_key": f"{cls.VERSION}:{fingerprint}",
-            "fingerprint": fingerprint,
+            "event_key": f"{cls.VERSION}:{audit_fingerprint}",
+            "fingerprint": audit_fingerprint,
+            "audit_key": f"{result.symbol}:{result.timeframe.value}:{result.action.value}:{closed_candle_time}",
+            "closed_candle_time": closed_candle_time,
+            "provenance": {
+                "schema": "SMART_ENTRY_PROVENANCE_V1",
+                "fingerprint": provenance_fingerprint,
+                "scanner_scanned_at": decision_at,
+                "source": "closed_candle_scanner_snapshot",
+            },
             "version": cls.VERSION,
             "mode": mode,
             "symbol": result.symbol,
             "timeframe": result.timeframe.value,
             "side": result.action.value,
+            # Keep the enum stable for storage/clients; presentation is Vietnamese.
             "decision": decision,
+            "decision_label": decision_label,
+            "decision_description": decision_description,
             "available": available,
             "quality_score": quality,
             "reasons": reasons,
@@ -80,6 +102,26 @@ class SmartEntryAnalytics:
             "outcome_note": "Chỉ bổ sung sau khi đủ nến đóng sau thời điểm quyết định",
             "shadow_only": True,
         }
+
+    @staticmethod
+    def _closed_candle_time(scanned_at: datetime, timeframe: str) -> str:
+        """Canonical UTC close boundary of the closed candle being audited."""
+        interval_ms = SmartEntryOutcomeAnalytics._interval_ms(timeframe)
+        timestamp_ms = int(scanned_at.timestamp() * 1000)
+        return datetime.fromtimestamp((timestamp_ms // interval_ms) * interval_ms / 1000, UTC).isoformat()
+
+    @staticmethod
+    def decision_presentation(decision: str) -> tuple[str, str]:
+        """Vietnamese display text for a shadow decision; never an execution instruction."""
+        if decision == "WOULD_ENTER":
+            return (
+                "SẼ VÀO LỆNH (mô phỏng)",
+                "Candidate đạt điều kiện của Smart Entry Shadow. Chỉ ghi nhận để theo dõi, không gửi lệnh.",
+            )
+        return (
+            "BỎ QUA (mô phỏng)",
+            "Candidate chưa đạt điều kiện Smart Entry Shadow hoặc thiếu dữ liệu xác minh. Không gửi lệnh.",
+        )
 
 
 class SmartEntryOutcomeAnalytics:
@@ -135,6 +177,8 @@ class SmartEntryOutcomeAnalytics:
                     "decision": decision["decision"],
                     "side": decision["side"],
                     "timeframe": decision["timeframe"],
+                    "regime": decision.get("scanner", {}).get("regime", "UNKNOWN"),
+                    "decision_closed_candle_time": decision.get("closed_candle_time", decision["decision_at"]),
                     "horizon": horizon,
                     "entry_price": entry,
                     "close_price": window[-1].close,
@@ -181,10 +225,21 @@ class SmartEntryPerformanceReport:
     def build(cls, items: list[dict[str, Any]]) -> dict[str, Any]:
         from statistics import median
 
+        # Reporting is defensive as well as storage: never let a legacy row,
+        # import, or accidental duplicate turn repeated observations into evidence.
+        # V2's audit key is symbol + timeframe + side + closed-candle time.
+        independent_items, duplicate_events_excluded = cls._independent_items(items)
         rows = []
-        for item in items:
+        duplicate_outcomes_excluded = 0
+        seen_outcomes: set[tuple[str, int]] = set()
+        for item in independent_items:
             for outcome in item.get("outcomes", {}).values():
                 if outcome is not None:
+                    outcome_key = (str(item["event_key"]), int(outcome["horizon"]))
+                    if outcome_key in seen_outcomes:
+                        duplicate_outcomes_excluded += 1
+                        continue
+                    seen_outcomes.add(outcome_key)
                     rows.append({**outcome, "quality_score": item["quality_score"]})
 
         def metrics(group: list[dict[str, Any]]) -> dict[str, Any]:
@@ -216,6 +271,8 @@ class SmartEntryPerformanceReport:
             "side": lambda row: str(row["side"]),
             "symbol": lambda row: str(row["symbol"]),
             "timeframe": lambda row: str(row["timeframe"]),
+            "regime": lambda row: str(row.get("regime", row.get("scanner", {}).get("regime", "UNKNOWN"))),
+            "time_bucket_utc": lambda row: str(row.get("decision_closed_candle_time", row.get("first_open_time", "UNKNOWN")))[:10],
             "quality_band": lambda row: (
                 "80-100"
                 if row["quality_score"] >= 80
@@ -229,12 +286,34 @@ class SmartEntryPerformanceReport:
             }
         return {
             "sample_size": len(rows),
+            "independent_decision_count": len(independent_items),
+            "duplicate_events_excluded": duplicate_events_excluded,
+            "duplicate_outcomes_excluded": duplicate_outcomes_excluded,
             "confidence_status": metrics(rows)["confidence_status"],
             "minimum_sample": cls.MIN_SAMPLE,
             "overall": metrics(rows),
             "dimensions": dimensions,
-            "note": "Thống kê mô tả shadow-only; không tối ưu threshold và không thay đổi Baseline.",
+            "note": "Thống kê mô tả shadow-only trên mẫu độc lập; không tối ưu threshold và không thay đổi Baseline.",
+            "preregistered_pass_criteria": {
+                "expected_return_after_costs": "Phải dương sau phí/slippage; báo cáo hiện tại không xác nhận pass nếu chưa có chi phí chuẩn hóa.",
+                "minimum_sample": cls.MIN_SAMPLE,
+                "cross_symbol": "Không được phụ thuộc một symbol.",
+                "time_stability": "Phải ổn định theo các lát thời gian độc lập.",
+            },
         }
+
+    @staticmethod
+    def _independent_items(items: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], int]:
+        """Keep the first immutable observation for each audit unit."""
+        unique: dict[str, dict[str, Any]] = {}
+        excluded = 0
+        for item in items:
+            audit_key = str(item.get("audit_key") or item.get("event_key"))
+            if audit_key in unique:
+                excluded += 1
+                continue
+            unique[audit_key] = item
+        return list(unique.values()), excluded
 
 
 class SmartEntryOutcomeCollector:

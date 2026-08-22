@@ -24,7 +24,7 @@ class OrderValidator:
             raise ValueError("Đòn bẩy tối đa là 10x")
         if plan.margin_type != MarginType.ISOLATED:
             raise ValueError("Chỉ cho phép isolated margin")
-        if plan.risk_fraction > 0.01:
-            raise ValueError("Rủi ro mỗi lệnh tối đa là 1%")
+        if not 0.001 <= plan.risk_fraction <= 0.0025:
+            raise ValueError("Risk validation phải nằm trong 0.1–0.25%")
         if not plan.take_profits:
             raise ValueError("Bắt buộc có TP")

@@ -98,6 +98,7 @@ class BinanceFuturesAdapter(ExchangeAdapter):
         self._last_time_sync_ms = 0
         self._stop_repair_attempts: dict[str, int] = {}
         self._stop_management_symbols: set[str] = set()
+        self._reconciliation_safe_mode = False
 
     @property
     def configured(self) -> bool:
@@ -158,7 +159,12 @@ class BinanceFuturesAdapter(ExchangeAdapter):
         sl_order = await self._ensure_stop_loss(plan)
         if sl_order is None:
             await self._close_position_market(plan)
-            alert = "CRITICAL: Không tạo được SL trên Binance DEMO, đã gửi lệnh đóng vị thế"
+            alert = (
+                "CRITICAL: Không tạo được SL trên LIVE, đã gửi lệnh đóng vị thế"
+                if self.mode == TradingMode.LIVE
+                else "CRITICAL: Không tạo được SL trên DEMO, đã gửi lệnh đóng vị thế"
+            )
+            self._enter_safe_mode(alert)
             return ExchangeExecutionResult(
                 accepted=False,
                 status=f"{self.mode.value}_SL_FAILED_POSITION_CLOSING",
@@ -266,11 +272,14 @@ class BinanceFuturesAdapter(ExchangeAdapter):
         }
         mismatch = sorted(exchange_symbols.symmetric_difference(local_symbols))
         if mismatch:
+            self._reconciliation_safe_mode = True
             self._enter_safe_mode(f"Mismatch vị thế Binance vs DB: {', '.join(mismatch)}")
             snapshot = self.snapshot_cache
-        else:
-            # A successful authoritative reconciliation is the only automatic
-            # way out of a mismatch SAFE_MODE after recovery/restart.
+        elif self._reconciliation_safe_mode:
+            # Only a prior position mismatch may be cleared automatically.
+            # Other safety latches (for example failed SL placement) require
+            # an explicit operator reset after verification.
+            self._reconciliation_safe_mode = False
             snapshot.safe_mode = False
             snapshot.safe_mode_reason = None
             snapshot.connection = ExchangeConnectionState.CONNECTED
@@ -568,15 +577,18 @@ class BinanceFuturesAdapter(ExchangeAdapter):
         self, snapshot: ExchangeSnapshot, *, max_attempts: int = 3
     ) -> list[dict[str, object]]:
         actions: list[dict[str, object]] = []
-        open_stops = {
-            o.symbol
-            for o in snapshot.orders
-            if o.stop_price and "STOP" in o.order_type and "TAKE_PROFIT" not in o.order_type
+        managed_orders_by_symbol = {
+            position.symbol: [
+                order
+                for order in snapshot.orders
+                if order.symbol == position.symbol and self._is_bot_order_id(order.client_order_id)
+            ]
+            for position in snapshot.positions
         }
         for position in snapshot.positions:
-            if (
-                position.symbol in open_stops
-                or self._stop_repair_attempts.get(position.symbol, 0) >= max_attempts
+            managed_orders = managed_orders_by_symbol[position.symbol]
+            if self._has_protective_stop(position, managed_orders) or (
+                self._stop_repair_attempts.get(position.symbol, 0) >= max_attempts
             ):
                 continue
             history = await self._signed(
@@ -623,6 +635,58 @@ class BinanceFuturesAdapter(ExchangeAdapter):
             self._stop_repair_attempts.pop(position.symbol, None)
             actions.append(
                 {"symbol": position.symbol, "stop_loss": stop, "status": "Đã phục hồi SL"}
+            )
+        return actions
+
+    def unprotected_bot_positions(self, snapshot: ExchangeSnapshot) -> list[str]:
+        """Return bot-owned symbols whose aggregate one-way position lacks a valid SL."""
+        result: list[str] = []
+        for position in snapshot.positions:
+            orders = [
+                order
+                for order in snapshot.orders
+                if order.symbol == position.symbol and self._is_bot_order_id(order.client_order_id)
+            ]
+            if orders and not self._has_protective_stop(position, orders):
+                result.append(position.symbol)
+        return sorted(set(result))
+
+    async def close_unprotected_bot_positions(
+        self, snapshot: ExchangeSnapshot, symbols: set[str]
+    ) -> list[dict[str, object]]:
+        """Close only named bot-owned positions that remain unprotected after repair."""
+        orders_by_symbol: dict[str, list[ExchangeOrder]] = {}
+        for order in snapshot.orders:
+            orders_by_symbol.setdefault(order.symbol, []).append(order)
+
+        actions: list[dict[str, object]] = []
+        for position in snapshot.positions:
+            if position.symbol not in symbols:
+                continue
+            group_id = self._managed_group_id(
+                position.symbol, orders_by_symbol.get(position.symbol, [])
+            )
+            if not group_id:
+                # Manual/foreign positions are never closed by the bot watchdog.
+                continue
+            plan = OrderPlan(
+                client_order_id=group_id,
+                symbol=position.symbol,
+                side=Side.LONG if position.side == "LONG" else Side.SHORT,
+                quantity=position.quantity,
+                entry_price=position.mark_price or position.entry_price,
+                stop_loss=position.entry_price,
+                leverage=min(position.leverage or 1, 5),
+            )
+            close_client_id = await self._close_position_market(plan)
+            actions.append(
+                {
+                    "symbol": position.symbol,
+                    "quantity": position.quantity,
+                    "group_id": group_id,
+                    "client_order_id": close_client_id,
+                    "status": "Đã gửi đóng vị thế thiếu SL",
+                }
             )
         return actions
 
@@ -888,9 +952,35 @@ class BinanceFuturesAdapter(ExchangeAdapter):
     async def _stop_loss_exists(self, symbol: str, client_id: str) -> bool:
         orders = await self.open_orders(symbol)
         return any(
-            order.client_order_id == client_id and order.order_type == "STOP_MARKET"
+            order.client_order_id == client_id
+            and "STOP" in order.order_type
+            and "TAKE_PROFIT" not in order.order_type
             for order in orders
         )
+
+    @staticmethod
+    def _has_protective_stop(position: ExchangePosition, orders: list[ExchangeOrder]) -> bool:
+        stops = [
+            order
+            for order in orders
+            if order.stop_price
+            and "STOP" in order.order_type
+            and "TAKE_PROFIT" not in order.order_type
+            and order.status in {"NEW", "WORKING", "TRIGGERED"}
+        ]
+        mark = position.mark_price or position.entry_price
+        for order in stops:
+            valid_side = (
+                order.side == "SELL" and position.side == "LONG" and order.stop_price < mark
+            ) or (order.side == "BUY" and position.side == "SHORT" and order.stop_price > mark)
+            if not valid_side:
+                continue
+            raw = order.raw or {}
+            if raw.get("closePosition") in {True, "true", "TRUE"}:
+                return True
+            if order.quantity + 1e-12 >= abs(position.quantity):
+                return True
+        return False
 
     def _sync_lifecycles_from_snapshot(
         self,
@@ -1080,10 +1170,6 @@ class BinanceFuturesAdapter(ExchangeAdapter):
     ) -> Any:
         self._require_credentials()
         params = dict(params or {})
-        if signed:
-            params["timestamp"] = self._timestamp_ms()
-            params["recvWindow"] = self.recv_window
-            params["signature"] = self._signature(params)
         headers = {"X-MBX-APIKEY": self.api_key}
         try:
             await self.gateway.acquire(method, path, signed=signed)
@@ -1091,6 +1177,12 @@ class BinanceFuturesAdapter(ExchangeAdapter):
             raise ExchangeError(f"Binance gateway đang khóa circuit breaker: {exc}") from exc
         except RateLimitBudgetExceeded as exc:
             raise ExchangeError(f"Vượt ngân sách rate limit Binance: {exc}") from exc
+        # Ký request sau khi rate limiter cấp lượt. Nếu ký trước khi chờ hàng đợi,
+        # timestamp có thể hết recvWindow và Binance trả -1021 dù đồng hồ đã đồng bộ.
+        if signed:
+            params["timestamp"] = self._timestamp_ms()
+            params["recvWindow"] = self.recv_window
+            params["signature"] = self._signature(params)
         try:
             async with httpx.AsyncClient(timeout=10) as client:
                 response = await client.request(

@@ -1,3 +1,4 @@
+import inspect
 from datetime import UTC, datetime
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -38,6 +39,68 @@ def test_smart_entry_is_deterministic_and_advisory():
     assert first["decision"] == "WOULD_ENTER"
     assert first["shadow_only"] is True
     assert first["outcomes"] == {"4": None, "12": None, "24": None}
+
+
+def test_smart_entry_decision_labels_are_clear_vietnamese_shadow_labels():
+    enter = SmartEntryAnalytics.evaluate(result(), mode="DEMO")
+    skip = SmartEntryAnalytics.evaluate(result(stop_loss=None), mode="DEMO")
+
+    assert enter["decision_label"] == "SẼ VÀO LỆNH (mô phỏng)"
+    assert "Chỉ ghi nhận để theo dõi, không gửi lệnh." in enter["decision_description"]
+    assert skip["decision_label"] == "BỎ QUA (mô phỏng)"
+    assert "Không gửi lệnh." in skip["decision_description"]
+
+
+def test_smart_entry_persistence_is_write_behind_and_execution_neutral():
+    from app.services.auto_trader import AutoTrader
+
+    source = inspect.getsource(AutoTrader._run_once_locked)
+    assert "asyncio.create_task(self._record_smart_entry_evidence(result))" in source
+    assert "await self._record_smart_entry_evidence" not in source
+
+
+async def test_smart_entry_audit_write_failure_is_contained():
+    from app.services.auto_trader import AutoTrader
+
+    storage = SimpleNamespace(
+        save_smart_entry_event=AsyncMock(side_effect=RuntimeError("audit database unavailable")),
+        log=AsyncMock(),
+    )
+    trader = AutoTrader(SimpleNamespace(storage=storage, trading_mode=SimpleNamespace(value="DEMO")))
+
+    await trader._record_smart_entry_evidence(result())
+
+    storage.log.assert_awaited_once()
+    assert storage.log.await_args.args[0] == "Smart Entry shadow evidence not saved"
+    assert storage.log.await_args.kwargs["level"] == "WARNING"
+
+
+async def test_smart_entry_audit_write_keeps_vietnamese_shadow_presentation():
+    from app.services.auto_trader import AutoTrader
+
+    storage = SimpleNamespace(save_smart_entry_event=AsyncMock(return_value=True), log=AsyncMock())
+    trader = AutoTrader(SimpleNamespace(storage=storage, trading_mode=SimpleNamespace(value="DEMO")))
+
+    await trader._record_smart_entry_evidence(result())
+
+    payload = storage.save_smart_entry_event.await_args.args[0]
+    assert payload["decision"] == "WOULD_ENTER"  # Stable audit enum for aggregation.
+    assert payload["decision_label"] == "SẼ VÀO LỆNH (mô phỏng)"
+    assert "không gửi lệnh" in payload["decision_description"].lower()
+    assert payload["shadow_only"] is True
+    storage.log.assert_not_awaited()
+
+
+def test_smart_entry_deduplicates_same_closed_candle_and_preserves_provenance():
+    first = SmartEntryAnalytics.evaluate(result(scanned_at=datetime(2026, 1, 1, 0, 15, 1, tzinfo=UTC)), mode="DEMO")
+    repeated = SmartEntryAnalytics.evaluate(result(scanned_at=datetime(2026, 1, 1, 0, 15, 59, tzinfo=UTC)), mode="DEMO")
+    next_candle = SmartEntryAnalytics.evaluate(result(scanned_at=datetime(2026, 1, 1, 0, 30, tzinfo=UTC)), mode="DEMO")
+
+    assert first["event_key"] == repeated["event_key"]
+    assert first["audit_key"] == repeated["audit_key"]
+    assert first["closed_candle_time"] == repeated["closed_candle_time"]
+    assert first["provenance"]["fingerprint"] != repeated["provenance"]["fingerprint"]
+    assert first["event_key"] != next_candle["event_key"]
 
 
 def test_smart_entry_fails_safe_without_initial_risk():
@@ -191,3 +254,9 @@ async def test_outcome_collector_retries_with_backoff_then_marks_permanent_error
     assert stats["decisions_permanent_error"] == 1
     assert storage.set_smart_entry_collection_state.await_args.kwargs["status"] == "PERMANENT_ERROR"
     assert storage.set_smart_entry_collection_state.await_args.kwargs["next_retry_at"] is None
+
+def test_outcomes_carry_regime_and_decision_candle_provenance():
+    decision = SmartEntryAnalytics.evaluate(result(), mode="DEMO")
+    outcome = SmartEntryOutcomeAnalytics.evaluate(decision, candles(4))[0]
+    assert outcome["regime"] == "TRENDING_UP"
+    assert outcome["decision_closed_candle_time"] == decision["closed_candle_time"]

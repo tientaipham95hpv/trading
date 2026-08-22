@@ -78,6 +78,38 @@ async def test_scanner_discovers_trading_usdt_perpetuals_without_hardcoding():
     assert [pair.symbol for pair in pairs] == ["BTCUSDT"]
 
 
+async def test_scanner_enforces_whitelist_and_blacklist_before_market_scoring():
+    scanner = FuturesScanner(
+        FakeClient(),
+        BotSettings(
+            whitelist=["ethusdt"],
+            blacklist=["BTCUSDT"],
+            min_quote_volume=1,
+            min_listing_age_days=0,
+        ),
+    )
+
+    assert await scanner.scan_usdm_pairs() == []
+
+
+def test_validation_universe_defaults_to_only_deep_liquidity_symbols():
+    settings = BotSettings()
+
+    assert settings.whitelist == ["BTCUSDT", "ETHUSDT", "SOLUSDT"]
+    assert {"PROMUSDT", "ZECUSDT", "XMRUSDT", "SUIUSDT", "UNIUSDT", "KAITOUSDT"} <= set(
+        settings.blacklist
+    )
+
+
+def test_validation_universe_rejects_more_than_one_open_position_setting():
+    try:
+        BotSettings(max_open_positions=2)
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("Validation mode must hard-cap at one open position")
+
+
 async def test_scanner_scores_multi_timeframe_long_signal():
     scanner = FuturesScanner(
         FakeClient(),

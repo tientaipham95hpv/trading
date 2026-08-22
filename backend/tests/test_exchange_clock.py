@@ -1,3 +1,6 @@
+from urllib.parse import parse_qs
+
+import httpx
 import pytest
 
 from app.domain.models import TradingMode
@@ -23,6 +26,29 @@ async def test_signed_resyncs_and_retries_only_timestamp_rejection(monkeypatch):
     assert await adapter._signed("GET", "/fapi/v1/userTrades", {}) == {"ok": True}
     assert syncs == [False, True]
     assert len(calls) == 2
+
+
+@pytest.mark.asyncio
+async def test_request_signs_after_rate_limiter_wait(monkeypatch):
+    adapter = BinanceFuturesAdapter(api_key="k", api_secret="s", mode=TradingMode.DEMO)
+    now_ms = 1_000
+    observed: dict[str, int] = {}
+
+    async def acquire(*args, **kwargs):
+        nonlocal now_ms
+        now_ms = 8_000
+
+    async def request(self, method, url, *, headers, params=None, data=None):
+        signed_params = params if method == "GET" else data
+        observed["timestamp"] = int(parse_qs(str(httpx.QueryParams(signed_params)))["timestamp"][0])
+        return httpx.Response(200, json={"ok": True})
+
+    monkeypatch.setattr(adapter.gateway, "acquire", acquire)
+    monkeypatch.setattr(adapter, "_timestamp_ms", lambda: now_ms)
+    monkeypatch.setattr(httpx.AsyncClient, "request", request)
+
+    assert await adapter._request("GET", "/fapi/v1/account", signed=True) == {"ok": True}
+    assert observed["timestamp"] == 8_000
 
 
 @pytest.mark.asyncio

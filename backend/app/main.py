@@ -27,10 +27,12 @@ async def startup() -> None:
     state.stability.start()
     state.smart_entry_collector.start()
     state.equity_tracker.start()
+    state.telegram_alerts.start(command_handler=state.handle_telegram_command)
 
 
 @app.on_event("shutdown")
 async def shutdown() -> None:
+    await state.telegram_alerts.stop()
     await state.equity_tracker.stop()
     await state.smart_entry_collector.stop()
     await state.stability.stop()

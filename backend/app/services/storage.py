@@ -10,6 +10,9 @@ class Base(DeclarativeBase):
     pass
 
 
+SMART_ENTRY_AUDIT_VERSION = "SMART_ENTRY_SHADOW_V2"
+
+
 class SignalRow(Base):
     __tablename__ = "signals"
 
@@ -124,6 +127,9 @@ class LifecycleAnalyticsEventRow(Base):
 class SmartEntryEventRow(Base):
     __tablename__ = "smart_entry_events"
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    # V2's immutable audit identity. A database uniqueness constraint makes
+    # dedupe race-safe across concurrent scanner tasks and process restarts.
+    audit_key: Mapped[str | None] = mapped_column(String(192), unique=True, index=True, nullable=True)
     event_key: Mapped[str] = mapped_column(String(160), unique=True, index=True)
     mode: Mapped[str] = mapped_column(String(16), index=True)
     symbol: Mapped[str] = mapped_column(String(32), index=True)
@@ -138,6 +144,8 @@ class SmartEntryEventRow(Base):
 class SmartEntryOutcomeRow(Base):
     __tablename__ = "smart_entry_outcomes"
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    # One immutable outcome per decision/horizon, regardless of refetches.
+    decision_horizon_key: Mapped[str] = mapped_column(String(192), unique=True, index=True)
     event_key: Mapped[str] = mapped_column(String(160), unique=True, index=True)
     decision_event_key: Mapped[str] = mapped_column(String(160), index=True)
     mode: Mapped[str] = mapped_column(String(16), index=True)
@@ -220,6 +228,25 @@ class Storage:
     async def init(self) -> None:
         async with self.engine.begin() as conn:
             await conn.run_sync(Base.metadata.create_all)
+            # create_all does not add columns to an already-running deployment.
+            # These additive, idempotent migrations preserve all existing audit
+            # evidence and are intentionally independent of execution config.
+            await conn.exec_driver_sql(
+                "ALTER TABLE smart_entry_events ADD COLUMN IF NOT EXISTS audit_key VARCHAR(192)"
+            )
+            await conn.exec_driver_sql(
+                "CREATE UNIQUE INDEX IF NOT EXISTS uq_smart_entry_events_audit_key "
+                "ON smart_entry_events (audit_key) WHERE audit_key IS NOT NULL"
+            )
+            await conn.exec_driver_sql(
+                "ALTER TABLE smart_entry_outcomes "
+                "ADD COLUMN IF NOT EXISTS decision_horizon_key VARCHAR(192)"
+            )
+            await conn.exec_driver_sql(
+                "CREATE UNIQUE INDEX IF NOT EXISTS uq_smart_entry_outcomes_decision_horizon "
+                "ON smart_entry_outcomes (decision_horizon_key) "
+                "WHERE decision_horizon_key IS NOT NULL"
+            )
 
     async def save_signal(self, payload: dict[str, Any]) -> None:
         async with self.session_factory() as session:
@@ -306,10 +333,12 @@ class Storage:
     async def save_smart_entry_event(self, payload: dict[str, Any]) -> bool:
         """Persist immutable shadow evidence without feeding strategy behavior."""
         async with self.session_factory() as session:
+            audit_key = str(payload["audit_key"])
             exists = (
                 await session.execute(
                     select(SmartEntryEventRow.id).where(
-                        SmartEntryEventRow.event_key == payload["event_key"]
+                        (SmartEntryEventRow.audit_key == audit_key)
+                        | (SmartEntryEventRow.event_key == payload["event_key"])
                     )
                 )
             ).scalar_one_or_none()
@@ -320,6 +349,7 @@ class Storage:
                 decision_at = datetime.fromisoformat(decision_at)
             session.add(
                 SmartEntryEventRow(
+                    audit_key=audit_key,
                     event_key=str(payload["event_key"]),
                     mode=str(payload["mode"]),
                     symbol=str(payload["symbol"]),
@@ -351,6 +381,11 @@ class Storage:
             query = select(SmartEntryEventRow)
             if mode:
                 query = query.where(SmartEntryEventRow.mode == mode)
+            # V1 evidence was keyed by transient scans and is intentionally
+            # excluded from the independent, candle-deduplicated audit.
+            query = query.where(
+                SmartEntryEventRow.payload["version"].as_string() == SMART_ENTRY_AUDIT_VERSION
+            )
             rows = (
                 await session.execute(
                     query.order_by(SmartEntryEventRow.decision_at.desc()).limit(limit)
@@ -386,6 +421,7 @@ class Storage:
                     )
                     .where(
                         SmartEntryEventRow.mode == mode,
+                        SmartEntryEventRow.payload["version"].as_string() == SMART_ENTRY_AUDIT_VERSION,
                         func.coalesce(outcome_count.c.outcome_count, 0) < 3,
                         (SmartEntryCollectionStateRow.status.is_(None))
                         | (SmartEntryCollectionStateRow.status != "PERMANENT_ERROR"),
@@ -454,7 +490,8 @@ class Storage:
                 (
                     await session.execute(
                         select(SmartEntryEventRow.event_key, SmartEntryEventRow.decision_at).where(
-                            SmartEntryEventRow.mode == mode
+                            SmartEntryEventRow.mode == mode,
+                            SmartEntryEventRow.payload["version"].as_string() == SMART_ENTRY_AUDIT_VERSION,
                         )
                     )
                 ).all()
@@ -516,10 +553,12 @@ class Storage:
 
     async def save_smart_entry_outcome(self, payload: dict[str, Any]) -> bool:
         async with self.session_factory() as session:
+            decision_horizon_key = f"{payload['decision_event_key']}:{int(payload['horizon'])}"
             exists = (
                 await session.execute(
                     select(SmartEntryOutcomeRow.id).where(
-                        SmartEntryOutcomeRow.event_key == payload["event_key"]
+                        (SmartEntryOutcomeRow.decision_horizon_key == decision_horizon_key)
+                        | (SmartEntryOutcomeRow.event_key == payload["event_key"])
                     )
                 )
             ).scalar_one_or_none()
@@ -527,6 +566,7 @@ class Storage:
                 return False
             session.add(
                 SmartEntryOutcomeRow(
+                    decision_horizon_key=decision_horizon_key,
                     event_key=str(payload["event_key"]),
                     decision_event_key=str(payload["decision_event_key"]),
                     mode=str(payload["mode"]),

@@ -1,6 +1,6 @@
 import pytest
 
-from app.api.routes import _exchange_performance
+from app.api.routes import _exchange_performance, _performance_income_rows
 from app.domain.models import (
     EmergencyStopState,
     ExchangeOrder,
@@ -162,6 +162,36 @@ def test_exchange_performance_keeps_snapshotted_initial_capital():
     assert performance.initial_capital == 1_000
     assert performance.net_pnl == 25
     assert performance.return_percent == pytest.approx(2.5)
+
+
+async def test_performance_income_fetches_realized_pnl_with_typed_limit():
+    class Adapter:
+        def __init__(self):
+            self.calls = []
+
+        async def income_history(self, *, income_type=None, limit=100):
+            self.calls.append((income_type, limit))
+            if income_type == "REALIZED_PNL":
+                return [
+                    {"incomeType": "REALIZED_PNL", "income": "1", "time": "9999999999999"}
+                    for _ in range(250)
+                ]
+            if income_type == "COMMISSION":
+                return [{"incomeType": "COMMISSION", "income": "-0.1", "time": "9999999999999"}]
+            if income_type == "FUNDING_FEE":
+                return [{"incomeType": "FUNDING_FEE", "income": "0.01", "time": "9999999999999"}]
+            return []
+
+    adapter = Adapter()
+
+    rows = await _performance_income_rows(adapter)
+
+    assert adapter.calls == [
+        ("REALIZED_PNL", 500),
+        ("COMMISSION", 500),
+        ("FUNDING_FEE", 500),
+    ]
+    assert sum(row["incomeType"] == "REALIZED_PNL" for row in rows) == 250
 
 
 def test_exchange_watchdog_treats_open_orders_as_busy_symbols():

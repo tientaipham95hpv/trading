@@ -78,7 +78,7 @@ def capital_risk_profile(equity_usdt: float) -> CapitalRiskProfile:
         risk_per_trade = 0.0035
         max_risk_per_trade = 0.006
         max_leverage = 5
-        max_open_positions = 2
+        max_open_positions = 1
         max_margin_per_trade = 0.12
         max_total_margin = 0.25
         max_daily_loss = 0.03
@@ -90,7 +90,7 @@ def capital_risk_profile(equity_usdt: float) -> CapitalRiskProfile:
         risk_per_trade = 0.005
         max_risk_per_trade = 0.0075
         max_leverage = 7
-        max_open_positions = 3
+        max_open_positions = 1
         max_margin_per_trade = 0.15
         max_total_margin = 0.35
         max_daily_loss = 0.04
@@ -122,15 +122,19 @@ def capital_risk_profile_for_mode(
 ) -> CapitalRiskProfile:
     profile = capital_risk_profile(equity_usdt)
     if mode != "DEMO":
-        return profile
+        # LIVE validation stays single-position even for larger accounts. Scaling
+        # capital may relax sizing, but never increases concurrent LIVE exposure.
+        return replace(profile, max_open_positions=1)
 
     return replace(
         profile,
         name="DEMO_SETTINGS",
-        risk_per_trade=settings.risk_per_trade,
-        max_risk_per_trade=settings.max_risk_per_trade,
+        risk_per_trade=min(max(settings.risk_per_trade, 0.001), 0.0025),
+        max_risk_per_trade=min(max(settings.max_risk_per_trade, 0.001), 0.0025),
         max_leverage=min(int(settings.max_leverage), 10),
-        max_open_positions=settings.max_open_positions,
+        # Validation universe remains single-position regardless of account size
+        # or a stale runtime setting.
+        max_open_positions=1,
         max_margin_per_trade=settings.max_margin_per_trade,
         max_total_margin=settings.max_total_margin,
         max_daily_loss=settings.max_daily_loss,

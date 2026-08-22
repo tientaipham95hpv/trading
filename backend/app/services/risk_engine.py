@@ -28,7 +28,9 @@ class RiskEngine:
         max_loss_streak: int = 3,
         extreme_volatility_atr_fraction: float = 0.06,
         stale_data_seconds: int = 180,
-        minimum_risk_reward: float = 1.8,
+        minimum_risk_reward: float = 2.0,
+        taker_fee_rate: float = 0.0005,
+        slippage_bps: float = 2.0,
     ) -> None:
         self.max_leverage = max_leverage
         self.risk_per_trade = risk_per_trade
@@ -45,6 +47,8 @@ class RiskEngine:
         self.extreme_volatility_atr_fraction = extreme_volatility_atr_fraction
         self.stale_data_seconds = stale_data_seconds
         self.minimum_risk_reward = minimum_risk_reward
+        self.taker_fee_rate = taker_fee_rate
+        self.slippage_bps = slippage_bps
 
     def evaluate(
         self,
@@ -85,21 +89,35 @@ class RiskEngine:
         if signal.leverage > self.max_leverage:
             return RiskDecision(accepted=False, reason="Đòn bẩy vượt giới hạn tối đa", guard=guard)
         if signal.risk_fraction > self.max_risk_per_trade:
-            return RiskDecision(accepted=False, reason="Rủi ro mỗi lệnh vượt mức tối đa", guard=guard)
+            return RiskDecision(
+                accepted=False, reason="Rủi ro mỗi lệnh vượt mức tối đa", guard=guard
+            )
         remaining_risk_fraction = self.max_total_open_risk - current_open_risk_fraction
         if remaining_risk_fraction <= 0:
-            return RiskDecision(accepted=False, reason="Tổng rủi ro vị thế mở đã chạm giới hạn", guard=guard)
+            return RiskDecision(
+                accepted=False, reason="Tổng rủi ro vị thế mở đã chạm giới hạn", guard=guard
+            )
         remaining_margin_fraction = self.max_total_margin - current_margin_fraction
         if remaining_margin_fraction <= 0:
-            return RiskDecision(accepted=False, reason="Tổng margin vị thế mở đã chạm giới hạn", guard=guard)
+            return RiskDecision(
+                accepted=False, reason="Tổng margin vị thế mở đã chạm giới hạn", guard=guard
+            )
         if open_positions >= self.max_open_positions:
             return RiskDecision(accepted=False, reason="Đã chạm số vị thế mở tối đa", guard=guard)
         if signal.metadata.get("sizing") in {"martingale", "unlimited_dca"}:
-            return RiskDecision(accepted=False, reason="Không cho phép martingale hoặc DCA không giới hạn", guard=guard)
+            return RiskDecision(
+                accepted=False,
+                reason="Không cho phép martingale hoặc DCA không giới hạn",
+                guard=guard,
+            )
         if signal.side == Side.LONG and signal.stop_loss >= signal.entry_price:
-            return RiskDecision(accepted=False, reason="Stop loss LONG phải thấp hơn giá vào lệnh", guard=guard)
+            return RiskDecision(
+                accepted=False, reason="Stop loss LONG phải thấp hơn giá vào lệnh", guard=guard
+            )
         if signal.side == Side.SHORT and signal.stop_loss <= signal.entry_price:
-            return RiskDecision(accepted=False, reason="Stop loss SHORT phải cao hơn giá vào lệnh", guard=guard)
+            return RiskDecision(
+                accepted=False, reason="Stop loss SHORT phải cao hơn giá vào lệnh", guard=guard
+            )
 
         target = signal.take_profit or (signal.take_profits[-1] if signal.take_profits else None)
         if target is None:
@@ -108,7 +126,19 @@ class RiskEngine:
         risk_per_unit = abs(signal.entry_price - signal.stop_loss)
         if risk_per_unit <= 0:
             return RiskDecision(accepted=False, reason="Khoảng SL không hợp lệ", guard=guard)
-        risk_reward = reward / risk_per_unit
+        # Promotion uses executable RR, not chart RR. Entry+exit taker fees and
+        # adverse slippage are charged on both the winning and losing paths.
+        slippage_rate = self.slippage_bps / 10_000
+        entry_cost = signal.entry_price * (self.taker_fee_rate + slippage_rate)
+        target_cost = target * (self.taker_fee_rate + slippage_rate)
+        stop_cost = signal.stop_loss * (self.taker_fee_rate + slippage_rate)
+        net_reward = reward - entry_cost - target_cost
+        net_risk = risk_per_unit + entry_cost + stop_cost
+        if net_reward <= 0 or net_risk <= 0:
+            return RiskDecision(
+                accepted=False, reason="RR sau phí/slippage không hợp lệ", guard=guard
+            )
+        risk_reward = net_reward / net_risk
         if risk_reward < self.minimum_risk_reward:
             return RiskDecision(accepted=False, reason="RR nhỏ hơn mức tối thiểu", guard=guard)
 
@@ -116,11 +146,15 @@ class RiskEngine:
         available_risk_amount = account_equity * remaining_risk_fraction
         risk_amount = min(requested_risk_amount, available_risk_amount)
         risk_based_quantity = risk_amount / risk_per_unit
-        max_margin_amount = account_equity * min(self.max_margin_per_trade, remaining_margin_fraction)
+        max_margin_amount = account_equity * min(
+            self.max_margin_per_trade, remaining_margin_fraction
+        )
         margin_based_quantity = (max_margin_amount * signal.leverage) / signal.entry_price
         quantity = min(risk_based_quantity, margin_based_quantity)
         if quantity <= 0:
-            return RiskDecision(accepted=False, reason="Không còn room sizing cho lệnh mới", guard=guard)
+            return RiskDecision(
+                accepted=False, reason="Không còn room sizing cho lệnh mới", guard=guard
+            )
         risk_amount = quantity * risk_per_unit
         notional = quantity * signal.entry_price
         margin_required = notional / signal.leverage
@@ -154,9 +188,8 @@ class RiskEngine:
         exposure_breaker = portfolio_exposure_fraction >= self.max_portfolio_exposure
         correlation_risk = correlated_positions >= self.max_correlated_positions
         loss_cooldown = loss_streak >= self.max_loss_streak
-        extreme_volatility = (
-            market_regime in {MarketRegime.HIGH_VOL, MarketRegime.PANIC}
-            or (atr_fraction is not None and atr_fraction >= self.extreme_volatility_atr_fraction)
+        extreme_volatility = market_regime in {MarketRegime.HIGH_VOL, MarketRegime.PANIC} or (
+            atr_fraction is not None and atr_fraction >= self.extreme_volatility_atr_fraction
         )
         stale_data = data_age_seconds > self.stale_data_seconds
         if safe_mode:

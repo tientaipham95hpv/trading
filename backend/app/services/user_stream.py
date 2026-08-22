@@ -5,7 +5,7 @@ from typing import Any
 
 import websockets
 
-from app.domain.models import TradingMode
+from app.domain.models import NotificationEvent, TradingMode
 from app.services.exchange import ExchangeCredentialsError, ExchangeError
 
 
@@ -113,9 +113,7 @@ class UserStreamWatchdog:
         initial_snapshot = await adapter.snapshot()
         self._restore_managed_positions(initial_snapshot)
         exchange_symbols = {
-            position.symbol
-            for position in initial_snapshot.positions
-            if abs(position.quantity) > 0
+            position.symbol for position in initial_snapshot.positions if abs(position.quantity) > 0
         }
         pruned = self.state.execution.prune_positions_not_on_exchange(exchange_symbols)
         if pruned:
@@ -134,17 +132,17 @@ class UserStreamWatchdog:
         repaired = await adapter.repair_missing_stop_losses(snapshot)
         if repaired:
             snapshot = await adapter.snapshot()
-        unprotected = {
-            position.symbol
-            for position in snapshot.positions
-            if not any(
-                order.symbol == position.symbol
-                and order.stop_price
-                and "STOP" in order.order_type
-                and "TAKE_PROFIT" not in order.order_type
-                for order in snapshot.orders
-            )
-        }
+        unprotected = set(adapter.unprotected_bot_positions(snapshot))
+        if unprotected:
+            closed = await adapter.close_unprotected_bot_positions(snapshot, set(unprotected))
+            if closed:
+                await self.state.storage.log(
+                    "Đã đóng vị thế bot thiếu Stop Loss sau reconnect",
+                    {"mode": self.state.trading_mode.value, "actions": closed},
+                    level="CRITICAL",
+                )
+                snapshot = await adapter.snapshot()
+                unprotected = set(adapter.unprotected_bot_positions(snapshot))
         if snapshot.safe_mode or unprotected:
             reason = snapshot.safe_mode_reason or (
                 f"Position không có SL: {', '.join(sorted(unprotected))}"
@@ -225,6 +223,8 @@ class UserStreamWatchdog:
             if event_type == "ORDER_TRADE_UPDATE" and hasattr(adapter, "handle_user_stream_event"):
                 lifecycle_actions = await adapter.handle_user_stream_event(event)
                 lifecycle_fact = _lifecycle_fact(self.state.trading_mode, event)
+                if lifecycle_fact is not None:
+                    await self._notify_lifecycle(lifecycle_fact)
                 recorder = getattr(self.state.storage, "save_lifecycle_analytics_event", None)
                 if lifecycle_fact is not None and recorder is not None:
                     await recorder(lifecycle_fact)
@@ -245,6 +245,38 @@ class UserStreamWatchdog:
                 },
                 level="INFO",
             )
+
+    async def _notify_lifecycle(self, fact: dict[str, object]) -> None:
+        notifications = getattr(self.state, "notifications", None)
+        if notifications is None:
+            return
+        reason = str(fact.get("reason") or "MARKET_CLOSE")
+        event = (
+            NotificationEvent.TP
+            if reason == "TAKE_PROFIT"
+            else NotificationEvent.SL
+            if reason == "STOP_LOSS"
+            else NotificationEvent.POSITION_CLOSE
+        )
+        title = {
+            NotificationEvent.TP: "Chốt lời đã khớp",
+            NotificationEvent.SL: "Stop Loss đã khớp",
+            NotificationEvent.POSITION_CLOSE: "Đóng vị thế đã khớp",
+        }[event]
+        await notifications.alert(
+            event,
+            title=title,
+            body=f"{fact.get('symbol')} {reason}",
+            data={
+                "mode": fact.get("mode"),
+                "symbol": fact.get("symbol"),
+                "reason": reason,
+                "quantity": fact.get("last_fill_quantity"),
+                "last_fill_price": fact.get("last_fill_price"),
+                "realized_pnl": fact.get("realized_pnl"),
+                "client_order_id": fact.get("client_order_id"),
+            },
+        )
 
     async def _handle_failure(self, exc: Exception) -> None:
         self.connected = False

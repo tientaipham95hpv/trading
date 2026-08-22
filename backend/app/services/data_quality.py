@@ -55,9 +55,7 @@ class MarketDataQualityGate:
         if not valid:
             reasons.append("OHLC hoặc volume không hợp lệ")
 
-        age_seconds = (
-            max(0.0, (now_ms - closed[-1].close_time) / 1000) if closed else None
-        )
+        age_seconds = max(0.0, (now_ms - closed[-1].close_time) / 1000) if closed else None
         # A newly closed bar can naturally be almost one timeframe old.
         freshness_limit = interval_ms / 1000 + stale_data_seconds
         fresh = age_seconds is not None and age_seconds <= freshness_limit

@@ -5,13 +5,16 @@ from datetime import UTC, datetime
 from typing import Any
 
 from app.domain.models import DemoStabilityReport, StabilityCheck, TradingMode
+from app.services.exchange import ExchangeError
 
 
 class DemoStabilityService:
     """Build a conservative, read-only LIVE readiness report from runtime evidence."""
 
-    MIN_TRADES = 50
+    MIN_TRADES = 30
+    MAX_VALIDATION_TRADES = 50
     MIN_SAMPLE_DAYS = 7
+    MIN_PROFIT_FACTOR = 1.2
 
     def __init__(self, app_state: Any) -> None:
         self.state = app_state
@@ -58,16 +61,19 @@ class DemoStabilityService:
         performance = self.state.execution.performance()
         try:
             snapshot = await adapter.snapshot()
-            income = await adapter.income_history(limit=1000)
+            income = await asyncio.wait_for(
+                adapter.income_history(income_type="REALIZED_PNL", limit=500),
+                timeout=8.0,
+            )
             reset_at = self._demo_reset_at()
             if reset_at:
                 reset_ms = int(reset_at.timestamp() * 1000)
                 income = [row for row in income if int(row.get("time") or 0) >= reset_ms]
-            values = [
-                float(row.get("income") or 0)
-                for row in income
-                if str(row.get("incomeType")) == "REALIZED_PNL"
-            ]
+            realized_rows = sorted(
+                (row for row in income if str(row.get("incomeType")) == "REALIZED_PNL"),
+                key=lambda row: int(row.get("time") or 0),
+            )[-self.MAX_VALIDATION_TRADES :]
+            values = [float(row.get("income") or 0) for row in realized_rows]
             trade_count = len(values)
             realized_pnl = sum(values)
             win_rate = sum(value > 0 for value in values) / trade_count if trade_count else 0.0
@@ -77,6 +83,8 @@ class DemoStabilityService:
                 gross_profit / gross_loss if gross_loss else (999.0 if gross_profit else 0.0)
             )
         except (
+            ExchangeError,
+            TimeoutError,
             OSError,
             RuntimeError,
             ValueError,
@@ -116,9 +124,11 @@ class DemoStabilityService:
                 f"Thời gian quan sát {sample_days:.2f}/{self.MIN_SAMPLE_DAYS} ngày",
             ),
             "positive_expectancy": self._check(
-                trade_count >= self.MIN_TRADES and realized_pnl > 0 and profit_factor > 1.0,
-                round(realized_pnl, 4),
-                "PNL > 0 và profit factor > 1 sau đủ mẫu",
+                trade_count >= self.MIN_TRADES
+                and realized_pnl > 0
+                and profit_factor > self.MIN_PROFIT_FACTOR,
+                round(realized_pnl / trade_count, 6) if trade_count else 0.0,
+                f"expectancy > 0 và profit factor > {self.MIN_PROFIT_FACTOR} sau 30–50 lệnh",
                 f"PNL {realized_pnl:.4f}, profit factor {profit_factor:.2f}",
             ),
             "sl_protection": self._check(
@@ -182,6 +192,12 @@ class DemoStabilityService:
                 "user_stream_reconnects": int(stream["reconnects"]),
             },
         )
+        # A completed validation sample that degrades to non-positive expectancy
+        # or PF <= 1 is paused fail-closed. This never enables LIVE.
+        if trade_count >= self.MIN_TRADES and (realized_pnl <= 0 or profit_factor <= 1.0):
+            self.state.enter_safe_mode(
+                "DEMO forward-test suy giảm mạnh sau đủ 30 lệnh; pause entry để rà soát"
+            )
         payload = self.last_report.model_dump(mode="json")
         await self.state.storage.save_stability_snapshot(payload)
         changes = await self.state.storage.sync_incidents(self._active_incidents(checks))

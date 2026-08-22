@@ -5,6 +5,8 @@ import httpx
 from fastapi import APIRouter, HTTPException, Query, WebSocket, WebSocketDisconnect
 
 from app.domain.models import (
+    AIShadowConfigResponse,
+    AIShadowConfigUpdate,
     BacktestOptimizerRequest,
     BacktestRunRequest,
     BotSettings,
@@ -19,6 +21,7 @@ from app.domain.models import (
     Timeframe,
     TradingMode,
 )
+from app.services.analytics_history import AnalyticsHistorySnapshot
 from app.services.app_state import state
 from app.services.capital_risk import capital_risk_profile_for_mode
 from app.services.exchange import ExchangeCredentialsError, ExchangeError
@@ -31,12 +34,15 @@ from app.services.exit_analytics import (
 router = APIRouter(prefix="/api")
 
 
+def _ai_config_response() -> AIShadowConfigResponse:
+    return AIShadowConfigResponse(**state.ai_shadow_config)
+
+
 @router.get("/status")
 async def status() -> dict[str, object]:
     adapter = state.live_exchange if state.trading_mode == TradingMode.LIVE else state.demo_exchange
     account_equity = max(
-        adapter.snapshot_cache.balance.margin_balance
-        or adapter.snapshot_cache.balance.available,
+        adapter.snapshot_cache.balance.margin_balance or adapter.snapshot_cache.balance.available,
         0.0,
     )
     capital_profile = capital_risk_profile_for_mode(
@@ -106,14 +112,37 @@ async def scanner(
     parsed_timeframes = (
         [Timeframe(item.strip()) for item in timeframes.split(",")] if timeframes else None
     )
-    results = await state.scanner.scan(
-        symbols=parsed_symbols,
-        timeframes=parsed_timeframes,
-        limit=limit,
-    )
-    for result in results:
-        await state.storage.save_signal(result.model_dump(mode="json"))
-    return {"items": [item.model_dump(mode="json") for item in results]}
+    try:
+        results = await asyncio.wait_for(
+            state.scanner.scan(
+                symbols=parsed_symbols,
+                timeframes=parsed_timeframes,
+                limit=limit,
+            ),
+            timeout=20.0,
+        )
+        for result in results:
+            await state.storage.save_signal(result.model_dump(mode="json"))
+        return {"items": [item.model_dump(mode="json") for item in results]}
+    except (ExchangeError, TimeoutError, httpx.HTTPError, OSError, RuntimeError, ValueError) as exc:
+        await state.storage.log(
+            "Scanner dùng signal cache",
+            {"mode": state.trading_mode.value, "error": str(exc)},
+            level="WARNING",
+        )
+        if state.scanner.last_results:
+            return {
+                "items": [
+                    item.model_dump(mode="json") for item in state.scanner.last_results[:limit]
+                ],
+                "degraded": True,
+                "reason": str(exc),
+            }
+        return {
+            "items": await state.storage.list_payloads("signals", limit),
+            "degraded": True,
+            "reason": str(exc),
+        }
 
 
 @router.get("/signals")
@@ -127,7 +156,11 @@ async def signals(limit: int = Query(default=100, ge=1, le=500)) -> dict[str, ob
 
 @router.get("/smart-entry")
 async def smart_entry(limit: int = Query(default=100, ge=1, le=500)) -> dict[str, object]:
-    from app.services.smart_entry import SmartEntryOutcomeAnalytics, SmartEntryPerformanceReport
+    from app.services.smart_entry import (
+        SmartEntryAnalytics,
+        SmartEntryOutcomeAnalytics,
+        SmartEntryPerformanceReport,
+    )
 
     mode = state.trading_mode.value
     items = await state.storage.smart_entry_events(mode=mode, limit=limit)
@@ -138,6 +171,11 @@ async def smart_entry(limit: int = Query(default=100, ge=1, le=500)) -> dict[str
     for outcome in outcomes:
         outcomes_by_key.setdefault(str(outcome["decision_event_key"]), []).append(outcome)
     for item in items:
+        decision_label, decision_description = SmartEntryAnalytics.decision_presentation(
+            str(item.get("decision", "WOULD_SKIP"))
+        )
+        item["decision_label"] = decision_label
+        item["decision_description"] = decision_description
         item_outcomes = outcomes_by_key.get(str(item["event_key"]), [])
         item["outcomes"] = {
             str(horizon): next(
@@ -151,10 +189,19 @@ async def smart_entry(limit: int = Query(default=100, ge=1, le=500)) -> dict[str
         decision = str(item.get("decision"))
         if decision in counts:
             counts[decision] += 1
+    decision_legend = {
+        decision: {
+            "label": label,
+            "description": description,
+        }
+        for decision in counts
+        for label, description in [SmartEntryAnalytics.decision_presentation(decision)]
+    }
     return {
         "mode": mode,
         "shadow_only": True,
         "read_only": True,
+        "decision_legend": decision_legend,
         "items": items,
         "summary": {
             "total": len(items),
@@ -172,19 +219,83 @@ async def smart_entry(limit: int = Query(default=100, ge=1, le=500)) -> dict[str
     }
 
 
+@router.get("/ai/training")
+async def ai_training_status(limit: int = Query(default=500, ge=50, le=2000)) -> dict[str, object]:
+    from app.services.smart_entry import SmartEntryOutcomeAnalytics, SmartEntryPerformanceReport
+
+    mode = state.trading_mode.value
+    ai_config = state.ai_shadow_config
+    items = await state.storage.smart_entry_events(mode=mode, limit=limit)
+    outcomes = await state.storage.smart_entry_outcomes(
+        mode=mode, decision_keys=[str(item["event_key"]) for item in items]
+    )
+    outcomes_by_key: dict[str, list[dict[str, object]]] = {}
+    for outcome in outcomes:
+        outcomes_by_key.setdefault(str(outcome["decision_event_key"]), []).append(outcome)
+    for item in items:
+        item["outcomes"] = {
+            str(horizon): next(
+                (
+                    outcome
+                    for outcome in outcomes_by_key.get(str(item["event_key"]), [])
+                    if int(outcome["horizon"]) == horizon
+                ),
+                None,
+            )
+            for horizon in SmartEntryOutcomeAnalytics.HORIZONS
+        }
+    report = SmartEntryPerformanceReport.build(items)
+    sample = int(report["sample_size"])
+    win_rate = report["overall"].get("win_rate")
+    average_return = report["overall"].get("average_return")
+    minimum_training_samples = int(ai_config["minimum_training_samples"])
+    enough_sample = sample >= minimum_training_samples
+    positive_edge = (
+        isinstance(win_rate, (int, float))
+        and isinstance(average_return, (int, float))
+        and win_rate >= 0.52
+        and average_return > 0
+    )
+    return {
+        "mode": mode,
+        "shadow_only": True,
+        "execution_enabled": False,
+        "model_family": str(ai_config["model"]),
+        "configured_outcome_horizon": int(ai_config["outcome_horizon"]),
+        "sample_size": sample,
+        "minimum_sample_for_training": minimum_training_samples,
+        "minimum_sample_for_execution": 1000,
+        "ready_for_training": enough_sample,
+        "ready_for_execution": False,
+        "edge_detected": bool(enough_sample and positive_edge),
+        "performance": report,
+        "collector": {
+            **state.smart_entry_collector.snapshot(),
+            "coverage": await state.storage.smart_entry_collection_coverage(mode=mode),
+        },
+        "guardrails": [
+            "AI không được đặt lệnh trực tiếp",
+            "Chỉ dùng làm confidence/filter sau khi đủ mẫu shadow",
+            "LIVE cần walk-forward + paper/shadow pass trước",
+            "Execution/SL/rate-limit phải ổn định trước khi tăng quyền",
+        ],
+        "next_step": (
+            "Thu thập thêm shadow outcomes"
+            if not enough_sample
+            else (
+                "Có thể chạy thử confidence filter trong DEMO"
+                if positive_edge
+                else "Chưa có edge, tiếp tục quan sát và không đưa vào execution"
+            )
+        ),
+    }
+
+
 @router.get("/positions")
 async def positions() -> dict[str, object]:
-    adapter = _current_adapter()
-    try:
-        snapshot = await adapter.snapshot()
-    except ExchangeError as exc:
-        await state.storage.log(
-            "Positions dùng exchange cache",
-            {"mode": state.trading_mode.value, "error": str(exc)},
-            level="WARNING",
-        )
-        snapshot = adapter.snapshot_cache
-    return {"items": _exchange_positions_for_app(snapshot)}
+    # User stream + reconciliation maintain this snapshot. Dashboard reads must
+    # not multiply signed Binance REST traffic for every connected client.
+    return {"items": _exchange_positions_for_app(_current_adapter().snapshot_cache)}
 
 
 @router.get("/trades")
@@ -192,14 +303,9 @@ async def trades() -> dict[str, object]:
     if state.trading_mode in {TradingMode.DEMO, TradingMode.LIVE}:
         adapter = _current_adapter()
         try:
-            income_rows = await adapter.income_history(income_type="REALIZED_PNL", limit=1000)
-            symbols = sorted(
-                {str(row.get("symbol") or "") for row in income_rows if row.get("symbol")}
-            )
-            rows = []
-            for symbol in symbols:
-                rows.extend(await adapter.trade_history(symbol, limit=1000))
-        except ExchangeError as exc:
+            history = await _analytics_history(adapter)
+            rows = history.snapshot.trades
+        except (ExchangeError, TimeoutError) as exc:
             await state.storage.log(
                 "Trades dùng fallback do exchange rate-limit",
                 {"mode": state.trading_mode.value, "error": str(exc)},
@@ -215,7 +321,11 @@ async def trades() -> dict[str, object]:
         if reset_at is not None:
             cutoff_ms = int(reset_at.timestamp() * 1000)
             rows = [row for row in rows if int(_float(row.get("time"))) >= cutoff_ms]
-        return {"items": _exchange_trades_for_app(rows)}
+        return {
+            "items": _exchange_trades_for_app(rows),
+            "degraded": history.degraded,
+            "reason": history.reason,
+        }
     return {"items": [item.model_dump(mode="json") for item in state.execution.trades]}
 
 
@@ -225,12 +335,10 @@ async def exit_analytics() -> ExitAnalyticsResponse:
     if state.trading_mode in {TradingMode.DEMO, TradingMode.LIVE}:
         adapter = _current_adapter()
         try:
-            income = _income_since_reset(await adapter.income_history(limit=1000))
-            symbols = sorted({str(row.get("symbol")) for row in income if row.get("symbol")})
-            rows: list[dict[str, object]] = []
-            for symbol in symbols:
-                rows.extend(await adapter.trade_history(symbol, limit=1000))
-        except ExchangeError as exc:
+            history = await _analytics_history(adapter)
+            income = _income_since_reset(history.snapshot.income)
+            rows = history.snapshot.trades
+        except (ExchangeError, TimeoutError) as exc:
             await state.storage.log(
                 "Exit analytics dùng fallback do exchange rate-limit",
                 {"mode": state.trading_mode.value, "error": str(exc)},
@@ -302,9 +410,10 @@ async def performance() -> dict[str, object]:
     if state.trading_mode in {TradingMode.DEMO, TradingMode.LIVE}:
         adapter = _current_adapter()
         try:
-            snapshot = await adapter.snapshot()
-            income = _income_since_reset(await adapter.income_history(limit=200))
-        except ExchangeError as exc:
+            history = await _analytics_history(adapter)
+            snapshot = adapter.snapshot_cache
+            income = _income_since_reset(history.snapshot.income)
+        except (ExchangeError, TimeoutError) as exc:
             await state.storage.log(
                 "Performance dùng exchange cache",
                 {"mode": state.trading_mode.value, "error": str(exc)},
@@ -324,6 +433,22 @@ async def performance() -> dict[str, object]:
     return state.execution.performance().model_dump(mode="json")
 
 
+@router.get("/ai/config", response_model=AIShadowConfigResponse)
+async def get_ai_config() -> AIShadowConfigResponse:
+    return _ai_config_response()
+
+
+@router.put("/ai/config", response_model=AIShadowConfigResponse)
+async def update_ai_config(update: AIShadowConfigUpdate) -> AIShadowConfigResponse:
+    state.ai_shadow_config.update(update.model_dump(exclude_none=True))
+    state.save_runtime_config()
+    await state.storage.log(
+        "Cập nhật AI shadow config",
+        {**state.ai_shadow_config, "shadow_only": True, "execution_enabled": False},
+    )
+    return _ai_config_response()
+
+
 @router.get("/backtest")
 async def backtest() -> dict[str, object]:
     metrics = state.backtest.metrics(state.execution.trades)
@@ -332,10 +457,27 @@ async def backtest() -> dict[str, object]:
 
 @router.post("/backtests/run")
 async def run_backtest(request: BacktestRunRequest) -> dict[str, object]:
-    candles = await state.market_client.historical_klines(
-        request.symbol.upper(), request.interval.value, limit=request.limit
-    )
     try:
+        fetch = (
+            (
+                lambda timeframe: state.market_client.historical_klines_days(
+                    request.symbol, timeframe, request.history_days
+                )
+            )
+            if request.history_days is not None
+            else (
+                lambda timeframe: state.market_client.historical_klines(
+                    request.symbol, timeframe, limit=request.limit
+                )
+            )
+        )
+        candles = dict(
+            zip(
+                ("15m", "1h", "4h"),
+                await asyncio.gather(*(fetch(frame) for frame in ("15m", "1h", "4h"))),
+                strict=True,
+            )
+        )
         report = state.backtest.run(candles, request)
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
@@ -351,10 +493,27 @@ async def latest_backtest() -> dict[str, object]:
 
 @router.post("/backtests/optimize")
 async def optimize_backtest(request: BacktestOptimizerRequest) -> dict[str, object]:
-    candles = await state.market_client.historical_klines(
-        request.run.symbol.upper(), request.run.interval.value, limit=request.run.limit
-    )
     try:
+        fetch = (
+            (
+                lambda timeframe: state.market_client.historical_klines_days(
+                    request.run.symbol, timeframe, request.run.history_days
+                )
+            )
+            if request.run.history_days is not None
+            else (
+                lambda timeframe: state.market_client.historical_klines(
+                    request.run.symbol, timeframe, limit=request.run.limit
+                )
+            )
+        )
+        candles = dict(
+            zip(
+                ("15m", "1h", "4h"),
+                await asyncio.gather(*(fetch(frame) for frame in ("15m", "1h", "4h"))),
+                strict=True,
+            )
+        )
         report = await asyncio.to_thread(state.backtest.optimize, candles, request)
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
@@ -421,6 +580,12 @@ async def risk() -> dict[str, object]:
         correlation_candles=correlation_candles,
         correlation_lookback=lookback,
         correlation_closed_at=closed_at,
+    )
+    portfolio = portfolio.model_copy(
+        update={
+            "mode": "ENFORCED" if state.portfolio_risk_enforcement_enabled else "SHADOW",
+            "enforcement_enabled": state.portfolio_risk_enforcement_enabled,
+        }
     )
     return {
         "limits": (await status())["risk"],
@@ -516,10 +681,7 @@ async def reset_safe_mode() -> dict[str, object]:
             "reason": f"Vị thế chưa có SL bảo vệ: {', '.join(unprotected)}",
         }
 
-    if state.bot_state == BotState.SAFE_MODE:
-        state.bot_state = BotState.PAUSED
-    adapter.snapshot_cache.safe_mode = False
-    adapter.snapshot_cache.safe_mode_reason = None
+    state.clear_safe_mode_after_verified_reconciliation()
     await state.storage.log(
         "SAFE_MODE đã reset từ dashboard",
         {"mode": state.trading_mode.value, "bot_state": state.bot_state.value},
@@ -551,27 +713,9 @@ async def set_mode(mode: TradingMode) -> dict[str, object]:
 
 @router.get("/exchange")
 async def exchange_snapshot() -> dict[str, object]:
-    adapter = _current_adapter()
-    try:
-        return (await adapter.snapshot()).model_dump(mode="json")
-    except ExchangeCredentialsError as exc:
-        return adapter.snapshot_cache.model_copy(update={"safe_mode_reason": str(exc)}).model_dump(
-            mode="json"
-        )
-    except ExchangeError as exc:
-        await state.storage.log("Exchange DEMO disconnected", {"error": str(exc)}, level="WARNING")
-        notification = state.notifications.build(
-            NotificationEvent.API_DISCONNECT,
-            title="API disconnect",
-            body=str(exc),
-            data={"mode": state.trading_mode.value},
-        )
-        await state.storage.log(
-            "APNs-ready notification", notification.model_dump(mode="json"), level="WARNING"
-        )
-        return adapter.snapshot_cache.model_copy(
-            update={"connection": "STALE", "safe_mode_reason": str(exc)}
-        ).model_dump(mode="json")
+    # The background user stream/watchdog and reconciliation own exchange I/O.
+    # Serving their snapshot keeps web/app reads fast and prevents API fan-out.
+    return _current_adapter().snapshot_cache.model_dump(mode="json")
 
 
 @router.get("/exchange/gateway")
@@ -583,23 +727,39 @@ async def exchange_gateway_status() -> dict[str, object]:
     }
 
 
+@router.get("/operations")
+async def operations_status() -> dict[str, object]:
+    mode = state.trading_mode.value
+    return {
+        "mode": mode,
+        "gateway": {
+            "demo": state.demo_exchange.gateway.status(),
+            "live": state.live_exchange.gateway.status(),
+            "market": state.market_client.gateway.status(),
+        },
+        "notifications": state.telegram_alerts.status(),
+        "equity": await state.equity_tracker.analytics(mode),
+        "ai_analytics": {
+            "shadow_only": True,
+            "read_only": True,
+            "collector": state.smart_entry_collector.snapshot(),
+            "training": await ai_training_status(limit=500),
+        },
+        "reconciliation": {
+            "last_reconciled_at": state._active_exchange().snapshot_cache.last_reconciled_at,
+            "safe_mode": state.safe_mode,
+            "safe_mode_reason": state.safe_mode_reason,
+        },
+    }
+
+
 @router.post("/exchange/reconcile")
 async def exchange_reconcile() -> dict[str, object]:
     adapter = state.live_exchange if state.trading_mode == TradingMode.LIVE else state.demo_exchange
     try:
-        snapshot = await adapter.snapshot()
-        exchange_symbols = {
-            position.symbol for position in snapshot.positions if abs(position.quantity) > 0
-        }
-        pruned = state.execution.prune_positions_not_on_exchange(exchange_symbols)
-        if pruned:
-            await state.storage.log(
-                "Đóng vị thế local không còn trên Binance (manual reconcile)",
-                {"mode": state.trading_mode.value, "symbols": pruned},
-                level="WARNING",
-            )
-        snapshot = await adapter.reconcile(
-            [position.model_dump(mode="json") for position in state.execution.open_positions()]
+        snapshot = await state.reconciliation.reconcile(
+            adapter=adapter,
+            mode=state.trading_mode,
         )
     except ExchangeCredentialsError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -609,6 +769,13 @@ async def exchange_reconcile() -> dict[str, object]:
         state.enter_safe_mode(snapshot.safe_mode_reason or "Exchange mismatch")
         await state.storage.log(
             "SAFE_MODE do reconcile mismatch", snapshot.model_dump(mode="json"), level="CRITICAL"
+        )
+    else:
+        state.clear_safe_mode_after_verified_reconciliation()
+        await state.storage.log(
+            "SAFE_MODE cleared after verified reconciliation",
+            {"mode": state.trading_mode.value, "bot_state": state.bot_state.value},
+            level="WARNING",
         )
     return snapshot.model_dump(mode="json")
 
@@ -641,11 +808,16 @@ async def exchange_manage_stops() -> dict[str, object]:
             level="WARNING",
         )
         for action in actions:
-            notification = state.notifications.build(
+            notification = await state.notifications.alert(
                 NotificationEvent.TP,
-                title="TP protection",
+                title="Bảo vệ chốt lời",
                 body=f"{action['symbol']} dời SL {action['old_stop']} -> {action['new_stop']}",
-                data={"symbol": str(action["symbol"]), "mode": state.trading_mode.value},
+                data={
+                    "symbol": str(action["symbol"]),
+                    "mode": state.trading_mode.value,
+                    "old_stop": action["old_stop"],
+                    "new_stop": action["new_stop"],
+                },
             )
             await state.storage.log(
                 "APNs-ready notification", notification.model_dump(mode="json"), level="INFO"
@@ -752,7 +924,7 @@ async def activate_emergency_stop(reason: str = "manual") -> dict[str, object]:
     state.emergency_stop.active = True
     state.emergency_stop.reason = reason
     await state.storage.log("Dừng khẩn cấp đã bật", {"reason": reason}, level="WARNING")
-    notification = state.notifications.build(
+    notification = await state.notifications.alert(
         NotificationEvent.EMERGENCY_STOP,
         title="Emergency Stop",
         body=reason,
@@ -784,6 +956,12 @@ async def websocket_channel(websocket: WebSocket, channel: str) -> None:
 
 
 async def _submit_order(plan: OrderPlan) -> dict[str, object]:
+    symbol = plan.symbol.upper()
+    if symbol not in state.bot_settings.whitelist or symbol in state.bot_settings.blacklist:
+        raise HTTPException(
+            status_code=400,
+            detail="Chỉ cho phép BTCUSDT, ETHUSDT, SOLUSDT trong giai đoạn kiểm chứng",
+        )
     try:
         state.order_validator.validate(plan)
     except ValueError as exc:
@@ -799,6 +977,9 @@ async def _submit_order(plan: OrderPlan) -> dict[str, object]:
             state.live_exchange if state.trading_mode == TradingMode.LIVE else state.demo_exchange
         )
         try:
+            snapshot = await adapter.snapshot()
+            if len(snapshot.positions) >= 1:
+                return {"accepted": False, "reason": "Chỉ cho phép tối đa 1 vị thế đang mở"}
             result = await adapter.submit_order_plan(plan)
         except ExchangeCredentialsError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -817,7 +998,7 @@ async def _submit_order(plan: OrderPlan) -> dict[str, object]:
             await state.storage.log(
                 result.critical_alert, result.model_dump(mode="json"), level="CRITICAL"
             )
-            notification = state.notifications.build(
+            notification = await state.notifications.alert(
                 NotificationEvent.SAFE_MODE,
                 title="SAFE_MODE",
                 body=result.critical_alert,
@@ -827,11 +1008,20 @@ async def _submit_order(plan: OrderPlan) -> dict[str, object]:
                 "APNs-ready notification", notification.model_dump(mode="json"), level="CRITICAL"
             )
         elif result.accepted:
-            notification = state.notifications.build(
+            notification = await state.notifications.alert(
                 NotificationEvent.POSITION_OPEN,
-                title="Position open",
+                title="Mở vị thế",
                 body=f"{plan.symbol} {plan.side.value}",
-                data={"client_order_id": plan.client_order_id, "mode": state.trading_mode.value},
+                data={
+                    "client_order_id": plan.client_order_id,
+                    "mode": state.trading_mode.value,
+                    "symbol": plan.symbol,
+                    "side": plan.side.value,
+                    "quantity": plan.quantity,
+                    "entry_price": plan.entry_price,
+                    "stop_loss": plan.stop_loss,
+                    "take_profits": plan.take_profits,
+                },
             )
             await state.storage.log(
                 "APNs-ready notification", notification.model_dump(mode="json"), level="INFO"
@@ -1062,6 +1252,39 @@ def _exchange_performance(
     )
 
 
+async def _performance_income_rows(adapter) -> list[dict[str, object]]:
+    history = await _analytics_history(adapter)
+    return _income_since_reset(history.snapshot.income)
+
+
+async def _analytics_history(adapter):
+    async def fetch() -> AnalyticsHistorySnapshot:
+        income_batches = await asyncio.gather(
+            *(
+                asyncio.wait_for(
+                    adapter.income_history(income_type=income_type, limit=500),
+                    timeout=8.0,
+                )
+                for income_type in ("REALIZED_PNL", "COMMISSION", "FUNDING_FEE")
+            )
+        )
+        income = [row for batch in income_batches for row in batch]
+        symbols = sorted({str(row.get("symbol")) for row in income if row.get("symbol")})
+        trade_batches = await asyncio.gather(
+            *(
+                asyncio.wait_for(adapter.trade_history(symbol, limit=500), timeout=5.0)
+                for symbol in symbols
+            )
+        )
+        return AnalyticsHistorySnapshot(
+            income=income,
+            trades=[row for batch in trade_batches for row in batch],
+        )
+
+    key = f"{state.trading_mode.value}:{id(adapter)}"
+    return await state.analytics_history.get(key, fetch)
+
+
 def _income_since_reset(income_rows: list[dict[str, object]]) -> list[dict[str, object]]:
     reset_at = state.performance_reset_at_for()
     if reset_at is None:
@@ -1136,3 +1359,18 @@ def _live_readiness(report: object | None = None) -> LiveReadiness:
     return LiveReadiness(
         live_enabled=state.live_trading_enabled, allowed=allowed, blockers=blockers, **checks
     )
+
+
+@router.get("/monitoring/dashboard")
+async def monitoring_dashboard() -> dict[str, object]:
+    """Real-time monitoring dashboard với health checks và alerts."""
+    performance = state.execution.performance()
+    dashboard = state.monitoring.dashboard(performance, mode=state.trading_mode.value)
+
+    # Thêm thông tin bổ sung
+    dashboard["bot_state"] = state.bot_state.value
+    dashboard["safe_mode"] = state.safe_mode
+    dashboard["emergency_stop"] = state.emergency_stop.active
+    dashboard["open_positions"] = len(state.execution.open_positions())
+
+    return dashboard

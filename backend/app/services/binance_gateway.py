@@ -25,9 +25,7 @@ class CircuitOpenError(Exception):
 
     def __init__(self, retry_after_seconds: float) -> None:
         self.retry_after_seconds = retry_after_seconds
-        super().__init__(
-            f"Circuit breaker mở, thử lại sau {retry_after_seconds:.1f}s"
-        )
+        super().__init__(f"Circuit breaker mở, thử lại sau {retry_after_seconds:.1f}s")
 
 
 class RateLimitBudgetExceeded(Exception):
@@ -188,6 +186,7 @@ class BinanceGateway:
         "/fapi/v1/ticker/24hr": 10.0,
         "/fapi/v1/ticker/bookTicker": 2.0,
         "/fapi/v1/premiumIndex": 10.0,
+        "/fapi/v1/klines": 15.0,
     }
 
     def __init__(self, base_url: str, limits: GatewayLimits | None = None) -> None:
@@ -199,9 +198,7 @@ class BinanceGateway:
         self.private_window = _SlidingWindow(
             self.limits.private_weight_per_minute, window_seconds=60.0
         )
-        self.order_window = _SlidingWindow(
-            self.limits.order_requests_per_10s, window_seconds=10.0
-        )
+        self.order_window = _SlidingWindow(self.limits.order_requests_per_10s, window_seconds=10.0)
         self.circuit_breaker = CircuitBreaker()
         self.cache = TTLCache()
         self.cache_ttls = dict(self.DEFAULT_CACHE_TTLS)

@@ -1,9 +1,11 @@
 from datetime import UTC, datetime
 from statistics import mean, pstdev
+from typing import TYPE_CHECKING
 from uuid import uuid4
 
 from app.domain.models import (
     BotSettings,
+    NotificationEvent,
     OrderPlan,
     OrderStatus,
     PaperFill,
@@ -15,14 +17,22 @@ from app.domain.models import (
     TradeRecord,
 )
 
+if TYPE_CHECKING:
+    from app.services.notifications import NotificationService
+
 
 class DuplicateOrderError(Exception):
     pass
 
 
 class ExecutionService:
-    def __init__(self, settings: BotSettings | None = None) -> None:
+    def __init__(
+        self,
+        settings: BotSettings | None = None,
+        notifications: "NotificationService | None" = None,
+    ) -> None:
         self.settings = settings or BotSettings()
+        self.notifications = notifications
         self.balance = self.settings.simulation_initial_balance
         self._submitted_client_ids: set[str] = set()
         self.orders: list[PaperOrder] = []
@@ -204,13 +214,60 @@ class ExecutionService:
         )
 
     def _partial_take_profit(self, position: PaperPosition, price: float) -> TradeRecord:
-        fraction = 0.4 if not position.filled_take_profits else 0.3
+        # TP1/TP2 each realize 40%; the final 20% is left for the trailing stop.
+        # Fixed fractions of initial quantity prevent a later target from consuming
+        # more than the intended allocation after partial fills.
+        fraction = 0.40
         quantity = min(position.remaining_quantity, position.quantity * fraction)
         position.filled_take_profits.append(price)
-        return self._close_quantity(position, price, quantity, "TP")
+        trade = self._close_quantity(position, price, quantity, "TP")
+        # Gửi thông báo TP
+        if self.notifications is not None:
+            import asyncio
+
+            asyncio.create_task(
+                self.notifications.alert(
+                    NotificationEvent.TP,
+                    title=f"TP{len(position.filled_take_profits)} · {position.symbol}",
+                    body=f"Chốt lời {len(position.filled_take_profits)}/{len(position.take_profits)}",
+                    data={
+                        "symbol": position.symbol,
+                        "side": position.side.value,
+                        "quantity": quantity,
+                        "entry_price": position.entry_price,
+                        "take_profit": price,
+                        "realized_pnl": trade.net_pnl,
+                        "reason": "TP",
+                    },
+                )
+            )
+        return trade
 
     def _close_position(self, position: PaperPosition, price: float, reason: str) -> TradeRecord:
-        return self._close_quantity(position, price, position.remaining_quantity, reason)
+        trade = self._close_quantity(position, price, position.remaining_quantity, reason)
+        # Gửi thông báo đóng vị thế
+        if self.notifications is not None and reason in {"SL", "CLOSE_ALL"}:
+            import asyncio
+
+            event = NotificationEvent.SL if reason == "SL" else NotificationEvent.POSITION_CLOSE
+            title_map = {"SL": "Dừng lỗ", "CLOSE_ALL": "Đóng vị thế"}
+            asyncio.create_task(
+                self.notifications.alert(
+                    event,
+                    title=f"{title_map.get(reason, reason)} · {position.symbol}",
+                    body=f"{position.side.value} đã đóng hoàn toàn",
+                    data={
+                        "symbol": position.symbol,
+                        "side": position.side.value,
+                        "quantity": trade.quantity,
+                        "entry_price": position.entry_price,
+                        "exit_price": price,
+                        "realized_pnl": trade.net_pnl,
+                        "reason": reason,
+                    },
+                )
+            )
+        return trade
 
     def _close_quantity(
         self, position: PaperPosition, price: float, quantity: float, reason: str
