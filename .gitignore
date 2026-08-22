@@ -13,3 +13,6 @@ DerivedData/
 *.pyc
 *.log
 runtime-config.json
+
+# Runtime health/status captures
+logs/
