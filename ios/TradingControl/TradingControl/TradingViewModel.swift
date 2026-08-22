@@ -9,6 +9,7 @@ public final class TradingViewModel: ObservableObject {
     @Published public private(set) var positions: [ViThe] = []
     @Published public private(set) var trades: [LenhDaChot] = []
     @Published public private(set) var performance: HieuSuat?
+    @Published public private(set) var operations: OperationsStatus?
     @Published public private(set) var latestBacktest: BacktestReport?
     @Published public private(set) var exchange: ExchangeSnapshot?
     @Published public private(set) var settings: CaiDatBot?
@@ -82,6 +83,7 @@ public final class TradingViewModel: ObservableObject {
             async let nextPositions = api.positions()
             async let nextTrades = api.trades()
             async let nextPerformance = api.performance()
+            async let nextOperations = api.operations()
             async let nextExchange = api.exchange()
             async let nextSettings = api.settings()
             async let nextBacktest = try? api.latestBacktest()
@@ -92,6 +94,7 @@ public final class TradingViewModel: ObservableObject {
             positions = try await nextPositions
             trades = try await nextTrades
             performance = try await nextPerformance
+            operations = try await nextOperations
             exchange = try await nextExchange
             settings = try await nextSettings
             latestBacktest = await nextBacktest

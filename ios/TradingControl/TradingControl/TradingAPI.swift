@@ -53,6 +53,10 @@ public actor TradingAPI {
         try await get("/api/performance")
     }
 
+    public func operations() async throws -> OperationsStatus {
+        try await get("/api/operations")
+    }
+
     public func latestBacktest() async throws -> BacktestReport {
         try await get("/api/backtests/latest")
     }

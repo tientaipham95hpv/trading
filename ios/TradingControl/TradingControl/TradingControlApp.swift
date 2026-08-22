@@ -57,6 +57,7 @@ private struct HomeView: View {
                 ScrollView {
                     VStack(spacing: 14) {
                         SystemStateBanner(model: model)
+                        OperationsMonitorPanel(model: model)
                         AccountHero(model: model)
                         ModeControlPanel(model: model)
                         RiskRoomPanel(model: model)
@@ -72,6 +73,41 @@ private struct HomeView: View {
             .toolbarBackground(.hidden, for: .navigationBar)
             .preferredColorScheme(.dark)
             .toolbar { RefreshToolbarItem(model: model) }
+        }
+    }
+}
+
+private struct OperationsMonitorPanel: View {
+    @ObservedObject var model: TradingViewModel
+
+    var body: some View {
+        let activeGateway = model.operations?.mode == "LIVE" ? model.operations?.gateway.live : model.operations?.gateway.demo
+        let marketGateway = model.operations?.gateway.market
+        let cacheHits = Double((activeGateway?.cache.hits ?? 0) + (marketGateway?.cache.hits ?? 0))
+        let cacheMisses = Double((activeGateway?.cache.misses ?? 0) + (marketGateway?.cache.misses ?? 0))
+        let cacheHitRate = cacheHits + cacheMisses > 0 ? cacheHits / (cacheHits + cacheMisses) * 100 : 0
+        let circuitOpen = activeGateway?.circuitBreaker.state == "open" || marketGateway?.circuitBreaker.state == "open"
+
+        GlassPanel {
+            VStack(alignment: .leading, spacing: 12) {
+                HStack {
+                    Text("Monitoring")
+                        .font(.headline)
+                    Spacer()
+                    StatusChip(text: model.operations?.aiAnalytics.shadowOnly == true ? "AI SHADOW" : "AI LOCK", color: .orange)
+                }
+                LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 10) {
+                    HeroMetric(title: "Binance circuit", value: circuitOpen ? "OPEN" : "CLOSED", color: circuitOpen ? .red : .green)
+                    HeroMetric(title: "Cache hit", value: cacheHits + cacheMisses > 0 ? percent(cacheHitRate) : "Chưa có", color: .cyan)
+                    HeroMetric(title: "Telegram", value: model.operations?.notifications.commandsEnabled == true ? "\(model.operations?.notifications.sent ?? 0) alert" : "Chưa cấu hình", color: model.operations?.notifications.commandsEnabled == true ? .green : .red)
+                    HeroMetric(title: "Equity DD", value: percent(model.operations?.equity.maxDrawdownPercent), color: .orange)
+                    HeroMetric(title: "AI samples", value: "\(model.operations?.aiAnalytics.training?.sampleSize ?? 0)", color: model.operations?.aiAnalytics.training?.readyForTraining == true ? .green : .orange)
+                    HeroMetric(title: "Reconcile", value: model.operations?.reconciliation.safeMode == true ? "SAFE_MODE" : "OK", color: model.operations?.reconciliation.safeMode == true ? .red : .green)
+                }
+                Text(model.operations?.aiAnalytics.training?.nextStep ?? "AI đang ở shadow mode, chưa được quyền vào lệnh.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
         }
     }
 }

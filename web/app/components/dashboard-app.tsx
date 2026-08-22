@@ -36,6 +36,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 
 import { api, wsUrl } from "./api";
 import type {
+  AIShadowConfig,
   BacktestOptimizerReport,
   BacktestReport,
   BotSettings,
@@ -46,6 +47,7 @@ import type {
   SmartEntryPayload,
   LogItem,
   Market,
+  OperationsStatus,
   Performance,
   Position,
   ScannerResult,
@@ -94,7 +96,9 @@ export function DashboardApp({ page }: { page: PageKey }) {
   const [exitAnalytics, setExitAnalytics] = useState<ExitAnalytics | null>(null);
   const [smartEntry, setSmartEntry] = useState<SmartEntryPayload | null>(null);
   const [settings, setSettings] = useState<BotSettings | null>(null);
+  const [aiConfig, setAiConfig] = useState<AIShadowConfig | null>(null);
   const [exchange, setExchange] = useState<ExchangeSnapshot | null>(null);
+  const [operations, setOperations] = useState<OperationsStatus | null>(null);
   const [wsState, setWsState] = useState<WsState>("OFFLINE");
   const [lastLiveAt, setLastLiveAt] = useState<number>(0);
   const lastLiveAtRef = useRef(0);
@@ -105,53 +109,31 @@ export function DashboardApp({ page }: { page: PageKey }) {
   async function refresh() {
     setIsRefreshing(true);
     try {
-      const [
-        nextStatus,
-        nextStability,
-        nextMarkets,
-        nextScanner,
-        nextPositions,
-        nextTrades,
-        nextPerformance,
-        nextExitAnalytics,
-        nextSmartEntry,
-        nextExchange,
-        nextSettings,
-        nextLogs,
-        nextRisk,
-      ] = await Promise.all([
-        api.status(),
-        api.stability(),
-        api.markets(),
-        api.scanner(40, "15m"),
-        api.positions(),
-        api.trades(),
-        api.performance(),
-        api.exitAnalytics(),
-        api.smartEntry(),
-        api.exchange(),
-        api.settings(),
-        api.logs(),
-        api.risk(),
+      const results = await Promise.allSettled([
+        api.status().then(setStatus),
+        api.stability().then(setStability),
+        api.markets().then((payload) => setMarkets(payload.items)),
+        api.signals().then((payload) => setScanner(payload.items)),
+        api.positions().then((payload) => setPositions(payload.items)),
+        api.trades().then((payload) => setTrades(payload.items)),
+        api.performance().then(setPerformance),
+        api.exitAnalytics().then(setExitAnalytics),
+        api.smartEntry().then(setSmartEntry),
+        api.exchange().then(setExchange),
+        api.operations().then(setOperations),
+        api.settings().then(setSettings),
+        api.aiConfig().then(setAiConfig),
+        api.logs().then((payload) => setLogs(payload.items)),
+        api.risk().then(setPortfolioRisk),
       ]);
-      setStatus(nextStatus);
-      setStability(nextStability);
-      setMarkets(nextMarkets.items);
-      setScanner(nextScanner.items);
-      setPositions(nextPositions.items);
-      setTrades(nextTrades.items);
-      setPerformance(nextPerformance);
-      setExitAnalytics(nextExitAnalytics);
-      setSmartEntry(nextSmartEntry);
-      setExchange(nextExchange);
-      setSettings(nextSettings);
-      setLogs(nextLogs.items);
-      setPortfolioRisk(nextRisk);
-      setError(null);
-    } catch (reason) {
+      const failed = results.filter((result) => result.status === "rejected");
       setError(
-        reason instanceof Error ? reason.message : "Không tải được dữ liệu",
+        failed.length
+          ? `${failed.length} nhóm dữ liệu đang chậm, dashboard giữ dữ liệu cũ.`
+          : null,
       );
+    } catch {
+      setError("Không tải được dữ liệu dashboard");
     } finally {
       setHasLoaded(true);
       setIsRefreshing(false);
@@ -211,11 +193,9 @@ export function DashboardApp({ page }: { page: PageKey }) {
           setPositions(payload.items);
         }
         if (channel === "performance" && payload.data) {
-          try {
-            setPerformance(await api.performance());
-          } catch {
-            setPerformance(payload.data as Performance);
-          }
+          // Payload WebSocket đã là snapshot hiệu suất hiện tại. Không gọi lại
+          // endpoint REST nặng ở mỗi message vì sẽ nhân tải Binance history.
+          setPerformance(payload.data as Performance);
         }
       };
       socket.onerror = () => setWsState("STALE");
@@ -249,12 +229,10 @@ export function DashboardApp({ page }: { page: PageKey }) {
   useEffect(() => {
     const timer = window.setInterval(async () => {
       try {
-        const [nextTrades, nextLogs, nextScanner] = await Promise.all([
-          api.trades(),
+        const [nextLogs, nextScanner] = await Promise.all([
           api.logs(),
-          api.scanner(40, "15m"),
+          api.signals(),
         ]);
-        setTrades(nextTrades.items);
         setLogs(nextLogs.items);
         setScanner(nextScanner.items);
       } catch {
@@ -382,6 +360,7 @@ export function DashboardApp({ page }: { page: PageKey }) {
               exchange={exchange ?? status?.exchange ?? null}
               markets={markets}
               onDone={refresh}
+              operations={operations}
               performance={performance}
               positions={positions}
               scanner={scanner}
@@ -407,7 +386,16 @@ export function DashboardApp({ page }: { page: PageKey }) {
           {page === "risk" && <Risk onDone={refresh} status={status} portfolioRisk={portfolioRisk} />}
           {page === "logs" && <Logs logs={logs} />}
           {page === "settings" && settings && (
-            <SettingsPage onSaved={refresh} settings={settings} />
+            <SettingsPage
+              key={
+                aiConfig
+                  ? `${aiConfig.model}:${aiConfig.outcome_horizon}:${aiConfig.minimum_training_samples}`
+                  : "ai-loading"
+              }
+              aiConfig={aiConfig}
+              onSaved={refresh}
+              settings={settings}
+            />
           )}
         </div>
       </section>
@@ -419,6 +407,7 @@ function Dashboard({
   exchange,
   markets,
   onDone,
+  operations,
   performance,
   positions,
   scanner,
@@ -428,6 +417,7 @@ function Dashboard({
   exchange: ExchangeSnapshot | null;
   markets: Market[];
   onDone: () => Promise<void>;
+  operations: OperationsStatus | null;
   performance: Performance | null;
   positions: Position[];
   scanner: ScannerResult[];
@@ -458,6 +448,7 @@ function Dashboard({
   return (
     <div className="grid gap-4">
       <ActivitySummary exchange={exchange} status={status} />
+      <OperationsPanel operations={operations} />
       <CommandCenter exchange={exchange} onDone={onDone} status={status} />
       <CriticalOverview
         exchange={exchange}
@@ -828,7 +819,7 @@ function MarketChart({
       }
     }
     void load();
-    const timer = window.setInterval(() => void load(), 5_000);
+    const timer = window.setInterval(() => void load(), 15_000);
     return () => {
       alive = false;
       window.clearInterval(timer);
@@ -1051,6 +1042,87 @@ function ActivitySummary({
             }
           />
         </div>
+      </div>
+    </section>
+  );
+}
+
+function OperationsPanel({ operations }: { operations: OperationsStatus | null }) {
+  const activeGateway =
+    operations?.mode === "LIVE" ? operations.gateway.live : operations?.gateway.demo;
+  const marketGateway = operations?.gateway.market;
+  const cacheHits =
+    (activeGateway?.cache.hits ?? 0) + (marketGateway?.cache.hits ?? 0);
+  const cacheMisses =
+    (activeGateway?.cache.misses ?? 0) + (marketGateway?.cache.misses ?? 0);
+  const cacheTotal = cacheHits + cacheMisses;
+  const cacheHitRate = cacheTotal > 0 ? (cacheHits / cacheTotal) * 100 : 0;
+  const circuitOpen =
+    activeGateway?.circuit_breaker.state === "open" ||
+    marketGateway?.circuit_breaker.state === "open";
+
+  return (
+    <section className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+      <Metric
+        label="Binance circuit"
+        tone={circuitOpen ? "bad" : "good"}
+        value={circuitOpen ? "OPEN" : "CLOSED"}
+      />
+      <Metric
+        label="Cache hit"
+        value={cacheTotal ? percent(cacheHitRate) : "Chưa có mẫu"}
+      />
+      <Metric
+        label="Telegram bot"
+        tone={operations?.notifications.commands_enabled ? "good" : "bad"}
+        value={
+          operations?.notifications.commands_enabled
+            ? `${operations.notifications.sent} alert / ${operations.notifications.command_replies} reply`
+            : "Chưa cấu hình"
+        }
+      />
+      <Metric
+        label="AI training"
+        tone={operations?.ai_analytics.training.ready_for_training ? "good" : "neutral"}
+        value={
+          operations?.ai_analytics.training.execution_enabled
+            ? "EXECUTION ON"
+            : `${number(operations?.ai_analytics.training.sample_size ?? 0)} shadow mẫu`
+        }
+      />
+      <Metric
+        label="Equity samples"
+        value={String(operations?.equity.samples ?? 0)}
+      />
+      <Metric
+        label="Max DD equity"
+        value={percent(operations?.equity.max_drawdown_percent ?? 0)}
+      />
+      <Metric
+        label="Reconcile"
+        tone={operations?.reconciliation.safe_mode ? "bad" : "good"}
+        value={
+          operations?.reconciliation.last_reconciled_at
+            ? new Date(operations.reconciliation.last_reconciled_at).toLocaleString("vi-VN")
+            : "Chưa có"
+        }
+      />
+      <Metric
+        label="Rate usage"
+        value={`${number(activeGateway?.usage.private_weight_last_minute)} private / ${number(marketGateway?.usage.market_weight_last_minute)} market`}
+      />
+      <div className="rounded-lg border border-amber-300/20 bg-amber-400/5 p-4 md:col-span-2 xl:col-span-4">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <b className="text-sm text-amber-200">AI guardrail</b>
+          <span className="text-xs font-bold text-amber-300">SHADOW ONLY</span>
+        </div>
+        <p className="mt-2 text-sm text-slate-300">
+          {operations?.ai_analytics.training.next_step ?? "Đang tải trạng thái AI shadow."}
+        </p>
+        <p className="mt-1 text-xs text-slate-500">
+          Telegram command gần nhất: {operations?.notifications.last_command ?? "chưa có"} ·
+          unauthorized {number(operations?.notifications.unauthorized ?? 0)}
+        </p>
       </div>
     </section>
   );
@@ -1719,10 +1791,11 @@ function BacktestPanel() {
 
 function SmartEntryPanel({ analytics }: { analytics: SmartEntryPayload | null }) {
   return <section className="rounded-2xl border border-white/10 bg-slate-950/70 p-5"><h3 className="text-lg font-black">Smart Entry Analytics · Shadow only</h3><p className="mb-4 text-sm text-slate-400">Quan sát candidate từ nến đóng; không thay đổi Baseline hoặc gửi lệnh.</p>
-    <div className="grid gap-3 md:grid-cols-3"><Metric label="Tổng evidence" value={number(analytics?.summary.total ?? 0)} /><Metric label="WOULD ENTER" value={number(analytics?.summary.WOULD_ENTER ?? 0)} /><Metric label="WOULD SKIP" value={number(analytics?.summary.WOULD_SKIP ?? 0)} /></div>
+    <div className="grid gap-3 md:grid-cols-3"><Metric label="Tổng evidence" value={number(analytics?.summary.total ?? 0)} /><Metric label="Sẽ vào lệnh (mô phỏng)" value={number(analytics?.summary.WOULD_ENTER ?? 0)} /><Metric label="Bỏ qua (mô phỏng)" value={number(analytics?.summary.WOULD_SKIP ?? 0)} /></div>
+    <div className="mt-3 grid gap-2 text-xs md:grid-cols-2"><p className="rounded border border-emerald-400/20 bg-emerald-950/10 p-2 text-emerald-200"><b>Sẽ vào lệnh (mô phỏng):</b> đạt điều kiện Shadow để ghi nhận outcome; không gửi lệnh.</p><p className="rounded border border-amber-400/20 bg-amber-950/10 p-2 text-amber-200"><b>Bỏ qua (mô phỏng):</b> chưa đạt điều kiện hoặc thiếu dữ liệu xác minh; không gửi lệnh.</p></div>
     <div className="mt-4 rounded border border-white/10 bg-white/[0.02] p-3"><div className="flex flex-wrap items-center justify-between gap-2"><b>Outcome collector</b><span className={analytics?.collector.last_error ? "text-red-300" : analytics?.collector.running ? "text-emerald-300" : "text-amber-300"}>{analytics?.collector.last_error ? "RETRYING" : analytics?.collector.running ? "RUNNING" : "STOPPED"}</span></div><div className="mt-3 grid gap-3 md:grid-cols-4"><Metric label="Coverage hoàn tất" value={percent(analytics?.collector.coverage.completion_ratio ?? 0)} /><Metric label="Backlog / retry" value={`${number(analytics?.collector.coverage.pending_decisions ?? 0)} / ${number(analytics?.collector.coverage.retrying_decisions ?? 0)}`} /><Metric label="Lỗi vĩnh viễn" value={number(analytics?.collector.coverage.permanent_errors ?? 0)} /><Metric label="Outcome 4/12/24" value={`${number(analytics?.collector.coverage.outcomes_by_horizon["4"] ?? 0)} / ${number(analytics?.collector.coverage.outcomes_by_horizon["12"] ?? 0)} / ${number(analytics?.collector.coverage.outcomes_by_horizon["24"] ?? 0)}`} /></div><div className="mt-3 grid gap-3 md:grid-cols-4"><Metric label="Cycle đang chờ" value={number(analytics?.collector.last_cycle.decisions_pending ?? 0)} /><Metric label="Cycle hoàn tất" value={number(analytics?.collector.last_cycle.decisions_complete ?? 0)} /><Metric label="Cycle retry" value={number(analytics?.collector.last_cycle.decisions_retrying ?? 0)} /><Metric label="Outcome mới" value={number(analytics?.collector.last_cycle.outcomes_saved ?? 0)} /></div>{analytics?.collector.last_error && <p className="mt-2 break-all text-xs text-red-300">Lần thử gần nhất: {analytics.collector.last_error}</p>}<p className="mt-2 text-xs text-slate-500">Chu kỳ {analytics?.collector.interval_seconds ?? 60}s · lần chạy gần nhất {analytics?.collector.last_run_at ? new Date(analytics.collector.last_run_at).toLocaleString("vi-VN") : "chưa chạy"} · backlog cũ nhất {analytics?.collector.coverage.oldest_pending_at ? new Date(analytics.collector.coverage.oldest_pending_at).toLocaleString("vi-VN") : "không có"} · lỗi liên tiếp {analytics?.collector.consecutive_failures ?? 0}</p></div>
     <div className="mt-4 rounded border border-cyan-400/15 bg-cyan-950/10 p-3"><div className="flex flex-wrap items-center justify-between gap-2"><b>Báo cáo hiệu suất giả định</b><span className="text-amber-300">{analytics?.performance.confidence_status ?? "CHƯA ĐỦ DỮ LIỆU"}</span></div><p className="mt-1 text-xs text-slate-400">Cần tối thiểu {analytics?.performance.minimum_sample ?? 30} outcome; chỉ thống kê mô tả, không tối ưu threshold.</p><div className="mt-3 grid gap-3 md:grid-cols-4"><Metric label="Sample outcome" value={number(analytics?.performance.sample_size ?? 0)} /><Metric label="Win rate" value={analytics?.performance.overall.win_rate == null ? "Chưa có" : percent(analytics.performance.overall.win_rate)} /><Metric label="Return TB / trung vị" value={analytics?.performance.overall.average_return == null ? "Chưa có" : `${percent(analytics.performance.overall.average_return)} / ${percent(analytics.performance.overall.median_return ?? 0)}`} /><Metric label="MFE / MAE trung bình" value={analytics?.performance.overall.average_mfe == null ? "Chưa có" : `${percent(analytics.performance.overall.average_mfe)} / ${percent(analytics.performance.overall.average_mae ?? 0)}`} /></div><div className="mt-3 flex flex-wrap gap-2 text-xs">{Object.entries(analytics?.performance.dimensions.horizon ?? {}).map(([key, metric]) => <span className="rounded bg-white/5 px-2 py-1" key={key}>{key} nến · n={metric.sample_size} · WR {metric.win_rate == null ? "-" : percent(metric.win_rate)} · TB {metric.average_return == null ? "-" : percent(metric.average_return)}</span>)}</div></div>
-    <div className="mt-4 grid gap-2">{(analytics?.items ?? []).slice(0, 15).map((item) => <div className="rounded border border-white/10 bg-white/[0.02] p-3" key={item.event_key}><div className="flex flex-wrap justify-between gap-2"><b>{item.symbol} · {item.side} · {item.timeframe}</b><span className={item.decision === "WOULD_ENTER" ? "text-emerald-300" : "text-amber-300"}>{item.decision}</span></div><p className="mt-1 text-xs text-slate-400">Điểm {item.quality_score}/100 · Entry {number(item.entry_price)} · R:R {item.risk_reward === null ? "chưa xác minh" : number(item.risk_reward)} · {new Date(item.decision_at).toLocaleString("vi-VN")}</p>{item.reasons.length > 0 && <p className="mt-2 text-sm text-amber-300">{item.reasons.join("; ")}</p>}<div className="mt-2 flex flex-wrap gap-2 text-xs">{[4, 12, 24].map((horizon) => { const outcome = item.outcomes[String(horizon)]; return <span className="rounded bg-white/5 px-2 py-1" key={horizon}>{horizon} nến: {outcome ? `${percent(outcome.return_fraction)} · MFE ${percent(outcome.mfe_fraction)} · MAE ${percent(outcome.mae_fraction)}` : "đang chờ đủ nến đóng"}</span>; })}</div></div>)}{(analytics?.items.length ?? 0) === 0 && <p className="text-sm text-slate-500">Chưa có candidate shadow được ghi nhận.</p>}</div>
+    <div className="mt-4 grid gap-2">{(analytics?.items ?? []).slice(0, 15).map((item) => <div className="rounded border border-white/10 bg-white/[0.02] p-3" key={item.event_key}><div className="flex flex-wrap justify-between gap-2"><b>{item.symbol} · {item.side} · {item.timeframe}</b><span className={item.decision === "WOULD_ENTER" ? "text-emerald-300" : "text-amber-300"}>{item.decision_label}</span></div><p className="mt-1 text-xs text-slate-400">{item.decision_description}</p><p className="mt-1 text-xs text-slate-400">Điểm {item.quality_score}/100 · Entry {number(item.entry_price)} · R:R {item.risk_reward === null ? "chưa xác minh" : number(item.risk_reward)} · {new Date(item.decision_at).toLocaleString("vi-VN")}</p>{item.reasons.length > 0 && <p className="mt-2 text-sm text-amber-300">{item.reasons.join("; ")}</p>}<div className="mt-2 flex flex-wrap gap-2 text-xs">{[4, 12, 24].map((horizon) => { const outcome = item.outcomes[String(horizon)]; return <span className="rounded bg-white/5 px-2 py-1" key={horizon}>{horizon} nến: {outcome ? `${percent(outcome.return_fraction)} · MFE ${percent(outcome.mfe_fraction)} · MAE ${percent(outcome.mae_fraction)}` : "đang chờ đủ nến đóng"}</span>; })}</div></div>)}{(analytics?.items.length ?? 0) === 0 && <p className="text-sm text-slate-500">Chưa có candidate shadow được ghi nhận.</p>}</div>
   </section>;
 }
 
@@ -1869,20 +1942,47 @@ function Logs({ logs }: { logs: LogItem[] }) {
 }
 
 function SettingsPage({
-  settings,
+  aiConfig,
   onSaved,
+  settings,
 }: {
-  settings: BotSettings;
+  aiConfig: AIShadowConfig | null;
   onSaved: () => Promise<void>;
+  settings: BotSettings;
 }) {
   const [draft, setDraft] = useState(settings);
   const [saving, setSaving] = useState(false);
+  const [aiDraft, setAiDraft] = useState<AIShadowConfig | null>(aiConfig);
+  const [aiSaving, setAiSaving] = useState(false);
+  const [aiMsg, setAiMsg] = useState<string | null>(null);
+
   async function save() {
     setSaving(true);
     await api.updateSettings(draft);
     await onSaved();
     setSaving(false);
   }
+
+  async function saveAi() {
+    if (!aiDraft) return;
+    setAiSaving(true);
+    setAiMsg(null);
+    try {
+      const updated = await api.updateAiConfig({
+        model: aiDraft.model,
+        outcome_horizon: aiDraft.outcome_horizon,
+        minimum_training_samples: aiDraft.minimum_training_samples,
+      });
+      setAiDraft(updated);
+      setAiMsg("Đã lưu cấu hình AI shadow.");
+      await onSaved();
+    } catch (err) {
+      setAiMsg(err instanceof Error ? err.message : "Lỗi khi lưu AI config.");
+    } finally {
+      setAiSaving(false);
+    }
+  }
+
   return (
     <section className="rounded-lg border border-white/10 bg-[#0d1724] p-4">
       <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
@@ -1993,6 +2093,75 @@ function SettingsPage({
         >
           Lưu cài đặt
         </button>
+      </div>
+
+      {/* ── AI Shadow-Only Config ── */}
+      <div className="mt-6 rounded-lg border border-amber-300/20 bg-amber-400/[0.03] p-4">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <h3 className="text-sm font-black uppercase text-amber-200">
+            Cấu hình AI Shadow
+          </h3>
+          <span className="rounded border border-amber-400/40 px-2 py-0.5 text-[11px] font-bold text-amber-300">
+            SHADOW ONLY · READ ONLY
+          </span>
+        </div>
+        <p className="mt-1 text-xs text-slate-500">
+          AI chỉ thu thập và chấm điểm giả định. Không đặt lệnh, không thực thi.
+        </p>
+
+        {aiDraft ? (
+          <>
+            <div className="mt-4 grid gap-4 md:grid-cols-3">
+              <label className="grid gap-2 text-sm font-bold text-slate-300">
+                Model
+                <input
+                  className="rounded-md border border-white/15 bg-[#111c2b] px-3 py-2 font-normal text-slate-100 shadow-sm outline-none focus:border-amber-300"
+                  maxLength={120}
+                  onChange={(e) =>
+                    setAiDraft({ ...aiDraft, model: e.target.value })
+                  }
+                  type="text"
+                  value={aiDraft.model}
+                />
+              </label>
+              <NumberField
+                label="Outcome horizon (4–96)"
+                value={aiDraft.outcome_horizon}
+                onChange={(v) =>
+                  setAiDraft({
+                    ...aiDraft,
+                    outcome_horizon: Math.min(96, Math.max(4, v)),
+                  })
+                }
+              />
+              <NumberField
+                label="Sample training tối thiểu (50–10000)"
+                value={aiDraft.minimum_training_samples}
+                onChange={(v) =>
+                  setAiDraft({
+                    ...aiDraft,
+                    minimum_training_samples: Math.min(10000, Math.max(50, v)),
+                  })
+                }
+              />
+            </div>
+            <div className="mt-4 flex flex-wrap items-center justify-end gap-3">
+              {aiMsg && (
+                <span className="text-xs text-slate-400">{aiMsg}</span>
+              )}
+              <button
+                className="rounded-md bg-amber-300 px-4 py-2 text-sm font-bold text-slate-950 disabled:opacity-60"
+                disabled={aiSaving}
+                onClick={() => void saveAi()}
+                type="button"
+              >
+                {aiSaving ? "Đang lưu…" : "Lưu AI config"}
+              </button>
+            </div>
+          </>
+        ) : (
+          <p className="mt-3 text-sm text-slate-500">Đang tải cấu hình AI…</p>
+        )}
       </div>
     </section>
   );

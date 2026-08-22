@@ -70,6 +70,79 @@ export type PortfolioRisk = {
 export type PortfolioRiskAudit = { audit_id: string; created_at: string; event: "SNAPSHOT" | "PRE_TRADE"; symbol: string | null; side: string | null; decision: "OBSERVED" | "WOULD_ALLOW" | "WOULD_REJECT"; reasons: string[]; before: PortfolioRisk; after: PortfolioRisk | null; candidate: Record<string, string | number> | null; fingerprint: string };
 export type RiskPayload = { limits: StatusPayload["risk"]; portfolio: PortfolioRisk; audits: PortfolioRiskAudit[]; audit_summary: { total: number; snapshots: number; by_decision: Record<string, number> } };
 
+export type GatewayStatus = {
+  base_url: string;
+  circuit_breaker: {
+    state: "open" | "closed";
+    consecutive_failures: number;
+    remaining_cooldown_seconds: number;
+  };
+  cache: { hits: number; misses: number };
+  usage: {
+    market_weight_last_minute: number;
+    private_weight_last_minute: number;
+    order_requests_last_10s: number;
+  };
+};
+
+export type OperationsStatus = {
+  mode: TradingMode;
+  gateway: {
+    demo: GatewayStatus;
+    live: GatewayStatus;
+    market: GatewayStatus;
+  };
+  notifications: {
+    configured: boolean;
+    commands_enabled: boolean;
+    queued: number;
+    sent: number;
+    dropped: number;
+    commands: number;
+    command_replies: number;
+    unauthorized: number;
+    last_command: string | null;
+    last_command_at: string | null;
+  };
+  equity: {
+    mode: string;
+    samples: number;
+    equity: number;
+    peak_equity: number;
+    current_drawdown_percent: number;
+    max_drawdown_percent: number;
+    return_percent: number;
+    first_at: string | null;
+    last_at: string | null;
+  };
+  ai_analytics: {
+    shadow_only: true;
+    read_only: true;
+    collector: SmartEntryPayload["collector"];
+    training: {
+      mode: string;
+      shadow_only: true;
+      execution_enabled: false;
+      model_family: string;
+      sample_size: number;
+      minimum_sample_for_training: number;
+      minimum_sample_for_execution: number;
+      ready_for_training: boolean;
+      ready_for_execution: boolean;
+      edge_detected: boolean;
+      next_step: string;
+      guardrails: string[];
+      performance: SmartEntryPayload["performance"];
+      collector: SmartEntryPayload["collector"];
+    };
+  };
+  reconciliation: {
+    last_reconciled_at: string | null;
+    safe_mode: boolean;
+    safe_mode_reason: string | null;
+  };
+};
+
 
 export type StatusPayload = {
   mode: TradingMode;
@@ -448,6 +521,17 @@ export type BotSettings = {
   minimum_risk_reward: number;
 };
 
+export type AIShadowConfig = {
+  enabled: boolean;
+  model: string;
+  outcome_horizon: number;
+  minimum_training_samples: number;
+  mode: string;
+  shadow_only: true;
+  read_only: true;
+  execution_enabled: false;
+};
+
 export type LogItem = {
   level: string;
   message: string;
@@ -455,6 +539,7 @@ export type LogItem = {
   created_at: string;
 };
 
-export type SmartEntryItem = { event_key: string; symbol: string; timeframe: string; side: string; decision: "WOULD_ENTER" | "WOULD_SKIP"; available: boolean; quality_score: number; reasons: string[]; decision_at: string; entry_price: number; stop_loss: number | null; risk_reward: number | null; outcomes: Record<string, null | { return_fraction: number; mfe_fraction: number; mae_fraction: number; horizon: number; last_close_time: number }>; outcome_note: string; shadow_only: true };
+export type SmartEntryDecision = "WOULD_ENTER" | "WOULD_SKIP";
+export type SmartEntryItem = { event_key: string; symbol: string; timeframe: string; side: string; decision: SmartEntryDecision; decision_label: string; decision_description: string; available: boolean; quality_score: number; reasons: string[]; decision_at: string; entry_price: number; stop_loss: number | null; risk_reward: number | null; outcomes: Record<string, null | { return_fraction: number; mfe_fraction: number; mae_fraction: number; horizon: number; last_close_time: number }>; outcome_note: string; shadow_only: true };
 export type SmartEntryMetric = { sample_size: number; confidence_status: string; win_rate: number | null; average_return: number | null; median_return: number | null; average_mfe: number | null; average_mae: number | null };
-export type SmartEntryPayload = { mode: string; shadow_only: true; read_only: true; items: SmartEntryItem[]; summary: { total: number; WOULD_ENTER: number; WOULD_SKIP: number; outcomes_available: number }; performance: { sample_size: number; confidence_status: string; minimum_sample: number; overall: SmartEntryMetric; dimensions: Record<string, Record<string, SmartEntryMetric>>; note: string }; collector: { running: boolean; interval_seconds: number; batch_size: number; cycles: number; last_run_at: string | null; last_success_at: string | null; last_error: string | null; consecutive_failures: number; last_cycle: { decisions_scanned: number; decisions_pending: number; decisions_complete: number; decisions_retrying: number; decisions_permanent_error: number; decisions_failed: number; outcomes_saved: number }; coverage: { total_decisions: number; complete_decisions: number; pending_decisions: number; retrying_decisions: number; permanent_errors: number; completion_ratio: number; oldest_pending_at: string | null; outcomes_by_horizon: Record<string, number> } }; note: string };
+export type SmartEntryPayload = { mode: string; shadow_only: true; read_only: true; decision_legend: Record<SmartEntryDecision, { label: string; description: string }>; items: SmartEntryItem[]; summary: { total: number; WOULD_ENTER: number; WOULD_SKIP: number; outcomes_available: number }; performance: { sample_size: number; confidence_status: string; minimum_sample: number; overall: SmartEntryMetric; dimensions: Record<string, Record<string, SmartEntryMetric>>; note: string }; collector: { running: boolean; interval_seconds: number; batch_size: number; cycles: number; last_run_at: string | null; last_success_at: string | null; last_error: string | null; consecutive_failures: number; last_cycle: { decisions_scanned: number; decisions_pending: number; decisions_complete: number; decisions_retrying: number; decisions_permanent_error: number; decisions_failed: number; outcomes_saved: number }; coverage: { total_decisions: number; complete_decisions: number; pending_decisions: number; retrying_decisions: number; permanent_errors: number; completion_ratio: number; oldest_pending_at: string | null; outcomes_by_horizon: Record<string, number> } }; note: string };

@@ -1,4 +1,5 @@
 import type {
+  AIShadowConfig,
   BacktestOptimizerReport,
   BacktestReport,
   BotSettings,
@@ -8,6 +9,7 @@ import type {
   LogItem,
   Performance,
   Position,
+  OperationsStatus,
   RiskPayload,
   ScannerResult,
   StatusPayload,
@@ -18,13 +20,24 @@ import type {
 } from "./types";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL || "";
+const REQUEST_TIMEOUT_MS = 30_000;
+
+function normalizeRequestError(path: string, error: unknown): Error {
+  if (error instanceof DOMException && error.name === "AbortError") {
+    return new Error(`API ${path} quá thời gian phản hồi, đang giữ dữ liệu cũ.`);
+  }
+  if (error instanceof Error && /aborted/i.test(error.message)) {
+    return new Error(`API ${path} quá thời gian phản hồi, đang giữ dữ liệu cũ.`);
+  }
+  return error instanceof Error ? error : new Error("Không tải được dữ liệu");
+}
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   let lastError: unknown;
   const retryable = !init?.method || init.method === "GET";
   for (let attempt = 0; attempt < (retryable ? 2 : 1); attempt += 1) {
     const controller = new AbortController();
-    const timeout = window.setTimeout(() => controller.abort(), 12_000);
+    const timeout = window.setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
     try {
       const response = await fetch(`${API_BASE}${path}`, {
         ...init,
@@ -38,8 +51,8 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
       if (!response.ok) throw new Error(await response.text());
       return response.json() as Promise<T>;
     } catch (error) {
-      lastError = error;
-      if (!retryable || attempt > 0) throw error;
+      lastError = normalizeRequestError(path, error);
+      if (!retryable || attempt > 0) throw lastError;
       await new Promise((resolve) => window.setTimeout(resolve, 400));
     } finally {
       window.clearTimeout(timeout);
@@ -62,10 +75,17 @@ export const api = {
   trades: () => request<{ items: Trade[] }>("/api/trades"),
   logs: () => request<{ items: LogItem[] }>("/api/logs"),
   performance: () => request<Performance>("/api/performance"),
+  operations: () => request<OperationsStatus>("/api/operations"),
   exitAnalytics: () => request<ExitAnalytics>("/api/exit-analytics"),
   smartEntry: () => request<SmartEntryPayload>("/api/smart-entry"),
   exchange: () => request<ExchangeSnapshot>("/api/exchange"),
   settings: () => request<BotSettings>("/api/settings"),
+  aiConfig: () => request<AIShadowConfig>("/api/ai/config"),
+  updateAiConfig: (config: Partial<AIShadowConfig>) =>
+    request<AIShadowConfig>("/api/ai/config", {
+      method: "PUT",
+      body: JSON.stringify(config),
+    }),
   runBacktest: (payload: object) =>
     request<BacktestReport>("/api/backtests/run", {
       method: "POST",

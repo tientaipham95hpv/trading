@@ -622,3 +622,176 @@ public struct BacktestReport: Codable, Equatable {
         case candidateApplied = "candidate_applied"
     }
 }
+
+public struct OperationsStatus: Codable, Equatable {
+    public let mode: String
+    public let gateway: GatewayGroupStatus
+    public let notifications: TelegramNotificationStatus
+    public let equity: EquityAnalyticsStatus
+    public let aiAnalytics: AiAnalyticsStatus
+    public let reconciliation: ReconciliationStatus
+
+    enum CodingKeys: String, CodingKey {
+        case mode, gateway, notifications, equity, reconciliation
+        case aiAnalytics = "ai_analytics"
+    }
+}
+
+public struct GatewayGroupStatus: Codable, Equatable {
+    public let demo: GatewayStatus
+    public let live: GatewayStatus
+    public let market: GatewayStatus
+}
+
+public struct GatewayStatus: Codable, Equatable {
+    public let baseURL: String
+    public let circuitBreaker: CircuitBreakerStatus
+    public let cache: CacheStatus
+    public let usage: GatewayUsage
+
+    enum CodingKeys: String, CodingKey {
+        case cache, usage
+        case baseURL = "base_url"
+        case circuitBreaker = "circuit_breaker"
+    }
+}
+
+public struct CircuitBreakerStatus: Codable, Equatable {
+    public let state: String
+    public let consecutiveFailures: Int
+    public let remainingCooldownSeconds: Double
+
+    enum CodingKeys: String, CodingKey {
+        case state
+        case consecutiveFailures = "consecutive_failures"
+        case remainingCooldownSeconds = "remaining_cooldown_seconds"
+    }
+}
+
+public struct CacheStatus: Codable, Equatable {
+    public let hits: Int
+    public let misses: Int
+}
+
+public struct GatewayUsage: Codable, Equatable {
+    public let marketWeightLastMinute: Double
+    public let privateWeightLastMinute: Double
+    public let orderRequestsLast10s: Double
+
+    enum CodingKeys: String, CodingKey {
+        case marketWeightLastMinute = "market_weight_last_minute"
+        case privateWeightLastMinute = "private_weight_last_minute"
+        case orderRequestsLast10s = "order_requests_last_10s"
+    }
+}
+
+public struct TelegramNotificationStatus: Codable, Equatable {
+    public let configured: Bool
+    public let commandsEnabled: Bool
+    public let queued: Int
+    public let sent: Int
+    public let dropped: Int
+    public let commands: Int
+    public let commandReplies: Int
+    public let unauthorized: Int
+    public let lastCommand: String?
+    public let lastCommandAt: String?
+
+    enum CodingKeys: String, CodingKey {
+        case configured, queued, sent, dropped, commands, unauthorized
+        case commandsEnabled = "commands_enabled"
+        case commandReplies = "command_replies"
+        case lastCommand = "last_command"
+        case lastCommandAt = "last_command_at"
+    }
+}
+
+public struct EquityAnalyticsStatus: Codable, Equatable {
+    public let mode: String
+    public let samples: Int
+    public let equity: Double
+    public let peakEquity: Double
+    public let currentDrawdownPercent: Double
+    public let maxDrawdownPercent: Double
+    public let returnPercent: Double
+    public let firstAt: String?
+    public let lastAt: String?
+
+    enum CodingKeys: String, CodingKey {
+        case mode, samples, equity
+        case peakEquity = "peak_equity"
+        case currentDrawdownPercent = "current_drawdown_percent"
+        case maxDrawdownPercent = "max_drawdown_percent"
+        case returnPercent = "return_percent"
+        case firstAt = "first_at"
+        case lastAt = "last_at"
+    }
+}
+
+public struct AiAnalyticsStatus: Codable, Equatable {
+    public let shadowOnly: Bool
+    public let readOnly: Bool
+    public let collector: AiCollectorStatus
+    public let training: AiTrainingStatus?
+
+    enum CodingKeys: String, CodingKey {
+        case collector, training
+        case shadowOnly = "shadow_only"
+        case readOnly = "read_only"
+    }
+}
+
+public struct AiTrainingStatus: Codable, Equatable {
+    public let shadowOnly: Bool
+    public let executionEnabled: Bool
+    public let modelFamily: String
+    public let sampleSize: Int
+    public let minimumSampleForTraining: Int
+    public let minimumSampleForExecution: Int
+    public let readyForTraining: Bool
+    public let readyForExecution: Bool
+    public let edgeDetected: Bool
+    public let nextStep: String
+
+    enum CodingKeys: String, CodingKey {
+        case nextStep = "next_step"
+        case shadowOnly = "shadow_only"
+        case executionEnabled = "execution_enabled"
+        case modelFamily = "model_family"
+        case sampleSize = "sample_size"
+        case minimumSampleForTraining = "minimum_sample_for_training"
+        case minimumSampleForExecution = "minimum_sample_for_execution"
+        case readyForTraining = "ready_for_training"
+        case readyForExecution = "ready_for_execution"
+        case edgeDetected = "edge_detected"
+    }
+}
+
+public struct AiCollectorStatus: Codable, Equatable {
+    public let running: Bool
+    public let intervalSeconds: Int
+    public let cycles: Int
+    public let lastRunAt: String?
+    public let lastError: String?
+    public let consecutiveFailures: Int
+
+    enum CodingKeys: String, CodingKey {
+        case running, cycles
+        case intervalSeconds = "interval_seconds"
+        case lastRunAt = "last_run_at"
+        case lastError = "last_error"
+        case consecutiveFailures = "consecutive_failures"
+    }
+}
+
+public struct ReconciliationStatus: Codable, Equatable {
+    public let lastReconciledAt: String?
+    public let safeMode: Bool
+    public let safeModeReason: String?
+
+    enum CodingKeys: String, CodingKey {
+        case lastReconciledAt = "last_reconciled_at"
+        case safeMode = "safe_mode"
+        case safeModeReason = "safe_mode_reason"
+    }
+}
