@@ -1,5 +1,6 @@
 import asyncio
 from datetime import UTC, datetime
+from typing import Annotated
 
 import httpx
 from fastapi import APIRouter, HTTPException, Query, WebSocket, WebSocketDisconnect
@@ -38,6 +39,42 @@ def _ai_config_response() -> AIShadowConfigResponse:
     return AIShadowConfigResponse(**state.ai_shadow_config)
 
 
+def _exchange_snapshot_payload(snapshot) -> dict[str, object]:
+    """Expose transport-independent exchange freshness to every client."""
+    now = datetime.now(UTC)
+    snapshot_age = (
+        (now - snapshot.snapshot_at).total_seconds()
+        if snapshot.snapshot_at
+        else None
+    )
+    reconcile_age = (
+        (now - snapshot.last_reconciled_at).total_seconds()
+        if snapshot.last_reconciled_at
+        else None
+    )
+    stream = state.user_stream.snapshot()
+    if snapshot.safe_mode or snapshot.connection == "DISCONNECTED" or snapshot_age is None:
+        freshness = "OFFLINE"
+        connection = snapshot.connection
+    elif snapshot_age > 10 or reconcile_age is None or reconcile_age > 120 or not stream["connected"]:
+        freshness = "STALE"
+        connection = "STALE"
+    else:
+        freshness = "LIVE"
+        connection = "CONNECTED"
+    payload = snapshot.model_dump(mode="json")
+    payload["freshness"] = freshness
+    payload["snapshot_age_seconds"] = round(snapshot_age, 3) if snapshot_age is not None else None
+    payload["reconciliation_age_seconds"] = round(reconcile_age, 3) if reconcile_age is not None else None
+    payload["user_stream_connected"] = bool(stream["connected"])
+    payload["connection"] = connection
+    return payload
+
+
+def _exchange_freshness(snapshot) -> str:
+    return str(_exchange_snapshot_payload(snapshot)["freshness"])
+
+
 @router.get("/status")
 async def status() -> dict[str, object]:
     adapter = state.live_exchange if state.trading_mode == TradingMode.LIVE else state.demo_exchange
@@ -57,7 +94,7 @@ async def status() -> dict[str, object]:
         "emergency_stop": state.emergency_stop.active,
         "safe_mode": state.safe_mode,
         "safe_mode_reason": state.safe_mode_reason,
-        "exchange": adapter.snapshot_cache.model_dump(mode="json"),
+        "exchange": _exchange_snapshot_payload(adapter.snapshot_cache),
         "capital_risk": capital_profile.snapshot(),
         "risk": {
             "max_leverage": capital_profile.max_leverage,
@@ -295,7 +332,11 @@ async def ai_training_status(limit: int = Query(default=500, ge=50, le=2000)) ->
 async def positions() -> dict[str, object]:
     # User stream + reconciliation maintain this snapshot. Dashboard reads must
     # not multiply signed Binance REST traffic for every connected client.
-    return {"items": _exchange_positions_for_app(_current_adapter().snapshot_cache)}
+    snapshot = _current_adapter().snapshot_cache
+    return {
+        "items": _exchange_positions_for_app(snapshot),
+        "exchange": _exchange_snapshot_payload(snapshot),
+    }
 
 
 @router.get("/trades")
@@ -330,7 +371,11 @@ async def trades() -> dict[str, object]:
 
 
 @router.get("/exit-analytics", response_model=ExitAnalyticsResponse)
-async def exit_analytics() -> ExitAnalyticsResponse:
+async def exit_analytics(
+    date_from: Annotated[datetime | None, Query()] = None,
+    date_to: Annotated[datetime | None, Query()] = None,
+    symbol: Annotated[str | None, Query(min_length=1)] = None,
+) -> ExitAnalyticsResponse:
     """Phân tích lịch sử thoát lệnh; chỉ đọc, không tác động execution/risk/config."""
     if state.trading_mode in {TradingMode.DEMO, TradingMode.LIVE}:
         adapter = _current_adapter()
@@ -353,9 +398,26 @@ async def exit_analytics() -> ExitAnalyticsResponse:
         if reset_at is not None:
             cutoff_ms = int(reset_at.timestamp() * 1000)
             rows = [row for row in rows if int(_float(row.get("time"))) >= cutoff_ms]
+        symbol_filter = symbol.upper() if symbol else None
+        start_ms = int(date_from.timestamp() * 1000) if date_from else None
+        end_ms = int(date_to.timestamp() * 1000) if date_to else None
+        rows = [
+            row
+            for row in rows
+            if (not symbol_filter or str(row.get("symbol", "")).upper() == symbol_filter)
+            and (start_ms is None or int(_float(row.get("time"))) >= start_ms)
+            and (end_ms is None or int(_float(row.get("time"))) <= end_ms)
+        ]
         lifecycle_events = await state.storage.lifecycle_analytics_events(
             mode=state.trading_mode.value, limit=5000
         )
+        lifecycle_events = [
+            event
+            for event in lifecycle_events
+            if (not symbol_filter or str(event.get("symbol", "")).upper() == symbol_filter)
+            and (start_ms is None or _event_time_ms(event) >= start_ms)
+            and (end_ms is None or _event_time_ms(event) <= end_ms)
+        ]
         lifecycle_candles = {}
         for lifecycle_id, request in excursion_requests(lifecycle_events).items():
             symbol, interval, start_ms, end_ms, count = request
@@ -715,7 +777,7 @@ async def set_mode(mode: TradingMode) -> dict[str, object]:
 async def exchange_snapshot() -> dict[str, object]:
     # The background user stream/watchdog and reconciliation own exchange I/O.
     # Serving their snapshot keeps web/app reads fast and prevents API fan-out.
-    return _current_adapter().snapshot_cache.model_dump(mode="json")
+    return _exchange_snapshot_payload(_current_adapter().snapshot_cache)
 
 
 @router.get("/exchange/gateway")
@@ -947,20 +1009,45 @@ async def reset_emergency_stop() -> dict[str, object]:
 @router.websocket("/ws/{channel}")
 async def websocket_channel(websocket: WebSocket, channel: str) -> None:
     await websocket.accept()
+    channel = {
+        "CHARTS_CACHE_STREAM_exchange": "exchange",
+        "_positions": "positions",
+    }.get(channel, channel)
+    queue = await state.realtime.subscribe(channel)
     try:
         while True:
-            await websocket.send_json(await _channel_payload(channel))
-            await asyncio.sleep(2)
+            await websocket.send_json(await queue.get())
     except WebSocketDisconnect:
-        return
+        pass
+    finally:
+        await state.realtime.unsubscribe(channel, queue)
+
+
+def configure_realtime() -> None:
+    """Register transport-neutral streams shared by web and iOS."""
+    state.realtime.register("exchange", lambda: _channel_payload("exchange"), 2.0)
+    state.realtime.register("positions", lambda: _channel_payload("positions"), 5.0)
+    state.realtime.register("performance", lambda: _channel_payload("performance"), 3.0)
+    state.realtime.register("system", lambda: _channel_payload("system"), 3.0)
+    state.realtime.register("risk", lambda: _channel_payload("risk"), 3.0)
+    state.realtime.register("logs", lambda: _channel_payload("logs"), 1.0)
+    state.realtime.register(
+        "analytics_snapshot", lambda: _channel_payload("analytics_snapshot"), 10.0
+    )
+    state.realtime.register("settings", lambda: _channel_payload("settings"), 30.0)
+    state.realtime.register("ai_config", lambda: _channel_payload("ai_config"), 30.0)
+    state.realtime.register("optimizer", lambda: _channel_payload("optimizer"), 2.0)
 
 
 async def _submit_order(plan: OrderPlan) -> dict[str, object]:
     symbol = plan.symbol.upper()
-    if symbol not in state.bot_settings.whitelist or symbol in state.bot_settings.blacklist:
+    if (
+        state.bot_settings.universe_mode == "VALIDATION"
+        and symbol not in state.bot_settings.whitelist
+    ) or symbol in state.bot_settings.blacklist:
         raise HTTPException(
             status_code=400,
-            detail="Chỉ cho phép BTCUSDT, ETHUSDT, SOLUSDT trong giai đoạn kiểm chứng",
+            detail="Symbol không nằm trong universe được phép giao dịch",
         )
     try:
         state.order_validator.validate(plan)
@@ -1043,9 +1130,11 @@ async def _channel_payload(channel: str) -> dict[str, object]:
     if channel == "positions":
         # WebSocket fan-out must never turn into Binance REST polling. The
         # user-stream/watchdog keeps this authoritative cache current.
+        snapshot = _current_adapter().snapshot_cache
         return {
             "channel": channel,
-            "items": _exchange_positions_for_app(_current_adapter().snapshot_cache),
+            "items": _exchange_positions_for_app(snapshot),
+            "exchange": _exchange_snapshot_payload(snapshot),
         }
     if channel == "performance":
         # Keep this legacy channel cheap. In DEMO/LIVE it must still reflect
@@ -1056,7 +1145,9 @@ async def _channel_payload(channel: str) -> dict[str, object]:
                 [],
                 initial_capital=state.performance_initial_capital_for(),
             )
-            return {"channel": channel, "data": performance.model_dump(mode="json")}
+            data = performance.model_dump(mode="json")
+            data["exchange_freshness"] = _exchange_freshness(_current_adapter().snapshot_cache)
+            return {"channel": channel, "data": data}
         return {
             "channel": channel,
             "data": state.execution.performance().model_dump(mode="json"),
@@ -1066,7 +1157,23 @@ async def _channel_payload(channel: str) -> dict[str, object]:
     if channel == "exchange":
         return {
             "channel": channel,
-            "data": _current_adapter().snapshot_cache.model_dump(mode="json"),
+            "data": _exchange_snapshot_payload(_current_adapter().snapshot_cache),
+        }
+    if channel == "risk":
+        return {"channel": channel, "data": await risk()}
+    if channel == "logs":
+        return {"channel": channel, "items": await state.storage.list_payloads("logs", 100)}
+    if channel == "settings":
+        return {"channel": channel, "data": (await get_settings()).model_dump(mode="json")}
+    if channel == "ai_config":
+        return {"channel": channel, "data": (await get_ai_config()).model_dump(mode="json")}
+    if channel == "analytics_snapshot":
+        return {"channel": channel, "data": (await exit_analytics()).model_dump(mode="json")}
+    if channel == "optimizer":
+        report = state.backtest.latest_optimizer
+        return {
+            "channel": channel,
+            "data": report.model_dump(mode="json") if report else None,
         }
     await asyncio.sleep(0)
     return {"channel": channel, "error": "Unknown channel"}
@@ -1223,7 +1330,11 @@ def _exchange_performance(
     equity = snapshot.balance.margin_balance or balance
     net_pnl = sum(_float(row.get("income")) for row in income_rows)
     initial_capital = initial_capital if initial_capital is not None else balance - net_pnl
+    # Account PnL is authoritative for the dashboard: it reconciles the
+    # baseline with the exchange's current equity, including any balance
+    # movements which are absent from Binance income-history rows.
     equity_pnl = equity - initial_capital
+    non_trading_balance_change = equity_pnl - net_pnl - snapshot.balance.unrealized_pnl
     return_percent = (net_pnl / initial_capital * 100) if initial_capital else 0.0
     equity_return_percent = (equity_pnl / initial_capital * 100) if initial_capital else 0.0
     return PerformanceSnapshot(
@@ -1231,6 +1342,7 @@ def _exchange_performance(
         equity=equity,
         initial_capital=initial_capital,
         net_pnl=net_pnl,
+        non_trading_balance_change=non_trading_balance_change,
         equity_pnl=equity_pnl,
         return_percent=return_percent,
         equity_return_percent=equity_return_percent,
@@ -1239,6 +1351,11 @@ def _exchange_performance(
         fees_paid=fees,
         funding_paid=funding,
         win_rate=(wins / total) if total else 0.0,
+        realized_pnl_events=total,
+        winning_realized_pnl_events=wins,
+        losing_realized_pnl_events=loss_count,
+        breakeven_realized_pnl_events=breakeven_count,
+        # Retain aliases for older API consumers while they migrate to the explicit labels.
         total_trades=total,
         winning_trades=wins,
         losing_trades=loss_count,
@@ -1262,7 +1379,15 @@ async def _analytics_history(adapter):
         income_batches = await asyncio.gather(
             *(
                 asyncio.wait_for(
-                    adapter.income_history(income_type=income_type, limit=500),
+                    adapter.income_history(
+                        income_type=income_type,
+                        limit=500,
+                        start_time=(
+                            int(state.performance_reset_at_for().timestamp() * 1000)
+                            if state.performance_reset_at_for() is not None
+                            else None
+                        ),
+                    ),
                     timeout=8.0,
                 )
                 for income_type in ("REALIZED_PNL", "COMMISSION", "FUNDING_FEE")
@@ -1291,6 +1416,18 @@ def _income_since_reset(income_rows: list[dict[str, object]]) -> list[dict[str, 
         return income_rows
     cutoff_ms = int(reset_at.timestamp() * 1000)
     return [row for row in income_rows if int(_float(row.get("time"))) >= cutoff_ms]
+
+
+def _event_time_ms(event: dict[str, object]) -> int:
+    value = event.get("event_at") or event.get("created_at") or event.get("time")
+    if isinstance(value, datetime):
+        return int(value.timestamp() * 1000)
+    if isinstance(value, str):
+        try:
+            return int(datetime.fromisoformat(value).timestamp() * 1000)
+        except ValueError:
+            return int(_float(value))
+    return int(_float(value))
 
 
 def _float(value: object) -> float:

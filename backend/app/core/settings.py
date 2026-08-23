@@ -44,6 +44,11 @@ class Settings(BaseSettings):
     live_preflight_reconnect_pass: bool = False
     live_preflight_reconciliation_pass: bool = False
     live_preflight_duplicate_order_tests_pass: bool = False
+    scanner_universe_mode: str = "VALIDATION"
+    # Comma-separated overrides keep the runtime universe durable across restarts.
+    scanner_whitelist: str = "BTCUSDT,ETHUSDT,SOLUSDT"
+    scanner_blacklist: str = "PROMUSDT,ZECUSDT,XMRUSDT,SUIUSDT,UNIUSDT,KAITOUSDT"
+    scanner_max_symbols: int = Field(default=40, ge=1, le=100)
     scanner_min_quote_volume: float = 50_000_000
     scanner_max_spread_bps: float = 8.0
     scanner_min_listing_age_days: int = 30

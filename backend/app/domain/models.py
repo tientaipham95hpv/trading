@@ -381,6 +381,8 @@ class PerformanceSnapshot(BaseModel):
     equity: float
     initial_capital: float = 0.0
     net_pnl: float = 0.0
+    # Deposits, withdrawals and transfers are not trading PnL.
+    non_trading_balance_change: float = 0.0
     equity_pnl: float = 0.0
     return_percent: float = 0.0
     equity_return_percent: float = 0.0
@@ -389,7 +391,13 @@ class PerformanceSnapshot(BaseModel):
     fees_paid: float
     funding_paid: float
     win_rate: float
-    total_trades: int
+    # Binance REALIZED_PNL rows are close events/fills, not necessarily one complete trade.
+    realized_pnl_events: int = 0
+    winning_realized_pnl_events: int = 0
+    losing_realized_pnl_events: int = 0
+    breakeven_realized_pnl_events: int = 0
+    # Compatibility aliases; consumers should prefer the explicitly named event fields above.
+    total_trades: int = 0
     winning_trades: int = 0
     losing_trades: int = 0
     breakeven_trades: int = 0
@@ -472,7 +480,8 @@ class ExitAnalyticsResponse(BaseModel):
 
 
 class BotSettings(BaseModel):
-    # Validation universe is deliberately small until a strategy earns expansion.
+    # VALIDATION keeps execution constrained; ALL_MARKET scans every eligible USD-M pair.
+    universe_mode: Literal["VALIDATION", "ALL_MARKET"] = "VALIDATION"
     whitelist: list[str] = Field(default_factory=lambda: ["BTCUSDT", "ETHUSDT", "SOLUSDT"])
     blacklist: list[str] = Field(
         default_factory=lambda: [
@@ -487,6 +496,8 @@ class BotSettings(BaseModel):
     min_quote_volume: float = 50_000_000
     max_spread_bps: float = 8.0
     min_listing_age_days: int = 30
+    # Bounded to protect Binance request weight even when the market universe is broad.
+    max_scan_symbols: int = Field(default=40, ge=1, le=100)
     scan_timeframes: list[Timeframe] = Field(
         default_factory=lambda: [
             Timeframe.M15,
@@ -533,7 +544,7 @@ class BotSettings(BaseModel):
 
     @model_validator(mode="after")
     def validate_restricted_universe(self) -> "BotSettings":
-        if not self.whitelist:
+        if self.universe_mode == "VALIDATION" and not self.whitelist:
             raise ValueError("Whitelist không được để trống khi đang ở chế độ kiểm chứng")
         overlap = set(self.whitelist) & set(self.blacklist)
         if overlap:
@@ -646,6 +657,9 @@ class ExchangeSnapshot(BaseModel):
     orders: list[ExchangeOrder] = Field(default_factory=list)
     positions: list[ExchangePosition] = Field(default_factory=list)
     lifecycles: list[ExchangePositionLifecycle] = Field(default_factory=list)
+    # Time at which this cache was last populated from the exchange.
+    snapshot_at: datetime | None = None
+    freshness: Literal["LIVE", "STALE", "OFFLINE"] = "OFFLINE"
     last_reconciled_at: datetime | None = None
     last_user_stream_at: datetime | None = None
 

@@ -38,6 +38,9 @@ class FuturesScanner:
         self.last_markets: list[SymbolCandidate] = []
         self.last_results: list[ScannerResult] = []
         self.last_scan_at: datetime | None = None
+        # ALL_MARKET is rate-limit bounded; rotate the eligible set so low-volume
+        # contracts are not permanently excluded by volume ordering.
+        self._all_market_cursor = 0
 
     async def scan_usdm_pairs(self) -> list[SymbolCandidate]:
         payload, tickers, book_tickers, premium_indexes = await asyncio.gather(
@@ -108,9 +111,12 @@ class FuturesScanner:
             allowed = set(symbols)
             markets = [market for market in markets if market.symbol in allowed]
         frames = timeframes or self.settings.scan_timeframes
+        # Keep a broad universe bounded so a single scan cannot exhaust exchange rate limits.
+        effective_limit = min(limit, self.settings.max_scan_symbols)
+        markets = self._scan_batch(markets, effective_limit)
         jobs = [
             self._scan_symbol_timeframe(market, timeframe)
-            for market in markets[:limit]
+            for market in markets
             for timeframe in frames
         ]
         results = [result for result in await asyncio.gather(*jobs) if result is not None]
@@ -118,6 +124,15 @@ class FuturesScanner:
         self.last_results = results
         self.last_scan_at = datetime.now(UTC)
         return results
+
+    def _scan_batch(
+        self, markets: list[SymbolCandidate], limit: int
+    ) -> list[SymbolCandidate]:
+        if self.settings.universe_mode != "ALL_MARKET" or len(markets) <= limit:
+            return markets[:limit]
+        start = self._all_market_cursor % len(markets)
+        self._all_market_cursor = (start + limit) % len(markets)
+        return (markets[start:] + markets[:start])[:limit]
 
     def signal_from_result(self, result: ScannerResult) -> StrategySignal | None:
         if result.action == SignalAction.NO_TRADE or not result.stop_loss:
@@ -137,7 +152,10 @@ class FuturesScanner:
         )
 
     def _passes_filters(self, candidate: SymbolCandidate) -> bool:
-        if self.settings.whitelist and candidate.symbol not in self.settings.whitelist:
+        if (
+            self.settings.universe_mode == "VALIDATION"
+            and candidate.symbol not in self.settings.whitelist
+        ):
             return False
         if candidate.symbol in self.settings.blacklist:
             return False

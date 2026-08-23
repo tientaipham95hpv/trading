@@ -1,6 +1,6 @@
 from fastapi import FastAPI
 
-from app.api.routes import router
+from app.api.routes import configure_realtime, router
 from app.services.app_state import state
 from app.services.exchange import ExchangeError
 
@@ -28,10 +28,13 @@ async def startup() -> None:
     state.smart_entry_collector.start()
     state.equity_tracker.start()
     state.telegram_alerts.start(command_handler=state.handle_telegram_command)
+    configure_realtime()
+    await state.realtime.start()
 
 
 @app.on_event("shutdown")
 async def shutdown() -> None:
+    await state.realtime.stop()
     await state.telegram_alerts.stop()
     await state.equity_tracker.stop()
     await state.smart_entry_collector.stop()

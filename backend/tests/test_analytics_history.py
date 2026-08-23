@@ -117,7 +117,11 @@ async def test_route_history_fetch_is_coalesced_and_fetches_each_symbol_once(mon
             self.trade_calls: list[str] = []
 
         async def income_history(
-            self, *, income_type: str | None = None, limit: int = 500
+            self,
+            *,
+            income_type: str | None = None,
+            limit: int = 500,
+            start_time: int | None = None,
         ) -> list[dict[str, object]]:
             self.income_calls.append(income_type)
             await asyncio.sleep(0)

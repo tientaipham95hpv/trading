@@ -196,6 +196,10 @@ export type StatusPayload = {
 export type ExchangeSnapshot = {
   mode: TradingMode;
   connection: "DISCONNECTED" | "CONNECTED" | "STALE" | "SAFE_MODE";
+  freshness: "LIVE" | "STALE" | "OFFLINE";
+  snapshot_age_seconds?: number | null;
+  reconciliation_age_seconds?: number | null;
+  user_stream_connected?: boolean;
   safe_mode: boolean;
   safe_mode_reason: string | null;
   balance: {
@@ -404,6 +408,7 @@ export type Performance = {
   equity: number;
   initial_capital: number;
   net_pnl: number;
+  non_trading_balance_change: number;
   equity_pnl: number;
   return_percent: number;
   equity_return_percent: number;
@@ -412,6 +417,12 @@ export type Performance = {
   fees_paid: number;
   funding_paid: number;
   win_rate: number;
+  /** Binance REALIZED_PNL close events; not guaranteed to be complete trades. */
+  realized_pnl_events: number;
+  winning_realized_pnl_events: number;
+  losing_realized_pnl_events: number;
+  breakeven_realized_pnl_events: number;
+  /** Deprecated compatibility aliases; prefer explicit realized-PnL event fields. */
   total_trades: number;
   winning_trades: number;
   losing_trades: number;
@@ -492,11 +503,13 @@ export type BacktestOptimizerReport = {
 };
 
 export type BotSettings = {
+  universe_mode: "VALIDATION" | "ALL_MARKET";
   whitelist: string[];
   blacklist: string[];
   min_quote_volume: number;
   max_spread_bps: number;
   min_listing_age_days: number;
+  max_scan_symbols: number;
   scan_timeframes: string[];
   min_score_to_trade: number;
   taker_fee_rate: number;

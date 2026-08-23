@@ -78,6 +78,33 @@ async def test_scanner_discovers_trading_usdt_perpetuals_without_hardcoding():
     assert [pair.symbol for pair in pairs] == ["BTCUSDT"]
 
 
+async def test_all_market_accepts_eligible_low_volume_symbol_without_whitelist():
+    scanner = FuturesScanner(
+        FakeClient(),
+        BotSettings(
+            universe_mode="ALL_MARKET",
+            whitelist=[],
+            blacklist=[],
+            min_quote_volume=1,
+            min_listing_age_days=0,
+        ),
+    )
+
+    assert [pair.symbol for pair in await scanner.scan_usdm_pairs()] == ["BTCUSDT"]
+
+
+def test_all_market_rotates_bounded_scan_batches():
+    scanner = FuturesScanner(
+        FakeClient(),
+        BotSettings(universe_mode="ALL_MARKET", whitelist=[], blacklist=[]),
+    )
+    # Batching only reorders candidates; their fields are irrelevant here.
+    batch = [object(), object(), object()]
+
+    assert scanner._scan_batch(batch, 2) == batch[:2]  # type: ignore[arg-type]
+    assert scanner._scan_batch(batch, 2) == [batch[2], batch[0]]  # type: ignore[arg-type]
+
+
 async def test_scanner_enforces_whitelist_and_blacklist_before_market_scoring():
     scanner = FuturesScanner(
         FakeClient(),

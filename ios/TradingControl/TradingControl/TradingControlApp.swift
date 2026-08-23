@@ -299,14 +299,14 @@ private struct SignalHighlights: View {
             VStack(alignment: .leading, spacing: 12) {
                 Text("Tín hiệu nổi bật")
                     .font(.headline)
-                let opportunities = model.scanner.filter { $0.action != "NO_TRADE" }.prefix(5)
+                let opportunities = MultiTimeframeSetup.build(from: model.scanner).filter(\.isTradable).prefix(5)
                 if opportunities.isEmpty {
-                    Text("Chưa có tín hiệu đủ điểm ở bộ lọc hiện tại.")
+                    Text("Chưa có tín hiệu 15m được 4h + 1h xác nhận.")
                         .font(.subheadline)
                         .foregroundStyle(.secondary)
                 } else {
-                    ForEach(Array(opportunities)) { item in
-                        ScannerRow(item: item)
+                    ForEach(Array(opportunities)) { setup in
+                        ScannerRow(setup: setup)
                     }
                 }
             }
@@ -864,31 +864,40 @@ private struct ScannerView: View {
     @State private var query = ""
     @State private var signal = "ALL"
 
-    private var rows: [TinHieuQuet] {
-        model.scanner.filter { item in
-            (query.isEmpty || item.symbol.localizedCaseInsensitiveContains(query)) &&
-            (signal == "ALL" || item.action == signal)
+    private var setups: [MultiTimeframeSetup] {
+        MultiTimeframeSetup.build(from: model.scanner).filter { setup in
+            (query.isEmpty || setup.trigger.symbol.localizedCaseInsensitiveContains(query)) &&
+            (signal == "ALL" || setup.trigger.action == signal)
         }
     }
 
     var body: some View {
         NavigationStack {
-            List(rows) { item in
-                NavigationLink {
-                    CoinChartView(symbol: item.symbol)
-                } label: {
-                    ScannerRow(item: item)
-                        .padding()
-                        .liquidGlass()
+            List {
+                Section {
+                    Label("Hướng lệnh: 4h + 1h. 15m chỉ là điểm bấm cò; không đồng thuận thì không vào lệnh.", systemImage: "shield.lefthalf.filled")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                 }
-                .glassListRow()
+                .listRowBackground(Color.clear)
+
+                ForEach(setups) { setup in
+                    NavigationLink {
+                        CoinChartView(symbol: setup.trigger.symbol)
+                    } label: {
+                        ScannerRow(setup: setup)
+                            .padding()
+                            .liquidGlass()
+                    }
+                    .glassListRow()
+                }
             }
             .navigationTitle("Bộ quét")
             .tradingGlassList()
             .searchable(text: $query, prompt: "Tìm mã")
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {
-                    Picker("Tín hiệu", selection: $signal) {
+                    Picker("Tín hiệu 15m", selection: $signal) {
                         Text("Tất cả").tag("ALL")
                         Text("Long").tag("LONG")
                         Text("Short").tag("SHORT")
@@ -897,8 +906,39 @@ private struct ScannerView: View {
                 }
                 ToolbarItem(placement: .topBarTrailing) { RefreshButtonView(model: model) }
             }
-            .overlay { if rows.isEmpty { EmptyContent("Chưa có tín hiệu realtime từ backend.") } }
+            .overlay { if setups.isEmpty { EmptyContent("Chưa có tín hiệu 15m realtime từ backend.") } }
         }
+    }
+}
+
+private struct MultiTimeframeSetup: Identifiable {
+    let trigger: TinHieuQuet
+    let h1: TinHieuQuet?
+    let h4: TinHieuQuet?
+    let confirmation: String
+    let isTradable: Bool
+
+    var id: String { trigger.id }
+
+    static func build(from results: [TinHieuQuet]) -> [MultiTimeframeSetup] {
+        let frames = Dictionary(uniqueKeysWithValues: results.map { ("\($0.symbol)|\($0.timeframe)", $0) })
+        return results.filter { $0.timeframe == "15m" }.map { trigger in
+            let h1 = frames["\(trigger.symbol)|1h"]
+            let h4 = frames["\(trigger.symbol)|4h"]
+            let expectedAction = h4?.regime == "TRENDING_UP" ? "LONG" : h4?.regime == "TRENDING_DOWN" ? "SHORT" : "NO_TRADE"
+            let tradable = trigger.action != "NO_TRADE" && h1 != nil && h4 != nil &&
+                (h4?.regime == "TRENDING_UP" || h4?.regime == "TRENDING_DOWN") &&
+                h1?.regime == h4?.regime && h1?.action == trigger.action && trigger.action == expectedAction
+            let confirmation: String
+            if h1 == nil || h4 == nil { confirmation = "Chờ dữ liệu 1h/4h" }
+            else if h4?.regime != "TRENDING_UP" && h4?.regime != "TRENDING_DOWN" { confirmation = "BLOCK · 4h chưa có trend rõ" }
+            else if h1?.regime != h4?.regime { confirmation = "BLOCK · 1h chưa xác nhận 4h" }
+            else if h1?.action != trigger.action || trigger.action != expectedAction { confirmation = "BLOCK · 15m không cùng chiều HTF" }
+            else if trigger.action == "NO_TRADE" { confirmation = "Chờ bấm cò 15m" }
+            else { confirmation = "ĐỦ ĐIỀU KIỆN · 4h + 1h đồng thuận" }
+            return MultiTimeframeSetup(trigger: trigger, h1: h1, h4: h4, confirmation: confirmation, isTradable: tradable)
+        }
+        .sorted { $0.isTradable != $1.isTradable ? $0.isTradable : max($0.trigger.longScore, $0.trigger.shortScore) > max($1.trigger.longScore, $1.trigger.shortScore) }
     }
 }
 
@@ -1260,16 +1300,17 @@ private struct MoreView: View {
 }
 
 private struct ScannerRow: View {
-    let item: TinHieuQuet
+    let setup: MultiTimeframeSetup
 
     var body: some View {
+        let item = setup.trigger
         VStack(alignment: .leading, spacing: 8) {
             HStack {
                 Text(item.symbol).font(.headline)
                 Spacer()
-                Text(viAction(item.action))
+                Text(setup.isTradable ? viAction(item.action) : "KHÔNG VÀO")
                     .fontWeight(.semibold)
-                    .foregroundStyle(scannerActionColor(item.action))
+                    .foregroundStyle(setup.isTradable ? scannerActionColor(item.action) : .orange)
             }
             HStack {
                 Text("Giá \(money(item.price))")
@@ -1277,9 +1318,16 @@ private struct ScannerRow: View {
                 Text("24h \(signedPercent(item.priceChangePercent))")
             }
             .font(.subheadline)
+            HStack(spacing: 6) {
+                timeframeChip("4h", setup.h4)
+                timeframeChip("1h", setup.h1)
+                timeframeChip("15m", item)
+            }
+            Text(setup.confirmation)
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(setup.isTradable ? .green : .orange)
             HStack {
-                Text("Long \(item.longScore)")
-                Text("Short \(item.shortScore)")
+                Text("15m Long \(item.longScore) · Short \(item.shortScore)")
                 Spacer()
                 Text(viRegime(item.regime))
             }
@@ -1287,6 +1335,17 @@ private struct ScannerRow: View {
             .foregroundStyle(.secondary)
         }
         .padding(.vertical, 4)
+    }
+
+    private func timeframeChip(_ label: String, _ value: TinHieuQuet?) -> some View {
+        let direction = value.map { viAction($0.action) } ?? "—"
+        let color = value?.action == "LONG" ? Color.green : value?.action == "SHORT" ? Color.red : Color.secondary
+        return Text("\(label) \(direction)")
+            .font(.caption2.bold())
+            .foregroundStyle(color)
+            .padding(.horizontal, 7)
+            .padding(.vertical, 4)
+            .background(color.opacity(0.14), in: Capsule())
     }
 }
 

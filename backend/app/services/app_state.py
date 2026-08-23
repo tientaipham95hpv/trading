@@ -17,6 +17,7 @@ from app.services.monitoring import MonitoringService
 from app.services.notifications import NotificationService
 from app.services.order_pipeline import OrderValidator, PositionSizer
 from app.services.portfolio_risk import PortfolioRiskEngine
+from app.services.realtime import RealtimeBroadcaster
 from app.services.reconciliation import ExchangeReconciliationService
 from app.services.risk_engine import RiskEngine
 from app.services.scanner import FuturesScanner
@@ -29,9 +30,13 @@ from app.services.user_stream import UserStreamWatchdog
 
 def bot_settings_from_env(settings: Settings) -> BotSettings:
     return BotSettings(
+        universe_mode=settings.scanner_universe_mode,
+        whitelist=[symbol.strip() for symbol in settings.scanner_whitelist.split(",") if symbol.strip()],
+        blacklist=[symbol.strip() for symbol in settings.scanner_blacklist.split(",") if symbol.strip()],
         min_quote_volume=settings.scanner_min_quote_volume,
         max_spread_bps=settings.scanner_max_spread_bps,
         min_listing_age_days=settings.scanner_min_listing_age_days,
+        max_scan_symbols=settings.scanner_max_symbols,
         min_score_to_trade=settings.scanner_min_score_to_trade,
         taker_fee_rate=settings.taker_fee_rate,
         maker_fee_rate=settings.maker_fee_rate,
@@ -153,6 +158,7 @@ class AppState:
         self.ai_shadow_evaluator = AIShadowEvaluator(self)
         self.equity_tracker = EquityTracker(self)
         self.analytics_history = AnalyticsHistoryCache()
+        self.realtime = RealtimeBroadcaster()
 
     @property
     def safe_mode(self) -> bool:

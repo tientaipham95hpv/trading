@@ -241,7 +241,8 @@ class AutoTrader:
 
         self.last_status = "SCANNING"
         results = await self.state.scanner.scan(
-            limit=40, timeframes=[Timeframe.M15, Timeframe.H1, Timeframe.H4]
+            limit=self.state.bot_settings.max_scan_symbols,
+            timeframes=[Timeframe.M15, Timeframe.H1, Timeframe.H4],
         )
         for result in results:
             await self.state.storage.save_signal(result.model_dump(mode="json"))
@@ -444,11 +445,14 @@ class AutoTrader:
     async def _submit(self, plan: OrderPlan, *, timeframe: str) -> dict[str, object]:
         self.last_status = "SUBMITTING"
         self.last_symbol = plan.symbol
-        if plan.symbol not in self.state.bot_settings.whitelist:
+        if (
+            self.state.bot_settings.universe_mode == "VALIDATION"
+            and plan.symbol not in self.state.bot_settings.whitelist
+        ) or plan.symbol in self.state.bot_settings.blacklist:
             self.rejected += 1
             return await self._skip(
                 "SYMBOL_NOT_ALLOWED",
-                f"{plan.symbol} nằm ngoài allowlist BTCUSDT, ETHUSDT, SOLUSDT",
+                f"{plan.symbol} không nằm trong universe được phép giao dịch",
             )
         if self.state.trading_mode in {TradingMode.DEMO, TradingMode.LIVE}:
             adapter = (

@@ -115,7 +115,7 @@ class DemoStabilityService:
                 trade_count >= self.MIN_TRADES,
                 trade_count,
                 f">= {self.MIN_TRADES} realized trades",
-                f"Đã ghi nhận {trade_count}/{self.MIN_TRADES} giao dịch đóng",
+                f"Forward-test từ lần reset DEMO: {trade_count}/{self.MIN_TRADES} giao dịch đóng",
             ),
             "sample_duration": self._check(
                 sample_days >= self.MIN_SAMPLE_DAYS,

@@ -251,6 +251,8 @@ class BinanceFuturesAdapter(ExchangeAdapter):
             orders=orders,
             positions=positions,
             lifecycles=lifecycles,
+            snapshot_at=datetime.now(UTC),
+            freshness="LIVE",
             last_reconciled_at=self.snapshot_cache.last_reconciled_at,
             last_user_stream_at=self.snapshot_cache.last_user_stream_at,
         )
@@ -553,13 +555,41 @@ class BinanceFuturesAdapter(ExchangeAdapter):
         )
 
     async def income_history(
-        self, *, income_type: str | None = None, limit: int = 100
+        self,
+        *,
+        income_type: str | None = None,
+        limit: int = 100,
+        start_time: int | None = None,
     ) -> list[dict[str, Any]]:
-        params: dict[str, Any] = {"limit": limit}
+        """Return income ledger rows, paging forward from an optional timestamp.
+
+        Binance returns only the most recent ``limit`` rows without ``startTime``.
+        Supplying the reset boundary prevents an active account from silently
+        dropping older post-reset income and undercounting trade outcomes.
+        """
+        page_size = min(max(limit, 1), 1000)
+        params: dict[str, Any] = {"limit": page_size}
         if income_type:
             params["incomeType"] = income_type
-        data = await self._signed("GET", "/fapi/v1/income", params)
-        return list(data)
+        if start_time is None:
+            return list(await self._signed("GET", "/fapi/v1/income", params))
+
+        rows: list[dict[str, Any]] = []
+        cursor = start_time
+        while True:
+            data = list(
+                await self._signed(
+                    "GET", "/fapi/v1/income", {**params, "startTime": cursor}
+                )
+            )
+            rows.extend(data)
+            if len(data) < page_size:
+                break
+            newest = max(int(item.get("time") or 0) for item in data)
+            if newest < cursor:
+                break
+            cursor = newest + 1
+        return rows
 
     async def trade_history(self, symbol: str, *, limit: int = 1000) -> list[dict[str, Any]]:
         trades = list(

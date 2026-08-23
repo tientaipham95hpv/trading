@@ -159,12 +159,19 @@ export function DashboardApp({ page }: { page: PageKey }) {
       channel?: string;
       data?: StatusPayload | ExchangeSnapshot | Performance;
       items?: Position[];
+      exchange?: ExchangeSnapshot;
     };
 
-    function markLive() {
-      setWsState("LIVE");
-      lastLiveAtRef.current = Date.now();
-      setLastLiveAt(lastLiveAtRef.current);
+    function markExchangeFreshness(freshness: ExchangeSnapshot["freshness"] | undefined) {
+      if (freshness === "LIVE") {
+        setWsState("LIVE");
+        lastLiveAtRef.current = Date.now();
+        setLastLiveAt(lastLiveAtRef.current);
+      } else if (freshness === "STALE") {
+        setWsState("STALE");
+      } else if (freshness === "OFFLINE") {
+        setWsState("OFFLINE");
+      }
     }
 
     function connect(
@@ -176,26 +183,54 @@ export function DashboardApp({ page }: { page: PageKey }) {
       sockets.set(channel, socket);
       socket.onopen = () => {
         attempts.set(channel, 0);
-        markLive();
       };
       socket.onmessage = async (event) => {
-        markLive();
         const payload = JSON.parse(event.data) as RealtimePayload;
         if (channel === "system" && payload.data) {
           const nextStatus = payload.data as StatusPayload;
           setStatus(nextStatus);
           setExchange(nextStatus.exchange);
+          markExchangeFreshness(nextStatus.exchange.freshness);
         }
         if (channel === "exchange" && payload.data) {
-          setExchange(payload.data as ExchangeSnapshot);
+          const nextExchange = payload.data as ExchangeSnapshot;
+          setExchange(nextExchange);
+          markExchangeFreshness(nextExchange.freshness);
         }
         if (channel === "positions" && payload.items) {
           setPositions(payload.items);
+          markExchangeFreshness(payload.exchange?.freshness);
         }
         if (channel === "performance" && payload.data) {
-          // Payload WebSocket đã là snapshot hiệu suất hiện tại. Không gọi lại
-          // endpoint REST nặng ở mỗi message vì sẽ nhân tải Binance history.
-          setPerformance(payload.data as Performance);
+          // WebSocket chỉ có dữ liệu realtime từ exchange cache. Nó không tải
+          // income history, nên các thống kê PnL đã chốt trong payload sẽ là 0.
+          // Giữ các thống kê đó từ REST (/performance) cho đến lần refresh kế
+          // tiếp; chỉ cập nhật balance/equity/unrealized realtime qua WebSocket.
+          const realtime = payload.data as Performance & { exchange_freshness?: ExchangeSnapshot["freshness"] };
+          markExchangeFreshness(realtime.exchange_freshness);
+          setPerformance((previous) => {
+            if (!previous) return realtime;
+            return {
+              ...realtime,
+              realized_pnl: previous.realized_pnl,
+              fees_paid: previous.fees_paid,
+              funding_paid: previous.funding_paid,
+              win_rate: previous.win_rate,
+              realized_pnl_events: previous.realized_pnl_events,
+              winning_realized_pnl_events: previous.winning_realized_pnl_events,
+              losing_realized_pnl_events: previous.losing_realized_pnl_events,
+              breakeven_realized_pnl_events: previous.breakeven_realized_pnl_events,
+              total_trades: previous.total_trades,
+              winning_trades: previous.winning_trades,
+              losing_trades: previous.losing_trades,
+              breakeven_trades: previous.breakeven_trades,
+              profit_factor: previous.profit_factor,
+              max_drawdown: previous.max_drawdown,
+              sharpe: previous.sharpe,
+              sortino: previous.sortino,
+              expectancy: previous.expectancy,
+            };
+          });
         }
       };
       socket.onerror = () => setWsState("STALE");
@@ -215,7 +250,11 @@ export function DashboardApp({ page }: { page: PageKey }) {
       connect,
     );
     const staleTimer = window.setInterval(() => {
-      setWsState(Date.now() - lastLiveAtRef.current > 7000 ? "STALE" : "LIVE");
+      setWsState((current) =>
+        lastLiveAtRef.current > 0 && Date.now() - lastLiveAtRef.current <= 10_000
+          ? current
+          : current === "OFFLINE" ? "OFFLINE" : "STALE",
+      );
     }, 3000);
     return () => {
       closed = true;
@@ -474,7 +513,7 @@ function Dashboard({
         </div>
         <EquityChart values={equitySeries} />
       </DataPanel>
-      <StabilityPanel stability={stability} />
+      <StabilityPanel performance={performance} stability={stability} />
       <LiveReadinessPanel onDone={onDone} status={status} />
     </div>
   );
@@ -543,25 +582,36 @@ function CriticalOverview({
         <div className="mt-5 grid gap-3 md:grid-cols-4">
           <Metric label="Vốn ban đầu" value={money(performance?.initial_capital)} />
           <Metric
-            label="Lãi/lỗ ròng"
-            value={money(performance?.net_pnl)}
-            tone={(performance?.net_pnl ?? 0) >= 0 ? "good" : "bad"}
+            label="Lãi/lỗ tài khoản"
+            value={money(performance?.equity_pnl)}
+            tone={(performance?.equity_pnl ?? 0) >= 0 ? "good" : "bad"}
           />
           <Metric
             label="Tăng/giảm vốn"
-            value={signedPercent(performance?.return_percent)}
-            tone={(performance?.return_percent ?? 0) >= 0 ? "good" : "bad"}
+            value={signedPercent(performance?.equity_return_percent)}
+            tone={(performance?.equity_return_percent ?? 0) >= 0 ? "good" : "bad"}
           />
           <Metric
             label="Lãi/lỗ đang mở"
             value={money(unrealized)}
             tone={unrealized >= 0 ? "good" : "bad"}
           />
-          <Metric label="Lệnh đã đóng" value={String(performance?.total_trades ?? 0)} />
-          <Metric label="Lệnh thắng" value={String(performance?.winning_trades ?? 0)} tone="good" />
-          <Metric label="Lệnh thua" value={String(performance?.losing_trades ?? 0)} tone="bad" />
           <Metric
-            label="Tỷ lệ thắng"
+            label="Sự kiện PnL đã chốt"
+            value={String(performance?.realized_pnl_events ?? performance?.total_trades ?? 0)}
+          />
+          <Metric
+            label="Sự kiện PnL dương"
+            value={String(performance?.winning_realized_pnl_events ?? performance?.winning_trades ?? 0)}
+            tone="good"
+          />
+          <Metric
+            label="Sự kiện PnL âm"
+            value={String(performance?.losing_realized_pnl_events ?? performance?.losing_trades ?? 0)}
+            tone="bad"
+          />
+          <Metric
+            label="Tỷ lệ sự kiện PnL dương"
             value={percent((performance?.win_rate ?? 0) * 100)}
           />
         </div>
@@ -683,41 +733,69 @@ function OpenPositionsPanel({
 }
 
 function SignalFocus({ scanner }: { scanner: ScannerResult[] }) {
-  const candidates = scanner
-    .filter((item) => item.action !== "NO_TRADE")
+  const grouped = new Map<string, Partial<Record<"15m" | "1h" | "4h", ScannerResult>>>();
+  for (const item of scanner) {
+    if (!["15m", "1h", "4h"].includes(item.timeframe)) continue;
+    const frames = grouped.get(item.symbol) ?? {};
+    frames[item.timeframe as "15m" | "1h" | "4h"] = item;
+    grouped.set(item.symbol, frames);
+  }
+  const focus = Array.from(grouped.entries())
+    .map(([symbol, frames]) => ({
+      symbol,
+      frames,
+      bestScore: Math.max(...Object.values(frames).map((item) => item ? Math.max(item.long_score, item.short_score) : 0)),
+    }))
+    .filter((item) => item.bestScore >= 75)
+    .sort((a, b) => b.bestScore - a.bestScore)
     .slice(0, 5);
+
+  const frameState = (item: ScannerResult | undefined, frame: string) => {
+    if (!item) return `${frame}: thiếu dữ liệu`;
+    const score = Math.max(item.long_score, item.short_score);
+    if (item.regime === "HIGH_VOL" || item.regime === "PANIC") return `${frame}: ${item.regime}`;
+    if (item.action === "NO_TRADE") return `${frame}: chưa trigger (${score}/85)`;
+    return `${frame}: ${viAction(item.action)} ${score}`;
+  };
+
   return (
-    <DataPanel title="Tín hiệu đáng chú ý">
+    <DataPanel title="Tín hiệu & điều kiện vào lệnh">
+      <p className="mb-3 text-xs leading-5 text-slate-400">
+        Bot dùng 4h xác định xu hướng, 1h xác nhận setup và 15m chỉ để canh điểm vào lệnh. Không vào lệnh nếu ba khung chưa đồng thuận.
+      </p>
       <div className="grid gap-3">
-        {candidates.length ? (
-          candidates.map((item) => (
-            <article
-              className="rounded-md border border-white/10 bg-white/[0.03] p-3"
-              key={`${item.symbol}-${item.timeframe}`}
-            >
-              <div className="flex items-center justify-between gap-3">
-                <strong>{item.symbol}</strong>
-                <span
-                  className={`rounded px-2 py-1 text-xs font-black ${item.action === "LONG" ? "bg-emerald-400/15 text-emerald-300" : "bg-red-400/15 text-red-300"}`}
-                >
-                  {viAction(item.action)}
-                </span>
-              </div>
-              <div className="mt-2 grid grid-cols-3 gap-2 text-sm">
-                <InfoPair
-                  label="Score"
-                  value={String(Math.max(item.long_score, item.short_score))}
-                />
-                <InfoPair label="RR" value={number(item.risk_reward)} />
-                <InfoPair label="TF" value={item.timeframe} />
-              </div>
-            </article>
-          ))
+        {focus.length ? (
+          focus.map(({ symbol, frames, bestScore }) => {
+            const trigger = frames["15m"];
+            const confirmation = frames["1h"];
+            const trend = frames["4h"];
+            const ready = Boolean(
+              trigger?.action !== "NO_TRADE" &&
+              confirmation?.action === trigger?.action &&
+              trend?.regime === (trigger?.action === "LONG" ? "TRENDING_UP" : "TRENDING_DOWN"),
+            );
+            return (
+              <article className="rounded-md border border-white/10 bg-white/[0.03] p-3" key={symbol}>
+                <div className="flex items-center justify-between gap-3">
+                  <strong>{symbol}</strong>
+                  <span className={`rounded px-2 py-1 text-xs font-black ${ready ? "bg-emerald-400/15 text-emerald-300" : "bg-amber-400/15 text-amber-200"}`}>
+                    {ready ? "Đủ đồng thuận" : "Đang chờ xác nhận"}
+                  </span>
+                </div>
+                <div className="mt-2 grid gap-1 text-xs font-semibold text-slate-300">
+                  <span>{frameState(trend, "4h")}</span>
+                  <span>{frameState(confirmation, "1h")}</span>
+                  <span>{frameState(trigger, "15m")}</span>
+                </div>
+                <div className="mt-2 grid grid-cols-2 gap-2 text-sm">
+                  <InfoPair label="Score cao nhất" value={String(bestScore)} />
+                  <InfoPair label="RR 15m" value={number(trigger?.risk_reward)} />
+                </div>
+              </article>
+            );
+          })
         ) : (
-          <EmptyState
-            message="Scanner chưa có tín hiệu đủ điều kiện auto entry."
-            title="Đang chờ"
-          />
+          <EmptyState message="Chưa có setup gần ngưỡng entry; bot tiếp tục quét toàn bộ universe DEMO." title="Đang chờ" />
         )}
       </div>
     </DataPanel>
@@ -1128,11 +1206,18 @@ function OperationsPanel({ operations }: { operations: OperationsStatus | null }
   );
 }
 
-function StabilityPanel({ stability }: { stability: DemoStability | null }) {
+function StabilityPanel({
+  performance,
+  stability,
+}: {
+  performance: Performance | null;
+  stability: DemoStability | null;
+}) {
   const incidents =
     stability?.incidents.filter((item) => item.status === "OPEN") ?? [];
+  const totalClosedTrades = performance?.realized_pnl_events ?? performance?.total_trades ?? 0;
   const labels: Record<string, string> = {
-    sample_size: "Số lệnh",
+    sample_size: "Kiểm định sau reset DEMO",
     sample_duration: "Thời gian",
     positive_expectancy: "Expectancy",
     sl_protection: "Bảo vệ SL",
@@ -1143,7 +1228,14 @@ function StabilityPanel({ stability }: { stability: DemoStability | null }) {
     safe_mode: "Safe mode",
   };
   return (
-    <DataPanel title="DEMO stability & incidents">
+    <DataPanel title="Dữ liệu thực tế & độ ổn định DEMO">
+      <div className="mb-3 rounded-md border border-cyan-300/20 bg-cyan-300/[0.04] px-3 py-2 text-sm text-slate-200">
+        <b className="text-cyan-200">{number(totalClosedTrades)} giao dịch đã chốt thực tế</b>
+        <span className="text-slate-400"> · Toàn bộ lịch sử PnL</span>
+      </div>
+      <p className="mb-3 text-xs text-slate-400">
+        Bộ đếm sau reset DEMO chỉ là điều kiện kiểm định an toàn trước LIVE; không thay thế số liệu giao dịch thực tế.
+      </p>
       <div className="grid gap-4 lg:grid-cols-[220px_1fr]">
         <div className="rounded-md border border-cyan-300/20 bg-cyan-300/[0.04] p-4">
           <p className="text-xs font-black uppercase text-slate-400">
@@ -1164,7 +1256,7 @@ function StabilityPanel({ stability }: { stability: DemoStability | null }) {
             />
           </div>
           <p className="mt-3 text-xs font-semibold text-slate-400">
-            {String(stability?.metrics.trades ?? 0)}/50 lệnh ·{" "}
+            Kiểm định sau reset: {String(stability?.metrics.trades ?? 0)}/50 lệnh ·{" "}
             {Number(stability?.metrics.sample_days ?? 0).toFixed(2)}/7 ngày
           </p>
         </div>
@@ -1619,8 +1711,8 @@ function Analytics({
     <div className="grid gap-4 md:grid-cols-3">
       <Metric label="Vốn ban đầu" value={money(performance?.initial_capital)} />
       <Metric label="Vốn hiện tại" value={money(performance?.balance)} />
-      <Metric label="Lãi/lỗ ròng" value={money(performance?.net_pnl)} />
-      <Metric label="Tăng/giảm vốn" value={signedPercent(performance?.return_percent)} />
+      <Metric label="Lãi/lỗ giao dịch" value={money(performance?.net_pnl)} />
+      <Metric label="Tăng/giảm vốn" value={signedPercent(performance?.equity_return_percent)} />
       <Metric label="Lãi/lỗ gồm vị thế mở" value={money(performance?.equity_pnl)} />
       <Metric label="Phí" value={money(performance?.fees_paid)} />
       <Metric label="Phí funding" value={money(performance?.funding_paid)} />
@@ -1633,9 +1725,18 @@ function Analytics({
         label="Tỷ lệ thắng"
         value={percent((performance?.win_rate ?? 0) * 100)}
       />
-      <Metric label="Tổng lệnh" value={String(performance?.total_trades ?? 0)} />
-      <Metric label="Lệnh thắng" value={String(performance?.winning_trades ?? 0)} />
-      <Metric label="Lệnh thua" value={String(performance?.losing_trades ?? 0)} />
+      <Metric
+        label="Sự kiện PnL đã chốt"
+        value={String(performance?.realized_pnl_events ?? performance?.total_trades ?? 0)}
+      />
+      <Metric
+        label="Sự kiện PnL dương"
+        value={String(performance?.winning_realized_pnl_events ?? performance?.winning_trades ?? 0)}
+      />
+      <Metric
+        label="Sự kiện PnL âm"
+        value={String(performance?.losing_realized_pnl_events ?? performance?.losing_trades ?? 0)}
+      />
       <BacktestPanel />
       <ExitAnalyticsPanel analytics={exitAnalytics} />
       <SmartEntryPanel analytics={smartEntry} />
@@ -1986,6 +2087,30 @@ function SettingsPage({
   return (
     <section className="rounded-lg border border-white/10 bg-[#0d1724] p-4">
       <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
+        <label className="grid gap-2 text-sm font-bold text-slate-300">
+          Universe thị trường
+          <select
+            className="rounded-md border border-white/15 bg-[#111c2b] px-3 py-2 font-normal text-slate-100 outline-none focus:border-cyan-300"
+            value={draft.universe_mode}
+            onChange={(event) =>
+              setDraft({
+                ...draft,
+                universe_mode: event.target.value as "VALIDATION" | "ALL_MARKET",
+              })
+            }
+          >
+            <option value="VALIDATION">Kiểm chứng: whitelist</option>
+            <option value="ALL_MARKET">Toàn bộ USD-M (kể cả low-cap) có kiểm soát</option>
+          </select>
+          <span className="text-xs font-normal text-slate-500">
+            ALL_MARKET quét luân phiên mọi hợp đồng USD-M đủ bộ lọc. Muốn đánh low-cap, hạ Khối lượng tối thiểu và Tuổi niêm yết; vẫn giữ blacklist, giới hạn spread và quản trị rủi ro.
+          </span>
+        </label>
+        <NumberField
+          label="Số cặp quét tối đa"
+          value={draft.max_scan_symbols}
+          onChange={(value) => setDraft({ ...draft, max_scan_symbols: value })}
+        />
         <NumberField
           label="Khối lượng tối thiểu"
           value={draft.min_quote_volume}
@@ -2440,7 +2565,7 @@ function StatusLine({
     status ? `Mode ${status.mode}` : "Đang tải trạng thái",
     `Realtime ${viWsState(wsState)}`,
     exchange
-      ? `Exchange ${viExchangeConnection(exchange.connection)}`
+      ? `Exchange ${viExchangeFreshness(exchange.freshness)} · ${viExchangeConnection(exchange.connection)}`
       : "Exchange -",
     lastLiveAt > 0
       ? `Cập nhật ${new Date(lastLiveAt).toLocaleTimeString("vi-VN")}`
@@ -2901,6 +3026,12 @@ function viSide(value: string) {
   if (value === "LONG") return "Long";
   if (value === "SHORT") return "Short";
   return value || "-";
+}
+
+function viExchangeFreshness(value: ExchangeSnapshot["freshness"] | undefined) {
+  if (value === "LIVE") return "Dữ liệu mới";
+  if (value === "STALE") return "Dữ liệu cũ";
+  return "Offline";
 }
 
 function viExchangeConnection(

@@ -133,8 +133,14 @@ def test_exchange_performance_exposes_capital_return_and_trade_outcomes():
     assert performance.initial_capital == pytest.approx(10_000)
     assert performance.net_pnl == pytest.approx(75)
     assert performance.equity_pnl == pytest.approx(95)
+    assert performance.non_trading_balance_change == pytest.approx(0)
     assert performance.return_percent == pytest.approx(0.75)
     assert performance.equity_return_percent == pytest.approx(0.95)
+    assert performance.realized_pnl_events == 2
+    assert performance.winning_realized_pnl_events == 1
+    assert performance.losing_realized_pnl_events == 1
+    assert performance.breakeven_realized_pnl_events == 0
+    # Legacy aliases remain stable for existing API clients.
     assert performance.total_trades == 2
     assert performance.winning_trades == 1
     assert performance.losing_trades == 1
@@ -161,6 +167,7 @@ def test_exchange_performance_keeps_snapshotted_initial_capital():
 
     assert performance.initial_capital == 1_000
     assert performance.net_pnl == 25
+    assert performance.non_trading_balance_change == 0
     assert performance.return_percent == pytest.approx(2.5)
 
 
@@ -169,8 +176,8 @@ async def test_performance_income_fetches_realized_pnl_with_typed_limit():
         def __init__(self):
             self.calls = []
 
-        async def income_history(self, *, income_type=None, limit=100):
-            self.calls.append((income_type, limit))
+        async def income_history(self, *, income_type=None, limit=100, start_time=None):
+            self.calls.append((income_type, limit, start_time))
             if income_type == "REALIZED_PNL":
                 return [
                     {"incomeType": "REALIZED_PNL", "income": "1", "time": "9999999999999"}
@@ -186,7 +193,7 @@ async def test_performance_income_fetches_realized_pnl_with_typed_limit():
 
     rows = await _performance_income_rows(adapter)
 
-    assert adapter.calls == [
+    assert [call[:2] for call in adapter.calls] == [
         ("REALIZED_PNL", 500),
         ("COMMISSION", 500),
         ("FUNDING_FEE", 500),

@@ -79,7 +79,9 @@ public final class TradingViewModel: ObservableObject {
         do {
             async let nextStatus = api.status()
             async let nextMarkets = api.markets()
-            async let nextScanner = api.scanner()
+            // Fetch all decision frames. The UI derives tradable rows only from
+            // a 4h + 1h agreement, with 15m acting solely as the entry trigger.
+            async let nextScanner = api.scanner(timeframes: "15m,1h,4h")
             async let nextPositions = api.positions()
             async let nextTrades = api.trades()
             async let nextPerformance = api.performance()
