@@ -33,6 +33,19 @@ public final class RealtimeClient {
         }
     }
 
+    public func connectKline(
+        symbol: String,
+        interval: String,
+        onMessage: @escaping @Sendable (KlineRealtimeEnvelope) async -> Void,
+        onState: @escaping @Sendable (KetNoiRealtime) async -> Void
+    ) {
+        connect(channel: "kline:\(symbol.uppercased()):\(interval)", onState: onState) { data in
+            if let envelope = try? JSONDecoder().decode(KlineRealtimeEnvelope.self, from: data) {
+                await onMessage(envelope)
+            }
+        }
+    }
+
     public func close() {
         receiveTask?.cancel()
         task?.cancel(with: .goingAway, reason: nil)

@@ -23,13 +23,11 @@ public struct TradingControlView: View {
             MarketsView(model: model)
                 .tabItem { Label("Thị trường", systemImage: "chart.line.uptrend.xyaxis") }
             ScannerView(model: model)
-                .tabItem { Label("Bộ quét", systemImage: "dot.radiowaves.left.and.right") }
+                .tabItem { Label("Bot", systemImage: "dot.radiowaves.left.and.right") }
             PositionsView(model: model)
                 .tabItem { Label("Vị thế", systemImage: "arrow.up.arrow.down") }
-            TradesView(model: model)
-                .tabItem { Label("Lịch sử", systemImage: "clock.arrow.circlepath") }
-            MoreView(model: model)
-                .tabItem { Label("Thêm", systemImage: "ellipsis.circle") }
+            AccountView(model: model)
+                .tabItem { Label("Account", systemImage: "person.crop.circle") }
         }
         .task {
             model.start()
@@ -43,6 +41,31 @@ public struct TradingControlView: View {
             Button("Đóng", role: .cancel) {}
         } message: {
             Text(model.errorMessage ?? "")
+        }
+    }
+}
+
+private struct AccountView: View {
+    @ObservedObject var model: TradingViewModel
+
+    var body: some View {
+        NavigationStack {
+            List {
+                Section {
+                    NavigationLink {
+                        MoreView(model: model)
+                    } label: {
+                        Label("Cài đặt và điều khiển", systemImage: "gearshape")
+                    }
+                    NavigationLink {
+                        TradesView(model: model)
+                    } label: {
+                        Label("Lịch sử lệnh", systemImage: "clock.arrow.circlepath")
+                    }
+                }
+            }
+            .navigationTitle("Account")
+            .tradingGlassList()
         }
     }
 }
@@ -629,7 +652,9 @@ private struct CoinChartView: View {
     @State private var interval = "15m"
     @State private var selectedSymbol: String
     @State private var lastUpdated: Date?
+    @State private var realtimeState: KetNoiRealtime = .offline
     @State private var error: String?
+    @State private var realtimeClient: RealtimeClient?
 
     init(symbol: String, symbols: [String] = []) {
         self.symbol = symbol
@@ -653,9 +678,14 @@ private struct CoinChartView: View {
                                     Label(selectedSymbol, systemImage: "chevron.down.circle.fill")
                                         .font(.title.bold())
                                 }
-                                Text("Realtime 5 giây • \(interval)")
-                                    .font(.caption.bold())
-                                    .foregroundStyle(.secondary)
+                                HStack(spacing: 6) {
+                                    Circle()
+                                        .fill(realtimeState == .live ? Color.green : Color.orange)
+                                        .frame(width: 7, height: 7)
+                                    Text("\(realtimeState.rawValue) • \(interval)")
+                                }
+                                .font(.caption.bold())
+                                .foregroundStyle(.secondary)
                             }
                             Spacer()
                             Picker("Khung", selection: $interval) {
@@ -664,6 +694,7 @@ private struct CoinChartView: View {
                                 Text("15m").tag("15m")
                                 Text("1h").tag("1h")
                                 Text("4h").tag("4h")
+                                Text("1D").tag("1d")
                             }
                             .pickerStyle(.segmented)
                             .frame(maxWidth: 280)
@@ -671,7 +702,7 @@ private struct CoinChartView: View {
                     }
                     GlassPanel {
                         InteractivePriceChart(candles: candles)
-                            .frame(height: 300)
+                            .frame(height: 430)
                         HStack {
                             InfoPill("Nến \(candles.count)")
                             InfoPill("Cập nhật \(lastUpdated.map(shortTime) ?? "-")")
@@ -692,25 +723,48 @@ private struct CoinChartView: View {
         }
         .navigationTitle(selectedSymbol)
         .toolbarBackground(.hidden, for: .navigationBar)
-        .task(id: "\(selectedSymbol)-\(interval)") { await realtimeLoad() }
-    }
-
-    private func realtimeLoad() async {
-        while !Task.isCancelled {
-            await load()
-            try? await Task.sleep(nanoseconds: 5_000_000_000)
+        .task(id: "\(selectedSymbol)-\(interval)") { await loadAndStream() }
+        .onDisappear {
+            realtimeClient?.close()
+            realtimeClient = nil
         }
     }
 
-    private func load() async {
+    @MainActor
+    private func loadAndStream() async {
+        realtimeClient?.close()
+        let client = RealtimeClient()
+        realtimeClient = client
+        realtimeState = .stale
         do {
             let response = try await TradingAPI.shared.klines(symbol: selectedSymbol, interval: interval, limit: 220)
+            guard !Task.isCancelled else { return }
             candles = response.items
             lastUpdated = Date()
             error = nil
         } catch {
+            guard !Task.isCancelled else { return }
             self.error = error.localizedDescription
         }
+        guard !Task.isCancelled else { return }
+        client.connectKline(symbol: selectedSymbol, interval: interval) { envelope in
+            await MainActor.run {
+                guard envelope.symbol == selectedSymbol, envelope.interval == interval else { return }
+                if let index = candles.firstIndex(where: { $0.openTime == envelope.candle.openTime }) {
+                    candles[index] = envelope.candle
+                } else {
+                    candles = Array((candles + [envelope.candle]).suffix(220))
+                }
+                lastUpdated = Date()
+                error = nil
+            }
+        } onState: { state in
+            await MainActor.run { realtimeState = state }
+        }
+        while !Task.isCancelled {
+            try? await Task.sleep(nanoseconds: 60_000_000_000)
+        }
+        client.close()
     }
 }
 
@@ -815,15 +869,25 @@ private struct InteractivePriceChart: View {
         let items = Array(window)
         guard !items.isEmpty, let minLow = items.map(\.low).min(), let maxHigh = items.map(\.high).max() else { return }
         let plotWidth = max(size.width - priceScaleWidth, 1)
-        let drawingHeight = max(size.height - verticalPadding * 2 - timeScaleHeight, 1)
+        let usableHeight = max(size.height - verticalPadding * 2 - timeScaleHeight, 1)
+        let priceHeight = usableHeight * 0.66
+        let volumeTop = verticalPadding + priceHeight + 8
+        let volumeHeight = usableHeight * 0.12
+        let rsiTop = volumeTop + volumeHeight + 10
+        let rsiHeight = usableHeight * 0.17
         let range = max(maxHigh - minLow, max(abs(maxHigh) * 0.0001, 0.000_000_01))
         let slot = plotWidth / CGFloat(items.count)
         let bodyWidth = max(min(slot * 0.68, 9), 1)
-        func y(_ price: Double) -> CGFloat { verticalPadding + CGFloat((maxHigh - price) / range) * drawingHeight }
+        let maxVolume = max(items.map(\.volume).max() ?? 1, 1)
+        let ema20 = exponentialAverage(items.map(\.close), period: 20)
+        let ema50 = exponentialAverage(items.map(\.close), period: 50)
+        let rsi14 = relativeStrength(items.map(\.close), period: 14)
+        func y(_ price: Double) -> CGFloat { verticalPadding + CGFloat((maxHigh - price) / range) * priceHeight }
+        func rsiY(_ value: Double) -> CGFloat { rsiTop + CGFloat((100 - value) / 100) * rsiHeight }
 
         for line in 0...4 {
             let fraction = Double(line) / 4
-            let lineY = verticalPadding + drawingHeight * CGFloat(fraction)
+            let lineY = verticalPadding + priceHeight * CGFloat(fraction)
             var path = Path(); path.move(to: CGPoint(x: 0, y: lineY)); path.addLine(to: CGPoint(x: plotWidth, y: lineY))
             context.stroke(path, with: .color(.white.opacity(0.08)), lineWidth: 0.5)
             context.draw(Text(chartPrice(maxHigh - range * fraction)).font(.system(size: 10, design: .monospaced)).foregroundStyle(.secondary), at: CGPoint(x: plotWidth + 5, y: lineY), anchor: .leading)
@@ -836,7 +900,19 @@ private struct InteractivePriceChart: View {
             context.stroke(wick, with: .color(color), lineWidth: 1)
             let openY = y(candle.open), closeY = y(candle.close)
             context.fill(Path(CGRect(x: x - bodyWidth / 2, y: min(openY, closeY), width: bodyWidth, height: max(abs(closeY - openY), 1))), with: .color(color))
+            let volumeBarHeight = CGFloat(candle.volume / maxVolume) * volumeHeight
+            context.fill(Path(CGRect(x: x - bodyWidth / 2, y: volumeTop + volumeHeight - volumeBarHeight, width: bodyWidth, height: volumeBarHeight)), with: .color(color.opacity(0.45)))
         }
+
+        drawIndicator(context: context, values: ema20, color: .orange, slot: slot, transform: y)
+        drawIndicator(context: context, values: ema50, color: .cyan, slot: slot, transform: y)
+        for level in [30.0, 70.0] {
+            var guide = Path(); guide.move(to: CGPoint(x: 0, y: rsiY(level))); guide.addLine(to: CGPoint(x: plotWidth, y: rsiY(level)))
+            context.stroke(guide, with: .color((level == 30 ? Color.green : Color.red).opacity(0.4)), style: StrokeStyle(lineWidth: 0.75, dash: [3, 3]))
+        }
+        drawIndicator(context: context, values: rsi14, color: .purple, slot: slot, transform: rsiY)
+        context.draw(Text("VOL").font(.system(size: 9, weight: .bold)).foregroundStyle(.secondary), at: CGPoint(x: 3, y: volumeTop), anchor: .topLeading)
+        context.draw(Text("RSI 14").font(.system(size: 9, weight: .bold)).foregroundStyle(.secondary), at: CGPoint(x: 3, y: rsiTop), anchor: .topLeading)
 
         for index in Set([0, items.count / 2, items.count - 1]) {
             let x = slot * (CGFloat(index) + 0.5)
@@ -853,9 +929,47 @@ private struct InteractivePriceChart: View {
 
         if let selectedIndex, items.indices.contains(selectedIndex) {
             let x = slot * (CGFloat(selectedIndex) + 0.5)
-            var crosshair = Path(); crosshair.move(to: CGPoint(x: x, y: 0)); crosshair.addLine(to: CGPoint(x: x, y: drawingHeight + verticalPadding))
+            var crosshair = Path(); crosshair.move(to: CGPoint(x: x, y: 0)); crosshair.addLine(to: CGPoint(x: x, y: rsiTop + rsiHeight))
             context.stroke(crosshair, with: .color(.cyan.opacity(0.8)), style: StrokeStyle(lineWidth: 1, dash: [3, 3]))
         }
+    }
+
+    private func drawIndicator(context: GraphicsContext, values: [Double?], color: Color, slot: CGFloat, transform: (Double) -> CGFloat) {
+        var path = Path()
+        var started = false
+        for (index, value) in values.enumerated() {
+            guard let value else { continue }
+            let point = CGPoint(x: slot * (CGFloat(index) + 0.5), y: transform(value))
+            if started { path.addLine(to: point) } else { path.move(to: point); started = true }
+        }
+        context.stroke(path, with: .color(color), lineWidth: 1.25)
+    }
+
+    private func exponentialAverage(_ values: [Double], period: Int) -> [Double?] {
+        guard values.count >= period else { return Array(repeating: nil, count: values.count) }
+        let multiplier = 2.0 / Double(period + 1)
+        var result = Array<Double?>(repeating: nil, count: values.count)
+        var current = values.prefix(period).reduce(0, +) / Double(period)
+        result[period - 1] = current
+        for index in period..<values.count {
+            current = values[index] * multiplier + current * (1 - multiplier)
+            result[index] = current
+        }
+        return result
+    }
+
+    private func relativeStrength(_ values: [Double], period: Int) -> [Double?] {
+        guard values.count > period else { return Array(repeating: nil, count: values.count) }
+        var result = Array<Double?>(repeating: nil, count: values.count)
+        for index in period..<values.count {
+            var gains = 0.0, losses = 0.0
+            for cursor in (index - period + 1)...index {
+                let delta = values[cursor] - values[cursor - 1]
+                if delta >= 0 { gains += delta } else { losses -= delta }
+            }
+            result[index] = losses == 0 ? 100 : 100 - 100 / (1 + gains / losses)
+        }
+        return result
     }
 }
 

@@ -397,6 +397,14 @@ public struct KlineResponse: Codable {
     public let items: [NenGia]
 }
 
+public struct KlineRealtimeEnvelope: Codable {
+    public let channel: String
+    public let symbol: String
+    public let interval: String
+    public let event: String
+    public let candle: NenGia
+}
+
 public struct LenhDaChot: Codable, Identifiable, Equatable {
     public let id: String
     public let symbol: String
