@@ -1,0 +1,49 @@
+name: iOS Build & Test
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'ios/**'
+      - '.github/workflows/ios.yml'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'ios/**'
+
+jobs:
+  build-and-test:
+    runs-on: macos-15
+    defaults:
+      run:
+        working-directory: ios
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Generate Xcode project
+        run: |
+          cd TradingControlApp
+          xcodegen generate
+
+      - name: Build (iOS Simulator)
+        run: |
+          xcodebuild \
+            -project TradingControlApp/TradingControlApp.xcodeproj \
+            -scheme TradingControlApp \
+            -sdk iphonesimulator \
+            -destination 'platform=iOS Simulator,name=iPhone 16 Pro' \
+            clean build 2>&1 | xcpretty
+
+      - name: Test (iOS Simulator)
+        run: |
+          xcodebuild \
+            -project TradingControlApp/TradingControlApp.xcodeproj \
+            -scheme TradingControlApp \
+            -sdk iphonesimulator \
+            -destination 'platform=iOS Simulator,name=iPhone 16 Pro' \
+            test 2>&1 | xcpretty
