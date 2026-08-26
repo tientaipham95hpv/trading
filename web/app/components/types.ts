@@ -191,6 +191,7 @@ export type StatusPayload = {
     rejected: number;
   };
   performance_reset_at?: string | null;
+  performance?: { net_pnl?: number; max_drawdown?: number };
 };
 
 export type ExchangeSnapshot = {
@@ -556,3 +557,16 @@ export type SmartEntryDecision = "WOULD_ENTER" | "WOULD_SKIP";
 export type SmartEntryItem = { event_key: string; symbol: string; timeframe: string; side: string; decision: SmartEntryDecision; decision_label: string; decision_description: string; available: boolean; quality_score: number; reasons: string[]; decision_at: string; entry_price: number; stop_loss: number | null; risk_reward: number | null; outcomes: Record<string, null | { return_fraction: number; mfe_fraction: number; mae_fraction: number; horizon: number; last_close_time: number }>; outcome_note: string; shadow_only: true };
 export type SmartEntryMetric = { sample_size: number; confidence_status: string; win_rate: number | null; average_return: number | null; median_return: number | null; average_mfe: number | null; average_mae: number | null };
 export type SmartEntryPayload = { mode: string; shadow_only: true; read_only: true; decision_legend: Record<SmartEntryDecision, { label: string; description: string }>; items: SmartEntryItem[]; summary: { total: number; WOULD_ENTER: number; WOULD_SKIP: number; outcomes_available: number }; performance: { sample_size: number; confidence_status: string; minimum_sample: number; overall: SmartEntryMetric; dimensions: Record<string, Record<string, SmartEntryMetric>>; note: string }; collector: { running: boolean; interval_seconds: number; batch_size: number; cycles: number; last_run_at: string | null; last_success_at: string | null; last_error: string | null; consecutive_failures: number; last_cycle: { decisions_scanned: number; decisions_pending: number; decisions_complete: number; decisions_retrying: number; decisions_permanent_error: number; decisions_failed: number; outcomes_saved: number }; coverage: { total_decisions: number; complete_decisions: number; pending_decisions: number; retrying_decisions: number; permanent_errors: number; completion_ratio: number; oldest_pending_at: string | null; outcomes_by_horizon: Record<string, number> } }; note: string };
+export type AiSignal = { symbol: string; decision: "BUY" | "SELL" | "HOLD"; aiConfidence: number; momentum: number; trend: number; volume: number; aiScore: number; entry: number | null; stopLoss: number | null; takeProfit: number | null; riskReward: number | null; timeframe: string; regime: string; strategy: string | null; reasons: string[]; };
+export type AiSignalSummary = Pick<AiSignal, "symbol" | "decision" | "aiConfidence" | "momentum" | "trend" | "volume" | "aiScore" | "entry" | "stopLoss" | "takeProfit" | "riskReward" | "strategy" | "reasons">;
+
+export type JournalCategory = "ALL" | "TRADING" | "AI" | "RISK" | "SYSTEM" | "ERRORS";
+
+export type JournalEntry = {
+  id: string;
+  timestamp: string;
+  category: "TRADING" | "AI" | "RISK" | "SYSTEM" | "ERRORS";
+  title: string;
+  details: string;
+  meta?: Record<string, unknown> | null;
+};

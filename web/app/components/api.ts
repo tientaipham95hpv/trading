@@ -5,6 +5,8 @@ import type {
   BotSettings,
   DemoStability,
   Candle,
+  JournalCategory,
+  JournalEntry,
   Market,
   LogItem,
   Performance,
@@ -74,6 +76,14 @@ export const api = {
   positions: () => request<{ items: Position[] }>("/api/positions"),
   trades: () => request<{ items: Trade[] }>("/api/trades"),
   logs: () => request<{ items: LogItem[] }>("/api/logs"),
+  journal: (
+    category: JournalCategory = "ALL",
+    limit = 100,
+    since?: string,
+  ) =>
+    request<{ items: JournalEntry[] }>(
+      `/api/journal?category=${encodeURIComponent(category)}&limit=${limit}${since ? `&since=${encodeURIComponent(since)}` : ""}`,
+    ),
   performance: () => request<Performance>("/api/performance"),
   operations: () => request<OperationsStatus>("/api/operations"),
   exitAnalytics: () => request<ExitAnalytics>("/api/exit-analytics"),
