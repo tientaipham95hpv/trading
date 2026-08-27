@@ -215,6 +215,21 @@ async def device_logout(
     return {"authenticated": False}
 
 
+@auth_router.get("/devices", dependencies=[Depends(require_api_auth)])
+async def list_device_sessions() -> dict[str, object]:
+    return {"items": await state.storage.list_device_sessions()}
+
+
+@auth_router.delete(
+    "/devices/{session_id}", dependencies=[Depends(require_api_auth)]
+)
+async def revoke_device_session(session_id: int) -> dict[str, object]:
+    revoked = await state.storage.revoke_device_session_by_id(session_id)
+    if not revoked:
+        raise HTTPException(status_code=404, detail="Không tìm thấy phiên thiết bị")
+    return {"revoked": True, "session_id": session_id}
+
+
 @auth_router.post("/logout")
 async def logout(response: Response) -> dict[str, bool]:
     response.delete_cookie(AUTH_COOKIE_NAME, path="/", samesite="strict")

@@ -1728,8 +1728,11 @@ private struct SettingsView: View {
                     InfoRow(label: "Chống trùng lệnh", value: model.status?.liveReadiness.duplicateOrderTestsPass == true ? "Đạt" : "Chưa đạt")
                 }
                 Section("Bảo mật") {
-                    Label("Đã đăng nhập bằng phiên HttpOnly an toàn", systemImage: "checkmark.shield.fill")
+                    Label("Phiên thiết bị được bảo vệ bằng Keychain và Face ID", systemImage: "checkmark.shield.fill")
                         .foregroundStyle(.green)
+                    NavigationLink("Thiết bị đã đăng nhập") {
+                        DeviceSessionsView(model: model)
+                    }
                     Button("Đăng xuất", role: .destructive) { Task { await model.logout() } }
                 }
                 Section("Cấu hình bộ quét") {
@@ -1801,6 +1804,40 @@ private struct SettingsView: View {
             .navigationTitle("Cài đặt")
             .tradingGlassList()
             .toolbar { RefreshToolbarItem(model: model) }
+    }
+}
+
+private struct DeviceSessionsView: View {
+    @ObservedObject var model: TradingViewModel
+
+    var body: some View {
+        List {
+            if model.deviceSessions.isEmpty {
+                ContentUnavailableView(
+                    "Chưa có thiết bị",
+                    systemImage: "iphone.slash",
+                    description: Text("Danh sách phiên thiết bị đang hoạt động sẽ xuất hiện tại đây.")
+                )
+            } else {
+                ForEach(model.deviceSessions) { session in
+                    VStack(alignment: .leading, spacing: 6) {
+                        Label(session.deviceName, systemImage: "iphone")
+                            .font(.headline)
+                        Text("Hoạt động gần nhất: \(session.lastUsedAt)")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        Button("Đăng xuất thiết bị", role: .destructive) {
+                            Task { await model.revokeDeviceSession(id: session.id) }
+                        }
+                        .font(.subheadline.weight(.semibold))
+                    }
+                    .padding(.vertical, 4)
+                }
+            }
+        }
+        .navigationTitle("Thiết bị đã đăng nhập")
+        .task { await model.loadDeviceSessions() }
+        .refreshable { await model.loadDeviceSessions() }
     }
 }
 

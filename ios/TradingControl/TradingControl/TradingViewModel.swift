@@ -22,6 +22,7 @@ public final class TradingViewModel: ObservableObject {
     @Published public var passwordDraft: String = ""
     @Published public private(set) var isAuthenticated = false
     @Published public private(set) var isAuthenticating = false
+    @Published public private(set) var deviceSessions: [DeviceSession] = []
 
     private let api: TradingAPI
     private let authStore: SecureAuthStore
@@ -175,6 +176,23 @@ public final class TradingViewModel: ObservableObject {
         refreshTask?.cancel()
         systemRealtime.close()
         scannerRealtime.close()
+    }
+
+    public func loadDeviceSessions() async {
+        do {
+            deviceSessions = try await api.devices()
+        } catch {
+            errorMessage = "Không tải được danh sách thiết bị đã đăng nhập."
+        }
+    }
+
+    public func revokeDeviceSession(id: Int) async {
+        do {
+            try await api.revokeDevice(id: id)
+            await loadDeviceSessions()
+        } catch {
+            errorMessage = "Không thể đăng xuất thiết bị này."
+        }
     }
 
     public func saveToken() {

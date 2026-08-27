@@ -55,6 +55,17 @@ public actor TradingAPI {
         return try await post("/api/auth/logout", authenticated: false)
     }
 
+    public func devices() async throws -> [DeviceSession] {
+        let response: DeviceSessionList = try await get("/api/auth/devices")
+        return response.items
+    }
+
+    public func revokeDevice(id: Int) async throws {
+        let request = try request(path: "/api/auth/devices/\(id)", method: "DELETE")
+        let (data, response) = try await session.data(for: request)
+        try validate(response: response, data: data)
+    }
+
     public func markets() async throws -> [ThiTruong] {
         let response: DanhSachPhanHoi<ThiTruong> = try await get("/api/markets")
         return response.items
@@ -239,6 +250,26 @@ public struct AuthResponse: Codable {
         case refreshToken = "refresh_token"
         case refreshExpiresIn = "refresh_expires_in"
     }
+}
+
+public struct DeviceSession: Codable, Identifiable {
+    public let id: Int
+    public let deviceName: String
+    public let createdAt: String
+    public let lastUsedAt: String
+    public let expiresAt: String
+
+    enum CodingKeys: String, CodingKey {
+        case id
+        case deviceName = "device_name"
+        case createdAt = "created_at"
+        case lastUsedAt = "last_used_at"
+        case expiresAt = "expires_at"
+    }
+}
+
+private struct DeviceSessionList: Decodable {
+    let items: [DeviceSession]
 }
 
 public enum BotAction: String, CaseIterable, Identifiable {

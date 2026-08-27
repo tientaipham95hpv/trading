@@ -326,6 +326,41 @@ class Storage:
                 row.revoked_at = now
                 await session.commit()
 
+    async def list_device_sessions(self) -> list[dict[str, Any]]:
+        now = datetime.now(UTC)
+        async with self.session_factory() as session:
+            rows = list(
+                (
+                    await session.execute(
+                        select(AuthDeviceSessionRow)
+                        .where(
+                            AuthDeviceSessionRow.revoked_at.is_(None),
+                            AuthDeviceSessionRow.expires_at > now,
+                        )
+                        .order_by(AuthDeviceSessionRow.last_used_at.desc())
+                    )
+                ).scalars()
+            )
+            return [
+                {
+                    "id": row.id,
+                    "device_name": row.device_name,
+                    "created_at": row.created_at.isoformat(),
+                    "last_used_at": row.last_used_at.isoformat(),
+                    "expires_at": row.expires_at.isoformat(),
+                }
+                for row in rows
+            ]
+
+    async def revoke_device_session_by_id(self, session_id: int) -> bool:
+        async with self.session_factory() as session:
+            row = await session.get(AuthDeviceSessionRow, session_id)
+            if row is None or row.revoked_at is not None:
+                return False
+            row.revoked_at = datetime.now(UTC)
+            await session.commit()
+            return True
+
     async def save_order_bundle(
         self,
         *,
