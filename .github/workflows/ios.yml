@@ -55,14 +55,35 @@ jobs:
 
       - name: Test (iPhone 390pt)
         run: |
-          set -o pipefail
+          set -euo pipefail
+          set +e
           xcodebuild \
             -project TradingControlApp/TradingControlApp.xcodeproj \
             -scheme TradingControlApp \
             -configuration Debug \
             -sdk iphonesimulator \
             -destination 'platform=iOS Simulator,name=iPhone 16 Pro' \
-            test
+            test 2>&1 | tee xcodetest.log
+          TEST_STATUS=${PIPESTATUS[0]}
+          set -e
+          if [ "$TEST_STATUS" -ne 0 ]; then
+            grep -E "error:|failed|FAIL|Testing failed|Test Case.*failed" xcodetest.log | tail -40 || tail -80 xcodetest.log
+            while IFS= read -r line; do
+              escaped=${line//'%'/'%25'}
+              escaped=${escaped//$'\r'/'%0D'}
+              escaped=${escaped//$'\n'/'%0A'}
+              echo "::error title=iOS test failure::$escaped"
+            done < <(grep -E "error:|failed|FAIL|Testing failed|Test Case.*failed" xcodetest.log | tail -10)
+            exit "$TEST_STATUS"
+          fi
+
+      - name: Upload iOS test log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ios-test-log
+          path: ios/xcodetest.log
+          if-no-files-found: ignore
 
       - name: Build Release (generic simulator)
         run: |
