@@ -311,6 +311,9 @@ function DashboardContent({ page }: { page: PageKey }) {
               realized_pnl: previous.realized_pnl,
               fees_paid: previous.fees_paid,
               funding_paid: previous.funding_paid,
+              daily_pnl: previous.daily_pnl,
+              daily_opening_equity: previous.daily_opening_equity,
+              daily_started_at: previous.daily_started_at,
               win_rate: previous.win_rate,
               realized_pnl_events: previous.realized_pnl_events,
               winning_realized_pnl_events: previous.winning_realized_pnl_events,
@@ -757,22 +760,21 @@ function PerformanceKpis({
     performance?.open_positions ??
     positions.length;
   const maxPositions = Math.max(status?.risk.max_open_positions ?? 1, 1);
-  const unrealized =
-    exchange?.balance.unrealized_pnl ?? performance?.unrealized_pnl ?? 0;
-  const dailyPnl = performance?.equity_pnl ?? unrealized;
+  const dailyPnl = performance?.daily_pnl ?? null;
+  const closedTrades = performance?.total_trades ?? 0;
 
   return (
     <section className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
       <Metric label="Tổng vốn" value={money(performance?.equity ?? exchange?.balance.margin_balance)} />
       <Metric
-        label="PnL hôm nay"
-        value={money(dailyPnl)}
-        tone={dailyPnl >= 0 ? "good" : "bad"}
+        label="PnL hôm nay (UTC)"
+        value={dailyPnl == null ? "Chưa có dữ liệu" : money(dailyPnl)}
+        tone={dailyPnl == null ? "neutral" : dailyPnl >= 0 ? "good" : "bad"}
       />
       <Metric
-        label="Tỷ lệ thắng"
-        value={percent((performance?.win_rate ?? 0) * 100)}
-        tone={(performance?.win_rate ?? 0) >= 0.5 ? "good" : "neutral"}
+        label="Tỷ lệ thắng · cohort sạch"
+        value={closedTrades > 0 ? percent((performance?.win_rate ?? 0) * 100) : "Chưa có lệnh đóng"}
+        tone={closedTrades > 0 && (performance?.win_rate ?? 0) >= 0.5 ? "good" : "neutral"}
       />
       <Metric label="Vị thế đang mở" value={`${openPositions} / ${maxPositions}`} />
     </section>

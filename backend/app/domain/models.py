@@ -385,6 +385,9 @@ class PerformanceSnapshot(BaseModel):
     # Deposits, withdrawals and transfers are not trading PnL.
     non_trading_balance_change: float = 0.0
     equity_pnl: float = 0.0
+    daily_pnl: float | None = None
+    daily_opening_equity: float | None = None
+    daily_started_at: datetime | None = None
     return_percent: float = 0.0
     equity_return_percent: float = 0.0
     realized_pnl: float

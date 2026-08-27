@@ -751,6 +751,22 @@ async def performance() -> dict[str, object]:
         performance = _exchange_performance(
             snapshot, income, initial_capital=state.performance_initial_capital_for()
         )
+        equity_points = await state.equity_tracker.history(
+            state.trading_mode.value, limit=5000
+        )
+        utc_day_start = datetime.now(UTC).replace(hour=0, minute=0, second=0, microsecond=0)
+        day_start_point = next(
+            (
+                point
+                for point in equity_points
+                if datetime.fromisoformat(str(point["taken_at"])) >= utc_day_start
+            ),
+            None,
+        )
+        if day_start_point is not None:
+            performance.daily_opening_equity = _float(day_start_point.get("equity"))
+            performance.daily_pnl = performance.equity - performance.daily_opening_equity
+            performance.daily_started_at = utc_day_start
         lifecycle_events = await state.storage.lifecycle_analytics_events(
             mode=state.trading_mode.value, limit=5000
         )

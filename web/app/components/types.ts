@@ -411,6 +411,9 @@ export type Performance = {
   net_pnl: number;
   non_trading_balance_change: number;
   equity_pnl: number;
+  daily_pnl: number | null;
+  daily_opening_equity: number | null;
+  daily_started_at: string | null;
   return_percent: number;
   equity_return_percent: number;
   realized_pnl: number;
