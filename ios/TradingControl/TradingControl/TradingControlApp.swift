@@ -2055,13 +2055,19 @@ private func chartPrice(_ value: Double) -> String {
 }
 
 private func chartTime(_ milliseconds: Int) -> String {
-    Date(timeIntervalSince1970: TimeInterval(milliseconds) / 1_000)
-        .formatted(.dateTime.hour().minute().timeZone(vietnamTimeZone))
+    vietnamDateString(
+        Date(timeIntervalSince1970: TimeInterval(milliseconds) / 1_000),
+        dateStyle: .none,
+        timeStyle: .short
+    )
 }
 
 private func chartDate(_ milliseconds: Int) -> String {
-    Date(timeIntervalSince1970: TimeInterval(milliseconds) / 1_000)
-        .formatted(.dateTime.day().month().hour().minute().timeZone(vietnamTimeZone))
+    vietnamDateString(
+        Date(timeIntervalSince1970: TimeInterval(milliseconds) / 1_000),
+        dateStyle: .short,
+        timeStyle: .short
+    )
 }
 
 private func compact(_ value: Double?) -> String {
@@ -2085,10 +2091,21 @@ private func number(_ value: Double?) -> String {
 }
 
 private func shortTime(_ date: Date) -> String {
-    date.formatted(.dateTime.hour().minute().second().timeZone(vietnamTimeZone))
+    vietnamDateString(date, dateStyle: .none, timeStyle: .medium)
 }
 
-private let vietnamTimeZone = TimeZone(identifier: "Asia/Ho_Chi_Minh")!
+private func vietnamDateString(
+    _ date: Date,
+    dateStyle: DateFormatter.Style,
+    timeStyle: DateFormatter.Style
+) -> String {
+    let formatter = DateFormatter()
+    formatter.locale = Locale(identifier: "vi_VN")
+    formatter.timeZone = TimeZone(identifier: "Asia/Ho_Chi_Minh")
+    formatter.dateStyle = dateStyle
+    formatter.timeStyle = timeStyle
+    return formatter.string(from: date)
+}
 
 private func drawdown(_ performance: HieuSuat?) -> Double {
     guard let performance, performance.balance > 0 else { return 0 }
