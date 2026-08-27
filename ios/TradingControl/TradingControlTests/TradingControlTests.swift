@@ -138,6 +138,14 @@ import Testing
     #expect(response.expiresIn == 43_200)
 }
 
+@Test func deviceLoginResponseDecodesRotatingRefreshToken() throws {
+    let data = #"{"authenticated":true,"expires_in":43200,"refresh_token":"rotating-secret","refresh_expires_in":2592000}"#.data(using: .utf8)!
+    let response = try JSONDecoder().decode(AuthResponse.self, from: data)
+    #expect(response.authenticated)
+    #expect(response.refreshToken == "rotating-secret")
+    #expect(response.refreshExpiresIn == 2_592_000)
+}
+
 @Test func journalDecodesCurrentBackendSchema() throws {
     let data = #"{"id":"event-1","timestamp":"2026-08-27T08:16:50Z","category":"TRADING","title":"Auto-trader skip","details":"Chưa có tín hiệu","meta":{}}"#.data(using: .utf8)!
     let item = try JSONDecoder().decode(NhatKy.self, from: data)

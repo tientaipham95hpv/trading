@@ -26,11 +26,33 @@ public actor TradingAPI {
     }
 
     public func login(password: String) async throws -> AuthResponse {
-        try await send("/api/auth/login", method: "POST", body: LoginRequest(password: password), authenticated: false)
+        try await send(
+            "/api/auth/device-login",
+            method: "POST",
+            body: DeviceLoginRequest(password: password, deviceName: ProcessInfo.processInfo.hostName),
+            authenticated: false
+        )
     }
 
-    public func logout() async throws -> AuthResponse {
-        try await post("/api/auth/logout", authenticated: false)
+    public func refreshSession(refreshToken: String) async throws -> AuthResponse {
+        try await send(
+            "/api/auth/refresh",
+            method: "POST",
+            body: RefreshRequest(refreshToken: refreshToken),
+            authenticated: false
+        )
+    }
+
+    public func logout(refreshToken: String?) async throws -> AuthResponse {
+        if let refreshToken, !refreshToken.isEmpty {
+            return try await send(
+                "/api/auth/device-logout",
+                method: "POST",
+                body: RefreshRequest(refreshToken: refreshToken),
+                authenticated: false
+            )
+        }
+        return try await post("/api/auth/logout", authenticated: false)
     }
 
     public func markets() async throws -> [ThiTruong] {
@@ -174,22 +196,48 @@ public actor TradingAPI {
     }
 
     private func validate(response: URLResponse, data: Data) throws {
-        guard let http = response as? HTTPURLResponse, 200..<300 ~= http.statusCode else {
+        guard let http = response as? HTTPURLResponse else {
+            throw TradingAPIError.requestFailed("Backend trả phản hồi không hợp lệ")
+        }
+        if http.statusCode == 401 {
+            throw TradingAPIError.unauthorized
+        }
+        guard 200..<300 ~= http.statusCode else {
             let message = String(data: data, encoding: .utf8) ?? "Backend trả lỗi không đọc được"
             throw TradingAPIError.requestFailed(message)
         }
     }
 }
 
-private struct LoginRequest: Encodable { let password: String }
+private struct DeviceLoginRequest: Encodable {
+    let password: String
+    let deviceName: String
+
+    enum CodingKeys: String, CodingKey {
+        case password
+        case deviceName = "device_name"
+    }
+}
+
+private struct RefreshRequest: Encodable {
+    let refreshToken: String
+
+    enum CodingKeys: String, CodingKey {
+        case refreshToken = "refresh_token"
+    }
+}
 
 public struct AuthResponse: Codable {
     public let authenticated: Bool
     public let expiresIn: Int?
+    public let refreshToken: String?
+    public let refreshExpiresIn: Int?
 
     enum CodingKeys: String, CodingKey {
         case authenticated
         case expiresIn = "expires_in"
+        case refreshToken = "refresh_token"
+        case refreshExpiresIn = "refresh_expires_in"
     }
 }
 
@@ -269,10 +317,12 @@ public struct PrepareLiveResponse: Codable {
 
 public enum TradingAPIError: Error, LocalizedError {
     case requestFailed(String)
+    case unauthorized
 
     public var errorDescription: String? {
         switch self {
         case .requestFailed(let message): return message
+        case .unauthorized: return "Phiên đăng nhập đã hết hạn"
         }
     }
 }

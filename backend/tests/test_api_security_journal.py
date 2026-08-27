@@ -153,6 +153,70 @@ async def test_login_issues_httponly_cookie_that_authenticates_api(
     assert journal.status_code == 200
 
 
+@pytest.mark.asyncio
+async def test_device_session_rotates_and_revokes_refresh_token(
+    monkeypatch, api_app: FastAPI
+) -> None:
+    class DeviceStorage:
+        def __init__(self) -> None:
+            self.active: set[str] = set()
+
+        async def create_device_session(self, *, token_hash, device_name, expires_at) -> None:
+            assert device_name == "iPhone kiểm thử"
+            self.active.add(token_hash)
+
+        async def rotate_device_session(
+            self, *, old_token_hash, new_token_hash, expires_at
+        ) -> bool:
+            if old_token_hash not in self.active:
+                return False
+            self.active.remove(old_token_hash)
+            self.active.add(new_token_hash)
+            return True
+
+        async def revoke_device_session(self, token_hash: str) -> None:
+            self.active.discard(token_hash)
+
+    storage = DeviceStorage()
+    monkeypatch.setattr(
+        routes,
+        "state",
+        SimpleNamespace(
+            settings=SimpleNamespace(
+                app_env="production",
+                api_auth_token="signing-secret",
+                operator_password="memorable-password",
+                auth_session_ttl_seconds=3600,
+                auth_device_ttl_seconds=2_592_000,
+            ),
+            storage=storage,
+        ),
+    )
+    transport = httpx.ASGITransport(app=api_app)
+    async with httpx.AsyncClient(transport=transport, base_url="https://test") as client:
+        logged_in = await client.post(
+            "/api/auth/device-login",
+            json={"password": "memorable-password", "device_name": "iPhone kiểm thử"},
+        )
+        first = logged_in.json()["refresh_token"]
+        refreshed = await client.post("/api/auth/refresh", json={"refresh_token": first})
+        second = refreshed.json()["refresh_token"]
+        replayed = await client.post("/api/auth/refresh", json={"refresh_token": first})
+        logged_out = await client.post(
+            "/api/auth/device-logout", json={"refresh_token": second}
+        )
+        after_logout = await client.post(
+            "/api/auth/refresh", json={"refresh_token": second}
+        )
+
+    assert logged_in.status_code == 200
+    assert refreshed.status_code == 200
+    assert first != second
+    assert replayed.status_code == 401
+    assert logged_out.status_code == 200
+    assert after_logout.status_code == 401
+
+
 def test_websocket_accepts_authenticated_cookie(monkeypatch, api_app: FastAPI) -> None:
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")

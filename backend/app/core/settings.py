@@ -9,6 +9,7 @@ class Settings(BaseSettings):
     api_auth_token: str = ""
     operator_password: str = ""
     auth_session_ttl_seconds: int = Field(default=43_200, ge=900, le=604_800)
+    auth_device_ttl_seconds: int = Field(default=2_592_000, ge=86_400, le=7_776_000)
     trading_mode: str = "DEMO"
     live_trading_enabled: bool = False
     binance_base_url: str = "https://fapi.binance.com"

@@ -6,7 +6,7 @@ import json
 import secrets
 import time
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Annotated
 
 import httpx
@@ -85,6 +85,32 @@ def _valid_session(candidate: str) -> bool:
     return secrets.compare_digest(supplied_signature, expected)
 
 
+def _new_refresh_token() -> str:
+    return secrets.token_urlsafe(48)
+
+
+def _refresh_token_hash(token: str) -> str:
+    # Binding device sessions to the current operator credential invalidates
+    # every remembered device automatically when that credential changes.
+    credential = (
+        state.settings.operator_password.strip() or state.settings.api_auth_token.strip()
+    )
+    return hmac.new(credential.encode(), token.encode(), hashlib.sha256).hexdigest()
+
+
+def _set_session_cookie(response: Response) -> None:
+    settings = state.settings
+    response.set_cookie(
+        AUTH_COOKIE_NAME,
+        _issue_session(),
+        max_age=settings.auth_session_ttl_seconds,
+        httponly=True,
+        secure=settings.app_env.lower() == "production",
+        samesite="strict",
+        path="/",
+    )
+
+
 def require_api_auth(connection: HTTPConnection) -> None:
     """Protect all operator APIs and WebSockets with one bearer token."""
     runtime_settings = getattr(state, "settings", None)
@@ -125,16 +151,68 @@ async def login(
     expected = settings.operator_password.strip() or settings.api_auth_token.strip()
     if not expected or not secrets.compare_digest(password, expected):
         raise HTTPException(status_code=401, detail="Mật khẩu vận hành không hợp lệ")
-    response.set_cookie(
-        AUTH_COOKIE_NAME,
-        _issue_session(),
-        max_age=settings.auth_session_ttl_seconds,
-        httponly=True,
-        secure=settings.app_env.lower() == "production",
-        samesite="strict",
-        path="/",
-    )
+    _set_session_cookie(response)
     return {"authenticated": True, "expires_in": settings.auth_session_ttl_seconds}
+
+
+@auth_router.post("/device-login")
+async def device_login(
+    response: Response,
+    password: Annotated[str, Body(min_length=1, max_length=256)],
+    device_name: Annotated[str, Body(min_length=1, max_length=120)],
+) -> dict[str, object]:
+    settings = state.settings
+    expected = settings.operator_password.strip() or settings.api_auth_token.strip()
+    if not expected or not secrets.compare_digest(password, expected):
+        raise HTTPException(status_code=401, detail="Mật khẩu vận hành không hợp lệ")
+    refresh_token = _new_refresh_token()
+    expires_at = datetime.now(UTC) + timedelta(seconds=settings.auth_device_ttl_seconds)
+    await state.storage.create_device_session(
+        token_hash=_refresh_token_hash(refresh_token),
+        device_name=device_name,
+        expires_at=expires_at,
+    )
+    _set_session_cookie(response)
+    return {
+        "authenticated": True,
+        "expires_in": settings.auth_session_ttl_seconds,
+        "refresh_token": refresh_token,
+        "refresh_expires_in": settings.auth_device_ttl_seconds,
+    }
+
+
+@auth_router.post("/refresh")
+async def refresh_device_session(
+    response: Response,
+    refresh_token: Annotated[str, Body(embed=True, min_length=32, max_length=512)],
+) -> dict[str, object]:
+    settings = state.settings
+    replacement = _new_refresh_token()
+    expires_at = datetime.now(UTC) + timedelta(seconds=settings.auth_device_ttl_seconds)
+    accepted = await state.storage.rotate_device_session(
+        old_token_hash=_refresh_token_hash(refresh_token),
+        new_token_hash=_refresh_token_hash(replacement),
+        expires_at=expires_at,
+    )
+    if not accepted:
+        raise HTTPException(status_code=401, detail="Phiên thiết bị đã hết hạn hoặc bị thu hồi")
+    _set_session_cookie(response)
+    return {
+        "authenticated": True,
+        "expires_in": settings.auth_session_ttl_seconds,
+        "refresh_token": replacement,
+        "refresh_expires_in": settings.auth_device_ttl_seconds,
+    }
+
+
+@auth_router.post("/device-logout")
+async def device_logout(
+    response: Response,
+    refresh_token: Annotated[str, Body(embed=True, min_length=32, max_length=512)],
+) -> dict[str, bool]:
+    await state.storage.revoke_device_session(_refresh_token_hash(refresh_token))
+    response.delete_cookie(AUTH_COOKIE_NAME, path="/", samesite="strict")
+    return {"authenticated": False}
 
 
 @auth_router.post("/logout")

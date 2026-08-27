@@ -78,6 +78,28 @@ public final class TradingViewModel: ObservableObject {
     }
 
     public func restoreSession() async {
+        if let refreshToken = authStore.loadRefreshToken(), !refreshToken.isEmpty {
+            do {
+                let unlocked = try await biometricGate.authorizeSensitiveAction(
+                    reason: "Xác thực để mở CineViet Trading."
+                )
+                guard unlocked else { return }
+                let response = try await api.refreshSession(refreshToken: refreshToken)
+                if let replacement = response.refreshToken {
+                    try authStore.saveRefreshToken(replacement)
+                }
+                isAuthenticated = response.authenticated
+            } catch TradingAPIError.unauthorized {
+                try? authStore.clearRefreshToken()
+                isAuthenticated = false
+                errorMessage = "Phiên thiết bị đã hết hạn. Vui lòng đăng nhập lại."
+                return
+            } catch {
+                isAuthenticated = false
+                errorMessage = "Chưa thể kết nối máy chủ. Phiên thiết bị vẫn được giữ an toàn."
+                return
+            }
+        }
         await refreshAll()
         if isAuthenticated { start() }
         else { errorMessage = nil }
@@ -133,6 +155,9 @@ public final class TradingViewModel: ObservableObject {
         defer { isAuthenticating = false }
         do {
             let response = try await api.login(password: password)
+            if let refreshToken = response.refreshToken {
+                try authStore.saveRefreshToken(refreshToken)
+            }
             isAuthenticated = response.authenticated
             passwordDraft = ""
             await refreshAll()
@@ -143,7 +168,9 @@ public final class TradingViewModel: ObservableObject {
     }
 
     public func logout() async {
-        _ = try? await api.logout()
+        let refreshToken = authStore.loadRefreshToken()
+        _ = try? await api.logout(refreshToken: refreshToken)
+        try? authStore.clearRefreshToken()
         isAuthenticated = false
         refreshTask?.cancel()
         systemRealtime.close()

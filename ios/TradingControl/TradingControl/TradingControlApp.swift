@@ -101,7 +101,7 @@ private struct LoginView: View {
                     .disabled(model.isAuthenticating || model.passwordDraft.isEmpty)
                 }
                 .frame(maxWidth: 430)
-                Text("Phiên đăng nhập được bảo vệ bằng cookie HttpOnly. Mật khẩu không được lưu trên thiết bị.")
+                Text("Thiết bị được ghi nhớ an toàn trong Keychain và mở khóa bằng Face ID. Mật khẩu không được lưu trên thiết bị.")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)

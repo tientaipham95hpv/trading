@@ -220,6 +220,22 @@ class LogRow(Base):
     )
 
 
+class AuthDeviceSessionRow(Base):
+    __tablename__ = "auth_device_sessions"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    token_hash: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    device_name: Mapped[str] = mapped_column(String(120))
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(UTC)
+    )
+    last_used_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(UTC)
+    )
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
 class Storage:
     def __init__(self, database_url: str) -> None:
         self.engine = create_async_engine(database_url, pool_pre_ping=True)
@@ -252,6 +268,63 @@ class Storage:
         async with self.session_factory() as session:
             session.add(SignalRow(symbol=payload["symbol"], payload=payload))
             await session.commit()
+
+    async def create_device_session(
+        self, *, token_hash: str, device_name: str, expires_at: datetime
+    ) -> None:
+        async with self.session_factory() as session:
+            session.add(
+                AuthDeviceSessionRow(
+                    token_hash=token_hash,
+                    device_name=device_name[:120],
+                    expires_at=expires_at,
+                )
+            )
+            await session.commit()
+
+    async def rotate_device_session(
+        self,
+        *,
+        old_token_hash: str,
+        new_token_hash: str,
+        expires_at: datetime,
+    ) -> bool:
+        now = datetime.now(UTC)
+        async with self.session_factory() as session:
+            row = (
+                await session.execute(
+                    select(AuthDeviceSessionRow)
+                    .where(AuthDeviceSessionRow.token_hash == old_token_hash)
+                    .with_for_update()
+                )
+            ).scalar_one_or_none()
+            if row is None or row.revoked_at is not None or row.expires_at <= now:
+                return False
+            row.revoked_at = now
+            row.last_used_at = now
+            session.add(
+                AuthDeviceSessionRow(
+                    token_hash=new_token_hash,
+                    device_name=row.device_name,
+                    expires_at=expires_at,
+                )
+            )
+            await session.commit()
+            return True
+
+    async def revoke_device_session(self, token_hash: str) -> None:
+        now = datetime.now(UTC)
+        async with self.session_factory() as session:
+            row = (
+                await session.execute(
+                    select(AuthDeviceSessionRow).where(
+                        AuthDeviceSessionRow.token_hash == token_hash
+                    )
+                )
+            ).scalar_one_or_none()
+            if row is not None and row.revoked_at is None:
+                row.revoked_at = now
+                await session.commit()
 
     async def save_order_bundle(
         self,
