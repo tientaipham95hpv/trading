@@ -3075,6 +3075,8 @@ function JournalPage({
 
 type ServiceStatus = "OPERATIONAL" | "WARNING" | "ERROR" | "OFFLINE";
 
+const MARKET_WEIGHT_BUDGET_PER_MINUTE = 900;
+
 interface ServiceEntry {
   name: string;
   status: ServiceStatus;
@@ -3112,12 +3114,8 @@ function deriveSystemServices(
     operations?.notifications.configured ? "OPERATIONAL" : "OFFLINE";
   const totalCacheHits = (operations?.gateway?.demo?.cache?.hits ?? 0) + (operations?.gateway?.live?.cache?.hits ?? 0);
   const totalCacheMisses = (operations?.gateway?.demo?.cache?.misses ?? 0) + (operations?.gateway?.live?.cache?.misses ?? 0);
-  const cacheStatus: ServiceStatus =
-    totalCacheHits + totalCacheMisses > 0
-      ? totalCacheHits / (totalCacheHits + totalCacheMisses) > 0.5
-        ? "OPERATIONAL"
-        : "WARNING"
-      : "OFFLINE";
+  const cacheAvailable = Boolean(operations?.gateway?.market);
+  const cacheStatus: ServiceStatus = cacheAvailable ? "OPERATIONAL" : "OFFLINE";
   const reconcileStatus: ServiceStatus =
     operations?.reconciliation?.safe_mode
       ? "ERROR"
@@ -3125,14 +3123,16 @@ function deriveSystemServices(
         ? "OPERATIONAL"
         : "OFFLINE";
   const marketWeight = operations?.gateway?.market?.usage?.market_weight_last_minute ?? 0;
+  const marketWeightRatio = marketWeight / MARKET_WEIGHT_BUDGET_PER_MINUTE;
+  const marketCircuitOpen = operations?.gateway?.market?.circuit_breaker?.state === "open";
   const rateLimitStatus: ServiceStatus =
-    marketWeight > 0
-      ? marketWeight < 50
-        ? "OPERATIONAL"
-        : marketWeight < 90
+    !operations?.gateway?.market
+      ? "OFFLINE"
+      : marketCircuitOpen || marketWeightRatio >= 0.95
+        ? "ERROR"
+        : marketWeightRatio >= 0.8
           ? "WARNING"
-          : "ERROR"
-      : "OFFLINE";
+          : "OPERATIONAL";
   const autoLoopStatus: ServiceStatus =
     status?.auto_trader?.running
       ? "OPERATIONAL"
@@ -3144,9 +3144,9 @@ function deriveSystemServices(
     { name: "Dữ liệu thị trường", status: marketDataStatus, detail: viExchangeFreshness(exchange?.freshness), icon: <BarChart3 size={14} /> },
     { name: "Bộ máy AI", status: aiStatus, detail: operations?.ai_analytics.training?.mode ?? "Đang tải", icon: <Brain size={14} /> },
     { name: "Telegram", status: telegramStatus, detail: operations?.notifications.configured ? "Đã kết nối" : "Đã tắt", icon: <MessageSquare size={14} /> },
-    { name: "Bộ nhớ đệm", status: cacheStatus, detail: totalCacheHits + totalCacheMisses > 0 ? `${((totalCacheHits / (totalCacheHits + totalCacheMisses)) * 100).toFixed(0)}% lượt truy cập thành công` : "Đang tải", icon: <Database size={14} /> },
+    { name: "Bộ nhớ đệm", status: cacheStatus, detail: totalCacheHits + totalCacheMisses > 0 ? `Hiệu suất: ${((totalCacheHits / (totalCacheHits + totalCacheMisses)) * 100).toFixed(0)}% cache hit` : cacheAvailable ? "Đang hoạt động · chưa có mẫu" : "Đang tải", icon: <Database size={14} /> },
     { name: "Đối soát", status: reconcileStatus, detail: operations?.reconciliation?.last_reconciled_at ? `Lần cuối: ${new Date(operations.reconciliation.last_reconciled_at).toLocaleTimeString()}` : "Đang tải", icon: <GitCompare size={14} /> },
-    { name: "Giới hạn API", status: rateLimitStatus, detail: marketWeight > 0 ? `Tải: ${marketWeight}/phút` : "Đang tải", icon: <Gauge size={14} /> },
+    { name: "Giới hạn API", status: rateLimitStatus, detail: operations?.gateway?.market ? `Tải: ${marketWeight.toFixed(0)}/${MARKET_WEIGHT_BUDGET_PER_MINUTE} (${(marketWeightRatio * 100).toFixed(0)}%)` : "Đang tải", icon: <Gauge size={14} /> },
     { name: "Vòng lặp tự động", status: autoLoopStatus, detail: status?.auto_trader?.running ? `Chu kỳ: ${status.auto_trader.cycles}` : "Đã dừng", icon: <RotateCw size={14} /> },
   ];
 }
