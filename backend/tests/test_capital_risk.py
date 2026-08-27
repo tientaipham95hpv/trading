@@ -66,14 +66,14 @@ def test_non_positive_equity_is_normalized_and_live_blocked():
         assert profile.live_allowed is False
 
 
-def test_demo_profile_allows_two_positions_with_portfolio_limits():
+def test_demo_profile_allows_three_positions_with_portfolio_limits():
     settings = BotSettings(
         max_leverage=10,
         max_total_open_risk=0.05,
         max_margin_per_trade=0.15,
         max_total_margin=0.50,
         max_portfolio_exposure=1.00,
-        max_open_positions=2,
+        max_open_positions=3,
     )
 
     profile = capital_risk_profile_for_mode(
@@ -84,13 +84,13 @@ def test_demo_profile_allows_two_positions_with_portfolio_limits():
 
     assert profile.name == "DEMO_SETTINGS"
     assert profile.max_leverage == 10
-    assert profile.max_open_positions == 2
+    assert profile.max_open_positions == 3
     assert profile.max_total_margin == 0.50
     assert profile.max_portfolio_exposure == 1.00
 
 
 def test_live_profile_hard_caps_positions_at_one():
-    settings = BotSettings(max_leverage=10, max_open_positions=2)
+    settings = BotSettings(max_leverage=10, max_open_positions=3)
 
     profile = capital_risk_profile_for_mode(
         25_000_000 / VND_PER_USDT,

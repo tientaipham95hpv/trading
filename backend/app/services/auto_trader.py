@@ -123,6 +123,7 @@ class AutoTrader:
         active_symbols: set[str] = set()
         open_position_count = len(self.state.execution.open_positions())
         portfolio_exposure_fraction = self._portfolio_exposure_fraction()
+        current_open_risk_fraction = self._current_open_risk_fraction(open_position_count)
         if self.state.trading_mode in {TradingMode.DEMO, TradingMode.LIVE}:
             adapter = (
                 self.state.live_exchange
@@ -210,6 +211,7 @@ class AutoTrader:
             await self.state.storage.save_portfolio_risk_audit(
                 snapshot_audit.model_dump(mode="json")
             )
+            current_open_risk_fraction = snapshot_audit.open_risk_fraction
             open_position_count = len(snapshot.positions)
             if (
                 open_position_count == 0
@@ -271,7 +273,7 @@ class AutoTrader:
 
         candidates = self._mtf_candidates(results)
         mtf_rejections = candidates[1]
-        candidates = candidates[0]
+        candidates = self._rank_candidates(candidates[0])
         # Candidate telemetry only. Tasks are never awaited or read by the trading path.
         evaluator = getattr(self.state, "ai_shadow_evaluator", None)
         if evaluator is not None:
@@ -367,7 +369,7 @@ class AutoTrader:
                 else None,
                 data_age_seconds=max(0.0, (datetime.now(UTC) - result.scanned_at).total_seconds()),
                 safe_mode=self.state.safe_mode,
-                current_open_risk_fraction=self._current_open_risk_fraction(open_position_count),
+                current_open_risk_fraction=current_open_risk_fraction,
                 current_margin_fraction=(
                     self._exchange_margin_fraction(snapshot)
                     if snapshot is not None
@@ -484,13 +486,26 @@ class AutoTrader:
             )
             try:
                 # Refresh immediately before submit. This closes the stale-snapshot
-                # window and fail-closes whenever any position already exists.
+                # window and enforces the active mode's profile at the final gate.
                 latest_snapshot = await adapter.snapshot()
-                if latest_snapshot.positions:
+                equity = max(
+                    latest_snapshot.balance.margin_balance
+                    or latest_snapshot.balance.available,
+                    1.0,
+                )
+                latest_profile = self._capital_profile(equity)
+                if len(latest_snapshot.positions) >= latest_profile.max_open_positions:
                     self.rejected += 1
                     return await self._skip(
                         "WAITING_POSITION",
-                        "Chỉ cho phép tối đa 1 vị thế đang mở",
+                        f"Đã đủ {len(latest_snapshot.positions)}/"
+                        f"{latest_profile.max_open_positions} vị thế trên exchange",
+                    )
+                if plan.symbol in self._busy_exchange_symbols(latest_snapshot):
+                    self.rejected += 1
+                    return await self._skip(
+                        "WAITING_POSITION",
+                        f"{plan.symbol} đang có vị thế hoặc lệnh mở",
                     )
                 result = await adapter.submit_order_plan(plan)
             except (ExchangeCredentialsError, ExchangeError) as exc:
@@ -531,11 +546,13 @@ class AutoTrader:
                 result.status, result.critical_alert or "Exchange không accept order"
             )
 
-        if self.state.execution.open_positions():
+        simulation_profile = self._capital_profile(self.state.execution.performance().equity)
+        if len(self.state.execution.open_positions()) >= simulation_profile.max_open_positions:
             self.rejected += 1
             return await self._skip(
                 "WAITING_POSITION",
-                "Chỉ cho phép tối đa 1 vị thế mô phỏng đang mở",
+                f"Đã đủ {len(self.state.execution.open_positions())}/"
+                f"{simulation_profile.max_open_positions} vị thế mô phỏng",
             )
         before_fills = len(self.state.execution.fills)
         before_trades = len(self.state.execution.trades)
@@ -828,19 +845,32 @@ class AutoTrader:
         return margin / equity
 
     def _correlated_positions(self, symbol: str, *, snapshot: Any | None = None) -> int:
-        base = symbol.replace("USDT", "")
-        bucket = "BTC_ETH" if base in {"BTC", "ETH"} else base[:3]
+        bucket = self._correlation_bucket(symbol)
         if snapshot is not None:
             return sum(
                 1
                 for position in snapshot.positions
-                if position.symbol.replace("USDT", "")[:3] == bucket[:3]
+                if self._correlation_bucket(position.symbol) == bucket
             )
         return sum(
             1
             for position in self.state.execution.open_positions()
-            if position.symbol.replace("USDT", "")[:3] == bucket[:3]
+            if self._correlation_bucket(position.symbol) == bucket
         )
+
+    @staticmethod
+    def _correlation_bucket(symbol: str) -> str:
+        base = symbol.upper().removesuffix("USDT")
+        sectors = {
+            "BTC_BETA": {"BTC", "ETH", "BNB", "SOL"},
+            "L1": {"ADA", "AVAX", "DOT", "NEAR", "SUI", "APT", "ATOM"},
+            "MEME": {"DOGE", "SHIB", "PEPE", "BONK", "WIF", "FLOKI"},
+            "DEFI": {"UNI", "AAVE", "LINK", "MKR", "CRV", "LDO", "INJ"},
+        }
+        for bucket, members in sectors.items():
+            if base in members:
+                return bucket
+        return base
 
     def _select_leverage(
         self, signal: Any, result: Any, *, profile: CapitalRiskProfile | None = None
@@ -868,12 +898,41 @@ class AutoTrader:
         )
         risk_fraction = min(target, maximum)
         if self.state.trading_mode == TradingMode.DEMO:
-            risk_fraction = min(max(risk_fraction, 0.001), 0.0025)
-        if max(result.long_score, result.short_score) < 85:
-            risk_fraction = min(risk_fraction, 0.0025)
+            score = max(result.long_score, result.short_score)
+            # Fixed adaptive bands keep three independent setups inside the
+            # aggregate 0.25% open-risk budget even when legacy env settings
+            # request a larger per-trade risk.
+            risk_fraction = 0.0005 if score < 85 else 0.00075 if score < 90 else 0.001
+            atr_fraction = (
+                result.indicators.atr / result.price
+                if result.indicators.atr and result.price
+                else 0.0
+            )
+            volatility_multiplier = 0.75 if atr_fraction >= 0.03 else 1.0
+            risk_fraction *= volatility_multiplier
+            risk_fraction = min(max(risk_fraction, 0.0005), 0.0025)
         if correlated_positions > 0:
             risk_fraction *= 0.5
-        return max(0.001, risk_fraction)
+        minimum = 0.0005 if self.state.trading_mode == TradingMode.DEMO else 0.001
+        return max(minimum, risk_fraction)
+
+    @staticmethod
+    def _candidate_rank(result: Any) -> tuple[float, float, float, str]:
+        """Rank the whole scan before execution; never trade first-seen order."""
+        score = float(max(result.long_score, result.short_score))
+        confidence = float(getattr(result, "confidence", 0.0) or 0.0)
+        risk_reward = float(result.risk_reward or 0.0)
+        atr_fraction = (
+            float(result.indicators.atr / result.price)
+            if result.indicators.atr and result.price
+            else 0.0
+        )
+        # Higher score/confidence/RR wins; lower volatility wins ties.
+        composite = score + confidence * 10 + min(risk_reward, 4.0) * 2 - atr_fraction * 100
+        return (composite, score, risk_reward, result.symbol)
+
+    def _rank_candidates(self, candidates: list[Any]) -> list[Any]:
+        return sorted(candidates, key=self._candidate_rank, reverse=True)
 
     def _effective_risk_engine(self, profile: CapitalRiskProfile) -> RiskEngine:
         settings = self.state.bot_settings

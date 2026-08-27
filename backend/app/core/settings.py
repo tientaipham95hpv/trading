@@ -29,7 +29,9 @@ class Settings(BaseSettings):
     max_total_margin: float = Field(default=0.25, gt=0, le=1)
     max_daily_loss: float = Field(default=0.04, gt=0, le=0.25)
     max_weekly_drawdown: float = Field(default=0.08, gt=0, le=0.5)
-    max_open_positions: int = Field(default=2, ge=1, le=2)
+    # DEMO adaptive portfolio validation may use up to three slots. LIVE is
+    # independently hard-capped at one by capital_risk_profile_for_mode().
+    max_open_positions: int = Field(default=3, ge=1, le=3)
     max_portfolio_exposure: float = Field(default=0.50, gt=0, le=3)
     max_symbol_exposure: float = Field(default=0.15, gt=0, le=1)
     max_directional_exposure: float = Field(default=0.30, gt=0, le=1)
