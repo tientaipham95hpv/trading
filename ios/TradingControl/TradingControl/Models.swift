@@ -550,16 +550,22 @@ public struct CaiDatBot: Codable, Equatable {
 }
 
 public struct NhatKy: Codable, Identifiable, Equatable {
-    public var id: String { "\(createdAt)-\(message)" }
-    public let level: String
-    public let message: String
+    public let id: String
+    public let category: String
+    public let title: String
+    public let details: String
     public let createdAt: String
 
     enum CodingKeys: String, CodingKey {
-        case level
-        case message
-        case createdAt = "created_at"
+        case id, category, title, details
+        case createdAt = "timestamp"
     }
+
+    public var message: String {
+        details.isEmpty ? title : "\(title) — \(details)"
+    }
+
+    public var level: String { category == "ERROR" ? "ERROR" : "INFO" }
 }
 
 public struct DanhSachPhanHoi<T: Codable>: Codable {

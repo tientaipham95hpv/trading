@@ -137,3 +137,13 @@ import Testing
     #expect(response.authenticated)
     #expect(response.expiresIn == 43_200)
 }
+
+@Test func journalDecodesCurrentBackendSchema() throws {
+    let data = #"{"id":"event-1","timestamp":"2026-08-27T08:16:50Z","category":"TRADING","title":"Auto-trader skip","details":"Chưa có tín hiệu","meta":{}}"#.data(using: .utf8)!
+    let item = try JSONDecoder().decode(NhatKy.self, from: data)
+
+    #expect(item.id == "event-1")
+    #expect(item.category == "TRADING")
+    #expect(item.message == "Auto-trader skip — Chưa có tín hiệu")
+    #expect(item.createdAt == "2026-08-27T08:16:50Z")
+}

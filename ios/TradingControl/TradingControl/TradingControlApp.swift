@@ -2124,6 +2124,9 @@ private func viOrderStatus(_ value: String) -> String {
 }
 
 private func journalCategory(_ item: NhatKy) -> String {
+    let backendCategory = item.category.uppercased()
+    if ["TRADING", "AI", "RISK", "SYSTEM"].contains(backendCategory) { return backendCategory }
+    if ["ERROR", "ERRORS"].contains(backendCategory) { return "ERRORS" }
     let text = item.message.lowercased()
     if ["error", "failed", "exception", "lỗi"].contains(where: text.contains) || item.level.uppercased() == "ERROR" { return "ERRORS" }
     if ["ai", "model", "training", "shadow"].contains(where: text.contains) { return "AI" }

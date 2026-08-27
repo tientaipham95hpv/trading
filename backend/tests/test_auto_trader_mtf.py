@@ -1,6 +1,6 @@
 from types import SimpleNamespace
 
-from app.domain.models import IndicatorSnapshot, MarketRegime, SignalAction, Timeframe
+from app.domain.models import IndicatorSnapshot, MarketRegime, SignalAction, Timeframe, TradingMode
 from app.services.auto_trader import AutoTrader
 
 
@@ -30,6 +30,20 @@ def result(
 def trader() -> AutoTrader:
     return AutoTrader(
         SimpleNamespace(
+            bot_settings=SimpleNamespace(extreme_volatility_atr_fraction=0.06),
+        )
+    )
+
+
+def demo_trader() -> AutoTrader:
+    return AutoTrader(
+        SimpleNamespace(
+            trading_mode=TradingMode.DEMO,
+            settings=SimpleNamespace(
+                demo_test_allow_high_vol_regime=True,
+                demo_test_min_score=80,
+                demo_test_min_risk_reward=1.8,
+            ),
             bot_settings=SimpleNamespace(extreme_volatility_atr_fraction=0.06),
         )
     )
@@ -104,6 +118,32 @@ def test_mtf_rejects_4h_high_volatility_and_panic():
 
         assert candidates == []
         assert rejected == {"4h volatility cao/panic": 1}
+
+
+def test_demo_profile_allows_high_vol_4h_when_1h_and_15m_confirm_direction():
+    candidates, rejected = demo_trader()._mtf_candidates(
+        [
+            result(Timeframe.M15),
+            result(Timeframe.H1),
+            result(Timeframe.H4, regime=MarketRegime.HIGH_VOL),
+        ]
+    )
+
+    assert len(candidates) == 1
+    assert rejected == {}
+
+
+def test_demo_profile_still_rejects_panic_4h():
+    candidates, rejected = demo_trader()._mtf_candidates(
+        [
+            result(Timeframe.M15),
+            result(Timeframe.H1),
+            result(Timeframe.H4, regime=MarketRegime.PANIC),
+        ]
+    )
+
+    assert candidates == []
+    assert rejected == {"4h volatility cao/panic": 1}
 
 
 def test_mtf_rejects_trigger_when_it_is_too_far_from_ema_or_too_volatile():

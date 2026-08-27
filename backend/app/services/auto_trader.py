@@ -855,6 +855,9 @@ class AutoTrader:
 
     def _effective_risk_engine(self, profile: CapitalRiskProfile) -> RiskEngine:
         settings = self.state.bot_settings
+        minimum_risk_reward = max(settings.minimum_risk_reward, 2.0)
+        if self._uses_demo_test_profile():
+            minimum_risk_reward = self.state.settings.demo_test_min_risk_reward
         return RiskEngine(
             max_leverage=profile.max_leverage,
             risk_per_trade=profile.risk_per_trade,
@@ -875,7 +878,7 @@ class AutoTrader:
             max_loss_streak=settings.max_loss_streak,
             extreme_volatility_atr_fraction=settings.extreme_volatility_atr_fraction,
             stale_data_seconds=settings.stale_data_seconds,
-            minimum_risk_reward=max(settings.minimum_risk_reward, 2.0),
+            minimum_risk_reward=minimum_risk_reward,
             taker_fee_rate=settings.taker_fee_rate,
             slippage_bps=settings.slippage_bps,
         )
@@ -892,7 +895,10 @@ class AutoTrader:
         reasons = set(result.reasons)
         if result.timeframe not in {Timeframe.M15, Timeframe.H1, Timeframe.H4}:
             return False, "Bỏ qua khung nhiễu 1m/5m"
-        minimum_score = max(85, self.state.bot_settings.min_score_to_trade)
+        if self._uses_demo_test_profile():
+            minimum_score = self.state.settings.demo_test_min_score
+        else:
+            minimum_score = max(85, self.state.bot_settings.min_score_to_trade)
         high_risk_symbols = {
             symbol.strip().upper()
             for symbol in self.state.settings.scanner_high_risk_symbols.split(",")
@@ -902,10 +908,17 @@ class AutoTrader:
             minimum_score = max(minimum_score, self.state.settings.scanner_high_risk_min_score)
         if score < minimum_score:
             return False, f"Score dưới {minimum_score} sau reset"
-        minimum_risk_reward = getattr(self.state.bot_settings, "minimum_risk_reward", 2.0)
+        minimum_risk_reward = (
+            self.state.settings.demo_test_min_risk_reward
+            if self._uses_demo_test_profile()
+            else max(getattr(self.state.bot_settings, "minimum_risk_reward", 2.0), 2.0)
+        )
         if (result.risk_reward or 0.0) < minimum_risk_reward:
             return False, f"RR dưới {minimum_risk_reward:.1f} sau phí/đệm"
-        if result.regime in {MarketRegime.HIGH_VOL, MarketRegime.PANIC}:
+        if result.regime == MarketRegime.PANIC or (
+            result.regime == MarketRegime.HIGH_VOL
+            and not self._allows_demo_high_vol()
+        ):
             return False, "Tránh vùng biến động cao/panic"
         indicators = getattr(result, "indicators", None)
         atr = getattr(indicators, "atr", 0.0) or 0.0
@@ -936,8 +949,27 @@ class AutoTrader:
             h4 = by_symbol_frame.get((trigger.symbol, Timeframe.H4))
             if h1 is None or h4 is None:
                 reason = "Thiếu nến đóng xác nhận 1h/4h"
-            elif h4.regime in {MarketRegime.HIGH_VOL, MarketRegime.PANIC}:
+            elif h4.regime == MarketRegime.PANIC or (
+                h4.regime == MarketRegime.HIGH_VOL and not self._allows_demo_high_vol()
+            ):
                 reason = "4h volatility cao/panic"
+            elif h4.regime == MarketRegime.HIGH_VOL:
+                if h1.regime not in {MarketRegime.TRENDING_UP, MarketRegime.TRENDING_DOWN}:
+                    reason = "1h chưa có xu hướng khi 4h biến động cao"
+                elif h1.action != trigger.action or trigger.action != self._regime_action(h1.regime):
+                    reason = "15m/1h chưa cùng chiều trong 4h biến động cao"
+                elif not self._is_h1_pullback_or_breakout(h1):
+                    reason = "1h chưa có vùng pullback/breakout hợp lệ"
+                else:
+                    atr = trigger.indicators.atr or 0.0
+                    ema20 = trigger.indicators.ema20
+                    if ema20 and atr and abs(trigger.price - ema20) / atr > 2.0:
+                        reason = "15m chạy quá xa EMA20 (>2 ATR)"
+                    elif atr / max(trigger.price, 1e-12) > self.state.bot_settings.extreme_volatility_atr_fraction:
+                        reason = "15m volatility vượt ngưỡng ATR"
+                    else:
+                        accepted.append(trigger)
+                        continue
             elif h4.regime not in {MarketRegime.TRENDING_UP, MarketRegime.TRENDING_DOWN}:
                 reason = "4h không có xu hướng rõ"
             elif h1.regime in {MarketRegime.HIGH_VOL, MarketRegime.PANIC}:
@@ -962,6 +994,18 @@ class AutoTrader:
                     continue
             rejected[reason] = rejected.get(reason, 0) + 1
         return accepted, rejected
+
+    def _uses_demo_test_profile(self) -> bool:
+        mode = getattr(self.state, "trading_mode", None)
+        value = getattr(mode, "value", mode)
+        return value == TradingMode.DEMO.value
+
+    def _allows_demo_high_vol(self) -> bool:
+        settings = getattr(self.state, "settings", None)
+        return bool(
+            self._uses_demo_test_profile()
+            and getattr(settings, "demo_test_allow_high_vol_regime", False)
+        )
 
     @staticmethod
     def _regime_action(regime: MarketRegime) -> SignalAction:

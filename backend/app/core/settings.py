@@ -58,6 +58,11 @@ class Settings(BaseSettings):
     scanner_min_score_to_trade: int = 85
     scanner_high_risk_symbols: str = "AVAXUSDT,APRUSDT,ADAUSDT,BNBUSDT,WLDUSDT,XRPUSDT"
     scanner_high_risk_min_score: int = Field(default=90, ge=85, le=100)
+    # Forward-test profile. These relaxations are consulted only while the
+    # runtime is in DEMO; LIVE continues to use the production gates below.
+    demo_test_min_score: int = Field(default=80, ge=70, le=84)
+    demo_test_min_risk_reward: float = Field(default=1.8, ge=1.5, le=2.0)
+    demo_test_allow_high_vol_regime: bool = True
     taker_fee_rate: float = 0.0005
     maker_fee_rate: float = 0.0002
     slippage_bps: float = 2.0

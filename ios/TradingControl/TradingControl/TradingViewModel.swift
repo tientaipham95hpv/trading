@@ -88,29 +88,30 @@ public final class TradingViewModel: ObservableObject {
         defer { isRefreshing = false }
         do {
             async let nextStatus = api.status()
-            async let nextMarkets = api.markets()
-            // Fetch all decision frames. The UI derives tradable rows only from
-            // a 4h + 1h agreement, with 15m acting solely as the entry trigger.
-            async let nextScanner = api.scanner(timeframes: "15m,1h,4h")
-            async let nextPositions = api.positions()
-            async let nextTrades = api.trades()
-            async let nextJournal = api.journal()
-            async let nextPerformance = api.performance()
-            async let nextOperations = api.operations()
-            async let nextExchange = api.exchange()
-            async let nextSettings = api.settings()
+            // Auxiliary panels refresh independently. A slow market endpoint or
+            // a temporarily incompatible optional payload must not blank the
+            // whole overview after status has loaded successfully.
+            async let nextMarkets = try? api.markets()
+            async let nextScanner = try? api.cachedSignals()
+            async let nextPositions = try? api.positions()
+            async let nextTrades = try? api.trades()
+            async let nextJournal = try? api.journal()
+            async let nextPerformance = try? api.performance()
+            async let nextOperations = try? api.operations()
+            async let nextExchange = try? api.exchange()
+            async let nextSettings = try? api.settings()
             async let nextBacktest = try? api.latestBacktest()
 
             status = try await nextStatus
-            markets = try await nextMarkets
-            scanner = try await nextScanner
-            positions = try await nextPositions
-            trades = try await nextTrades
-            journal = try await nextJournal
-            performance = try await nextPerformance
-            operations = try await nextOperations
-            exchange = try await nextExchange
-            settings = try await nextSettings
+            if let value = await nextMarkets { markets = value }
+            if let value = await nextScanner { scanner = value }
+            if let value = await nextPositions { positions = value }
+            if let value = await nextTrades { trades = value }
+            if let value = await nextJournal { journal = value }
+            if let value = await nextPerformance { performance = value }
+            if let value = await nextOperations { operations = value }
+            if let value = await nextExchange { exchange = value }
+            if let value = await nextSettings { settings = value }
             latestBacktest = await nextBacktest
             errorMessage = nil
             isAuthenticated = true

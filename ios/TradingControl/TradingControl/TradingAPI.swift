@@ -47,6 +47,14 @@ public actor TradingAPI {
         return response.items
     }
 
+    /// Returns the scanner snapshot already produced by the trading loop.
+    /// The iOS UI must not start a second 15m/1h/4h market scan every refresh,
+    /// because doing so competes with the bot for Binance request weight.
+    public func cachedSignals(limit: Int = 120) async throws -> [TinHieuQuet] {
+        let response: DanhSachPhanHoi<TinHieuQuet> = try await get("/api/signals?limit=\(limit)")
+        return response.items
+    }
+
     public func positions() async throws -> [ViThe] {
         let response: DanhSachPhanHoi<ViThe> = try await get("/api/positions")
         return response.items
