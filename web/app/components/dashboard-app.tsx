@@ -767,7 +767,7 @@ function PerformanceKpis({
     <section className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
       <Metric label="Tổng vốn" value={money(performance?.equity ?? exchange?.balance.margin_balance)} />
       <Metric
-        label="PnL hôm nay (UTC)"
+        label="PnL hôm nay"
         value={dailyPnl == null ? "Chưa có dữ liệu" : money(dailyPnl)}
         tone={dailyPnl == null ? "neutral" : dailyPnl >= 0 ? "good" : "bad"}
       />
@@ -2341,7 +2341,7 @@ function Orders({
         <Table
           columns={["Thời gian", "Mã", "Hướng", "Giá vào", "Giá thoát", "PnL", "Kết quả"]}
           rows={trades.slice(0, 100).map((trade) => [
-            new Date(trade.created_at).toLocaleString("vi-VN"),
+            formatVietnamDateTime(trade.created_at),
             trade.symbol,
             viSide(trade.side),
             money(trade.entry_price),
@@ -2367,9 +2367,7 @@ function Trades({ trades }: { trades: Trade[] }) {
   const filteredTrades = trades.filter((trade) => {
     const createdAt = new Date(trade.created_at).getTime();
     if (period === "TODAY") {
-      const today = new Date(referenceTime);
-      today.setHours(0, 0, 0, 0);
-      if (createdAt < today.getTime()) return false;
+      if (createdAt < vietnamDayStart(referenceTime).getTime()) return false;
     } else if (period === "7D") {
       if (createdAt < referenceTime.getTime() - 7 * 24 * 60 * 60 * 1000) return false;
     } else if (period === "30D") {
@@ -2465,7 +2463,7 @@ function Trades({ trades }: { trades: Trade[] }) {
             }
 
             return [
-              createdAt.toLocaleDateString("vi-VN"),
+              formatVietnamDate(createdAt),
               trade.symbol,
               viSide(trade.side),
               money(trade.entry_price),
@@ -2522,7 +2520,7 @@ function Strategies({ scanner }: { scanner: ScannerResult[] }) {
           <StrategyMetric label="Số mã" value={String(strategy.symbols)} tone="neutral" />
         </div>
         <div className="mt-3 grid grid-cols-2 gap-2"><InfoPair label="R:R tốt nhất" value={strategy.bestRiskReward === null ? "Chưa có" : `${number(strategy.bestRiskReward)}R`} /><InfoPair label="Mẫu đã quét" value={String(strategy.items.length)} /></div>
-        <p className="mt-3 border-t border-[var(--border-default)] pt-3 text-xs text-[var(--text-muted)]">Cập nhật gần nhất: {strategy.latest ? new Date(strategy.latest).toLocaleString("vi-VN") : "Chưa có"}</p>
+        <p className="mt-3 border-t border-[var(--border-default)] pt-3 text-xs text-[var(--text-muted)]">Cập nhật gần nhất: {strategy.latest ? formatVietnamDateTime(strategy.latest) : "Chưa có"}</p>
       </section>)}
     </div> : <EmptyState title="Chưa có dữ liệu chiến lược" message="Backend chưa trả về chiến lược từ bộ quét. Không hiển thị dữ liệu mô phỏng." />}
   </div>;
@@ -2586,8 +2584,8 @@ function buildAnalytics(trades: Trade[], performance: Performance | null) {
   let equity = performance?.initial_capital ?? 0; let peak = equity; let maxDrawdown = 0;
   const equityPoints = sorted.map((item) => { equity += item.net_pnl; peak = Math.max(peak, equity); maxDrawdown = Math.max(maxDrawdown, peak ? ((peak - equity) / peak) * 100 : 0); return equity; });
   const toRows = (key: (trade: Trade) => string): AnalyticsRow[] => Object.entries(sorted.reduce<Record<string, Trade[]>>((groups, trade) => { const name = key(trade); (groups[name] ||= []).push(trade); return groups; }, {})).map(([name, items]) => ({ name, pnl: items.reduce((sum, item) => sum + item.net_pnl, 0), trades: items.length, winRate: items.filter((item) => item.net_pnl > 0).length / items.length * 100 })).sort((a, b) => b.pnl - a.pnl);
-  const dates = Array.from({ length: 35 }, (_, index) => { const day = new Date(); day.setHours(0, 0, 0, 0); day.setDate(day.getDate() - 34 + index); return day; });
-  const calendar = dates.map((date) => { const id = date.toISOString().slice(0, 10); return { date: id, pnl: sorted.filter((item) => new Date(item.created_at).toISOString().slice(0, 10) === id).reduce((sum, item) => sum + item.net_pnl, 0) }; });
+  const dates = Array.from({ length: 35 }, (_, index) => new Date(vietnamDayStart(new Date()).getTime() + (-34 + index) * 86_400_000));
+  const calendar = dates.map((date) => { const id = vietnamDateId(date); return { date: id, pnl: sorted.filter((item) => vietnamDateId(item.created_at) === id).reduce((sum, item) => sum + item.net_pnl, 0) }; });
   return { netPnl, wins, losses, winRate: sorted.length ? wins / sorted.length * 100 : 0, profitFactor: grossLoss ? grossProfit / grossLoss : grossProfit ? null : 0, maxDrawdown, equityPoints, byStrategy: toRows((item) => item.reason || "Unclassified"), bySymbol: toRows((item) => item.symbol), calendar };
 }
 function AnalyticsEquityCurve({ points }: { points: number[] }) { if (!points.length) return <EmptyState title="Chưa có đường cong vốn" message="Chưa có lệnh đã đóng trong khoảng thời gian đã chọn." />; const min = Math.min(...points); const max = Math.max(...points); const polyline = points.map((value, index) => `${(index / Math.max(1, points.length - 1)) * 100},${100 - ((value - min) / Math.max(1, max - min)) * 82 - 9}`).join(" "); return <svg aria-label="Đường cong vốn" className="mt-5 h-64 w-full overflow-visible" preserveAspectRatio="none" viewBox="0 0 100 100"><defs><linearGradient id="equityFill" x1="0" x2="0" y1="0" y2="1"><stop stopColor="#22c55e" stopOpacity=".28"/><stop offset="1" stopColor="#22c55e" stopOpacity="0"/></linearGradient></defs><polyline fill="none" points={polyline} stroke="#22c55e" strokeWidth="1.5" vectorEffect="non-scaling-stroke"/></svg>; }
@@ -2709,7 +2707,7 @@ function SmartEntryPanel({ analytics }: { analytics: SmartEntryPayload | null })
           <Metric label="Outcome mới" value={number(analytics?.collector.last_cycle.outcomes_saved ?? 0)} />
         </div>
         {analytics?.collector.last_error && <p className="mt-2 break-all text-xs text-[var(--color-loss)]">Lần thử gần nhất: {analytics.collector.last_error}</p>}
-        <p className="mt-2 text-xs text-[var(--text-muted)]">Chu kỳ {analytics?.collector.interval_seconds ?? 60}s · lần chạy gần nhất {analytics?.collector.last_run_at ? new Date(analytics.collector.last_run_at).toLocaleString("vi-VN") : "chưa chạy"} · backlog cũ nhất {analytics?.collector.coverage.oldest_pending_at ? new Date(analytics.collector.coverage.oldest_pending_at).toLocaleString("vi-VN") : "không có"} · lỗi liên tiếp {analytics?.collector.consecutive_failures ?? 0}</p>
+        <p className="mt-2 text-xs text-[var(--text-muted)]">Chu kỳ {analytics?.collector.interval_seconds ?? 60}s · lần chạy gần nhất {analytics?.collector.last_run_at ? formatVietnamDateTime(analytics.collector.last_run_at) : "chưa chạy"} · backlog cũ nhất {analytics?.collector.coverage.oldest_pending_at ? formatVietnamDateTime(analytics.collector.coverage.oldest_pending_at) : "không có"} · lỗi liên tiếp {analytics?.collector.consecutive_failures ?? 0}</p>
       </div>
       <div className="mt-4 glass-card p-3 border-[var(--color-info)]/10">
         <div className="flex flex-wrap items-center justify-between gap-2">
@@ -2725,7 +2723,7 @@ function SmartEntryPanel({ analytics }: { analytics: SmartEntryPayload | null })
         </div>
         <div className="mt-3 flex flex-wrap gap-2 text-xs">{Object.entries(analytics?.performance.dimensions.horizon ?? {}).map(([key, metric]) => <span className="rounded-lg bg-[rgba(255,255,255,0.03)] px-2 py-1" key={key}>{key} nến · n={metric.sample_size} · WR {metric.win_rate == null ? "-" : percent(metric.win_rate)} · TB {metric.average_return == null ? "-" : percent(metric.average_return)}</span>)}</div>
       </div>
-      <div className="mt-4 grid gap-2">{(analytics?.items ?? []).slice(0, 15).map((item) => <div className="glass-card p-3" key={item.event_key}><div className="flex flex-wrap justify-between gap-2"><b>{item.symbol} · {item.side} · {item.timeframe}</b><span className={item.decision === "WOULD_ENTER" ? "text-[var(--color-profit)]" : "text-[var(--color-warning)]"}>{item.decision_label}</span></div><p className="mt-1 text-xs text-[var(--text-muted)]">{item.decision_description}</p><p className="mt-1 text-xs text-[var(--text-muted)]">Điểm {item.quality_score}/100 · Giá vào {number(item.entry_price)} · R:R {item.risk_reward === null ? "chưa xác minh" : number(item.risk_reward)} · {new Date(item.decision_at).toLocaleString("vi-VN")}</p>{item.reasons.length > 0 && <p className="mt-2 text-sm text-[var(--color-warning)]">{item.reasons.join("; ")}</p>}<div className="mt-2 flex flex-wrap gap-2 text-xs">{[4, 12, 24].map((horizon) => { const outcome = item.outcomes[String(horizon)]; return <span className="rounded-lg bg-[rgba(255,255,255,0.03)] px-2 py-1" key={horizon}>{horizon} nến: {outcome ? `${percent(outcome.return_fraction)} · MFE ${percent(outcome.mfe_fraction)} · MAE ${percent(outcome.mae_fraction)}` : "đang chờ đủ nến đóng"}</span>; })}</div></div>)}{(analytics?.items.length ?? 0) === 0 && <p className="text-sm text-[var(--text-muted)]">Chưa có phương án quan sát được ghi nhận.</p>}</div>
+      <div className="mt-4 grid gap-2">{(analytics?.items ?? []).slice(0, 15).map((item) => <div className="glass-card p-3" key={item.event_key}><div className="flex flex-wrap justify-between gap-2"><b>{item.symbol} · {item.side} · {item.timeframe}</b><span className={item.decision === "WOULD_ENTER" ? "text-[var(--color-profit)]" : "text-[var(--color-warning)]"}>{item.decision_label}</span></div><p className="mt-1 text-xs text-[var(--text-muted)]">{item.decision_description}</p><p className="mt-1 text-xs text-[var(--text-muted)]">Điểm {item.quality_score}/100 · Giá vào {number(item.entry_price)} · R:R {item.risk_reward === null ? "chưa xác minh" : number(item.risk_reward)} · {formatVietnamDateTime(item.decision_at)}</p>{item.reasons.length > 0 && <p className="mt-2 text-sm text-[var(--color-warning)]">{item.reasons.join("; ")}</p>}<div className="mt-2 flex flex-wrap gap-2 text-xs">{[4, 12, 24].map((horizon) => { const outcome = item.outcomes[String(horizon)]; return <span className="rounded-lg bg-[rgba(255,255,255,0.03)] px-2 py-1" key={horizon}>{horizon} nến: {outcome ? `${percent(outcome.return_fraction)} · MFE ${percent(outcome.mfe_fraction)} · MAE ${percent(outcome.mae_fraction)}` : "đang chờ đủ nến đóng"}</span>; })}</div></div>)}{(analytics?.items.length ?? 0) === 0 && <p className="text-sm text-[var(--text-muted)]">Chưa có phương án quan sát được ghi nhận.</p>}</div>
     </section>
   );
 }
@@ -2921,7 +2919,7 @@ function Logs({ logs }: { logs: LogItem[] }) {
       <Table
         columns={["Thời gian", "Cấp độ", "Nội dung"]}
         rows={logs.map((item) => [
-          new Date(item.created_at).toLocaleString("vi-VN"),
+          formatVietnamDateTime(item.created_at),
           item.level,
           item.message,
         ])}
@@ -3037,7 +3035,7 @@ function JournalPage({
                               const d = new Date(entry.timestamp);
                               return isNaN(d.getTime())
                                 ? entry.timestamp
-                                : d.toLocaleTimeString("vi-VN", {
+                                : formatVietnamTime(d, {
                                     hour: "2-digit",
                                     minute: "2-digit",
                                     second: "2-digit",
@@ -3147,7 +3145,7 @@ function deriveSystemServices(
     { name: "Bộ máy AI", status: aiStatus, detail: operations?.ai_analytics.training?.mode ?? "Đang tải", icon: <Brain size={14} /> },
     { name: "Telegram", status: telegramStatus, detail: operations?.notifications.configured ? "Đã kết nối" : "Đã tắt", icon: <MessageSquare size={14} /> },
     { name: "Bộ nhớ đệm", status: cacheStatus, detail: totalCacheHits + totalCacheMisses > 0 ? `Hiệu suất: ${((totalCacheHits / (totalCacheHits + totalCacheMisses)) * 100).toFixed(0)}% cache hit` : cacheAvailable ? "Đang hoạt động · chưa có mẫu" : "Đang tải", icon: <Database size={14} /> },
-    { name: "Đối soát", status: reconcileStatus, detail: operations?.reconciliation?.last_reconciled_at ? `Lần cuối: ${new Date(operations.reconciliation.last_reconciled_at).toLocaleTimeString()}` : "Đang tải", icon: <GitCompare size={14} /> },
+    { name: "Đối soát", status: reconcileStatus, detail: operations?.reconciliation?.last_reconciled_at ? `Lần cuối: ${formatVietnamTime(operations.reconciliation.last_reconciled_at)}` : "Đang tải", icon: <GitCompare size={14} /> },
     { name: "Giới hạn API", status: rateLimitStatus, detail: operations?.gateway?.market ? `Tải: ${marketWeight.toFixed(0)}/${MARKET_WEIGHT_BUDGET_PER_MINUTE} (${(marketWeightRatio * 100).toFixed(0)}%)` : "Đang tải", icon: <Gauge size={14} /> },
     { name: "Vòng lặp tự động", status: autoLoopStatus, detail: status?.auto_trader?.running ? `Chu kỳ: ${status.auto_trader.cycles}` : "Đã dừng", icon: <RotateCw size={14} /> },
   ];
@@ -3268,7 +3266,7 @@ function SystemStatusDrawerContent({
         {/* Footer */}
         <div className="border-t border-[var(--border-default)] px-5 py-3">
           <div className="flex items-center justify-between">
-            <p className="text-[10px] text-[var(--text-muted)]">Cập nhật lần cuối: {new Date().toLocaleTimeString("vi-VN")}</p>
+            <p className="text-[10px] text-[var(--text-muted)]">Cập nhật lần cuối: {formatVietnamTime(new Date())}</p>
             <button className="text-[10px] font-bold text-[var(--color-info)] hover:opacity-80 transition" onClick={() => api.performance().then(setPerfData).catch(() => {})} type="button">Làm mới</button>
           </div>
         </div>
@@ -4017,7 +4015,7 @@ function StatusLine({
       ? `Sàn ${viExchangeFreshness(exchange.freshness)} · ${viExchangeConnection(exchange.connection)}`
       : "Sàn giao dịch -",
     lastLiveAt > 0
-      ? `Cập nhật ${new Date(lastLiveAt).toLocaleTimeString("vi-VN")}`
+      ? `Cập nhật ${formatVietnamTime(lastLiveAt)}`
       : null,
   ].filter(Boolean);
   return (
@@ -4515,4 +4513,48 @@ function signedPercent(value: number | null | undefined) {
 function number(value: number | null | undefined) {
   if (value === null || value === undefined || Number.isNaN(value)) return "-";
   return value.toLocaleString("en-US", { maximumFractionDigits: 6 });
+}
+
+const VIETNAM_TIME_ZONE = "Asia/Ho_Chi_Minh";
+
+function formatVietnamDateTime(value: string | number | Date) {
+  return new Date(value).toLocaleString("vi-VN", { timeZone: VIETNAM_TIME_ZONE });
+}
+
+function formatVietnamDate(value: string | number | Date) {
+  return new Date(value).toLocaleDateString("vi-VN", { timeZone: VIETNAM_TIME_ZONE });
+}
+
+function formatVietnamTime(
+  value: string | number | Date,
+  options: Intl.DateTimeFormatOptions = {},
+) {
+  return new Date(value).toLocaleTimeString("vi-VN", {
+    timeZone: VIETNAM_TIME_ZONE,
+    ...options,
+  });
+}
+
+function vietnamDayStart(reference: Date) {
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: VIETNAM_TIME_ZONE,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).formatToParts(reference);
+  const part = (type: Intl.DateTimeFormatPartTypes) =>
+    parts.find((item) => item.type === type)?.value ?? "";
+  return new Date(`${part("year")}-${part("month")}-${part("day")}T00:00:00+07:00`);
+}
+
+function vietnamDateId(value: string | number | Date) {
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: VIETNAM_TIME_ZONE,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).formatToParts(new Date(value));
+  const part = (type: Intl.DateTimeFormatPartTypes) =>
+    parts.find((item) => item.type === type)?.value ?? "";
+  return `${part("year")}-${part("month")}-${part("day")}`;
 }

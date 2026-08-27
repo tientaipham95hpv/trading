@@ -2056,12 +2056,12 @@ private func chartPrice(_ value: Double) -> String {
 
 private func chartTime(_ milliseconds: Int) -> String {
     Date(timeIntervalSince1970: TimeInterval(milliseconds) / 1_000)
-        .formatted(date: .omitted, time: .shortened)
+        .formatted(.dateTime.hour().minute().timeZone(vietnamTimeZone))
 }
 
 private func chartDate(_ milliseconds: Int) -> String {
     Date(timeIntervalSince1970: TimeInterval(milliseconds) / 1_000)
-        .formatted(.dateTime.day().month().hour().minute())
+        .formatted(.dateTime.day().month().hour().minute().timeZone(vietnamTimeZone))
 }
 
 private func compact(_ value: Double?) -> String {
@@ -2085,8 +2085,10 @@ private func number(_ value: Double?) -> String {
 }
 
 private func shortTime(_ date: Date) -> String {
-    date.formatted(date: .omitted, time: .standard)
+    date.formatted(.dateTime.hour().minute().second().timeZone(vietnamTimeZone))
 }
+
+private let vietnamTimeZone = TimeZone(identifier: "Asia/Ho_Chi_Minh")!
 
 private func drawdown(_ performance: HieuSuat?) -> Double {
     guard let performance, performance.balance > 0 else { return 0 }

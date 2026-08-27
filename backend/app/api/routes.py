@@ -8,6 +8,7 @@ import time
 import uuid
 from datetime import UTC, datetime, timedelta
 from typing import Annotated
+from zoneinfo import ZoneInfo
 
 import httpx
 import websockets
@@ -53,6 +54,16 @@ from app.services.exit_analytics import (
 )
 
 AUTH_COOKIE_NAME = "trading_operator_session"
+DISPLAY_TIMEZONE = ZoneInfo("Asia/Ho_Chi_Minh")
+
+
+def _vietnam_day_start_utc(now: datetime | None = None) -> datetime:
+    """Return the current Vietnam calendar-day boundary as a UTC instant."""
+    current = now or datetime.now(UTC)
+    if current.tzinfo is None:
+        current = current.replace(tzinfo=UTC)
+    local_now = current.astimezone(DISPLAY_TIMEZONE)
+    return local_now.replace(hour=0, minute=0, second=0, microsecond=0).astimezone(UTC)
 
 
 def _session_secret() -> str:
@@ -754,19 +765,19 @@ async def performance() -> dict[str, object]:
         equity_points = await state.equity_tracker.history(
             state.trading_mode.value, limit=5000
         )
-        utc_day_start = datetime.now(UTC).replace(hour=0, minute=0, second=0, microsecond=0)
+        day_start_utc = _vietnam_day_start_utc()
         day_start_point = next(
             (
                 point
                 for point in equity_points
-                if datetime.fromisoformat(str(point["taken_at"])) >= utc_day_start
+                if datetime.fromisoformat(str(point["taken_at"])) >= day_start_utc
             ),
             None,
         )
         if day_start_point is not None:
             performance.daily_opening_equity = _float(day_start_point.get("equity"))
             performance.daily_pnl = performance.equity - performance.daily_opening_equity
-            performance.daily_started_at = utc_day_start
+            performance.daily_started_at = day_start_utc
         lifecycle_events = await state.storage.lifecycle_analytics_events(
             mode=state.trading_mode.value, limit=5000
         )
