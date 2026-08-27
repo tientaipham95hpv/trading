@@ -64,7 +64,7 @@ export function AuthGate({ children }: { children: ReactNode }) {
         <div className="mb-5 flex h-11 w-11 items-center justify-center rounded-xl bg-[rgba(59,130,246,0.12)] text-[var(--color-info)]">
           <Shield size={22} />
         </div>
-        <h1 className="text-xl font-bold">Đăng nhập Trading Control</h1>
+        <h1 className="text-xl font-bold">Đăng nhập Trading Bot</h1>
         <p className="mt-2 text-sm text-[var(--text-muted)]">
           Nhập mật khẩu vận hành. Phiên đăng nhập được bảo vệ bằng cookie HttpOnly.
         </p>

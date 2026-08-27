@@ -73,7 +73,7 @@ private struct LoginView: View {
                     .symbolRenderingMode(.palette)
                     .foregroundStyle(.cyan, .blue.opacity(0.35))
                 VStack(spacing: 8) {
-                    Text("CineViet Trading")
+                    Text("Trading Bot")
                         .font(.largeTitle.bold())
                     Text("Terminal giao dịch thuật toán")
                         .foregroundStyle(.secondary)

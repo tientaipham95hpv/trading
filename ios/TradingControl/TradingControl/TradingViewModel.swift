@@ -82,7 +82,7 @@ public final class TradingViewModel: ObservableObject {
         if let refreshToken = authStore.loadRefreshToken(), !refreshToken.isEmpty {
             do {
                 let unlocked = try await biometricGate.authorizeSensitiveAction(
-                    reason: "Xác thực để mở CineViet Trading."
+                    reason: "Xác thực để mở Trading Bot."
                 )
                 guard unlocked else { return }
                 let response = try await api.refreshSession(refreshToken: refreshToken)

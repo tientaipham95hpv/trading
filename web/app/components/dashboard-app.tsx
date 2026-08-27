@@ -389,7 +389,7 @@ function DashboardContent({ page }: { page: PageKey }) {
             <Bot size={18} className="text-white" />
           </div>
           <div className="min-w-0">
-            <span className="block truncate text-sm font-bold tracking-tight text-[var(--text-primary)]">Terminal Thuật toán</span>
+            <span className="block truncate text-sm font-bold tracking-tight text-[var(--text-primary)]">Trading Bot</span>
             <span className="block text-[10px] text-[var(--text-muted)]">Giao dịch Crypto</span>
           </div>
         </div>
@@ -619,7 +619,7 @@ function DashboardContent({ page }: { page: PageKey }) {
             <div className="flex items-center justify-between border-b border-[var(--border-default)] px-4 py-3">
               <div>
                 <h2 className="text-sm font-bold">Tất cả chức năng</h2>
-                <p className="mt-0.5 text-xs text-[var(--text-muted)]">Terminal giao dịch thuật toán</p>
+                <p className="mt-0.5 text-xs text-[var(--text-muted)]">Trading Bot · Giao dịch thuật toán</p>
               </div>
               <button className="sidebar-icon-btn" aria-label="Đóng menu" onClick={() => setMobileMenuOpen(false)} type="button"><X size={17} /></button>
             </div>
