@@ -1,6 +1,10 @@
 import asyncio
+import base64
+import hashlib
+import hmac
 import json
 import secrets
+import time
 import uuid
 from datetime import UTC, datetime
 from typing import Annotated
@@ -9,9 +13,11 @@ import httpx
 import websockets
 from fastapi import (
     APIRouter,
+    Body,
     Depends,
     HTTPException,
     Query,
+    Response,
     WebSocket,
     WebSocketDisconnect,
     WebSocketException,
@@ -46,6 +52,38 @@ from app.services.exit_analytics import (
     normalize_exchange_closes,
 )
 
+AUTH_COOKIE_NAME = "trading_operator_session"
+
+
+def _session_secret() -> str:
+    return state.settings.api_auth_token.strip()
+
+
+def _issue_session() -> str:
+    expires_at = int(time.time()) + state.settings.auth_session_ttl_seconds
+    nonce = secrets.token_urlsafe(18)
+    payload = f"{expires_at}.{nonce}"
+    signature = hmac.new(
+        _session_secret().encode(), payload.encode(), hashlib.sha256
+    ).digest()
+    encoded_signature = base64.urlsafe_b64encode(signature).decode().rstrip("=")
+    return f"{payload}.{encoded_signature}"
+
+
+def _valid_session(candidate: str) -> bool:
+    try:
+        expires_at_raw, nonce, supplied_signature = candidate.split(".", 2)
+        expires_at = int(expires_at_raw)
+    except (TypeError, ValueError):
+        return False
+    if expires_at < int(time.time()) or not nonce or not _session_secret():
+        return False
+    payload = f"{expires_at}.{nonce}"
+    expected = base64.urlsafe_b64encode(
+        hmac.new(_session_secret().encode(), payload.encode(), hashlib.sha256).digest()
+    ).decode().rstrip("=")
+    return secrets.compare_digest(supplied_signature, expected)
+
 
 def require_api_auth(connection: HTTPConnection) -> None:
     """Protect all operator APIs and WebSockets with one bearer token."""
@@ -56,10 +94,12 @@ def require_api_auth(connection: HTTPConnection) -> None:
     if not expected and runtime_settings.app_env.lower() != "production":
         return
 
+    session = connection.cookies.get(AUTH_COOKIE_NAME, "")
+    if _valid_session(session):
+        return
+
     authorization = connection.headers.get("authorization", "")
     candidate = authorization[7:].strip() if authorization.lower().startswith("bearer ") else ""
-    if connection.scope["type"] == "websocket" and not candidate:
-        candidate = connection.query_params.get("access_token", "")
 
     if expected and candidate and secrets.compare_digest(candidate, expected):
         return
@@ -73,6 +113,34 @@ def require_api_auth(connection: HTTPConnection) -> None:
 
 
 router = APIRouter(prefix="/api", dependencies=[Depends(require_api_auth)])
+auth_router = APIRouter(prefix="/api/auth")
+
+
+@auth_router.post("/login")
+async def login(
+    response: Response,
+    password: Annotated[str, Body(embed=True, min_length=1, max_length=256)],
+) -> dict[str, object]:
+    settings = state.settings
+    expected = settings.operator_password.strip() or settings.api_auth_token.strip()
+    if not expected or not secrets.compare_digest(password, expected):
+        raise HTTPException(status_code=401, detail="Mật khẩu vận hành không hợp lệ")
+    response.set_cookie(
+        AUTH_COOKIE_NAME,
+        _issue_session(),
+        max_age=settings.auth_session_ttl_seconds,
+        httponly=True,
+        secure=settings.app_env.lower() == "production",
+        samesite="strict",
+        path="/",
+    )
+    return {"authenticated": True, "expires_in": settings.auth_session_ttl_seconds}
+
+
+@auth_router.post("/logout")
+async def logout(response: Response) -> dict[str, bool]:
+    response.delete_cookie(AUTH_COOKIE_NAME, path="/", samesite="strict")
+    return {"authenticated": False}
 
 
 def _ai_config_response() -> AIShadowConfigResponse:
@@ -786,9 +854,30 @@ async def update_settings(settings: BotSettings) -> BotSettings:
 async def bot_start() -> dict[str, object]:
     if state.safe_mode:
         return {"bot_state": state.bot_state, "accepted": False, "reason": state.safe_mode_reason}
+    if state.emergency_stop.active:
+        return {
+            "bot_state": state.bot_state,
+            "accepted": False,
+            "reason": state.emergency_stop.reason or "Emergency Stop đang bật",
+        }
+    snapshot = state._active_exchange().snapshot_cache
+    if snapshot.connection.value != "CONNECTED":
+        return {
+            "bot_state": state.bot_state,
+            "accepted": False,
+            "reason": "Exchange chưa CONNECTED",
+        }
+    if state.trading_mode == TradingMode.LIVE:
+        readiness = _live_readiness()
+        if not readiness.allowed:
+            return {
+                "bot_state": state.bot_state,
+                "accepted": False,
+                "reason": "; ".join(readiness.blockers),
+            }
     state.bot_state = BotState.RUNNING
     await state.storage.log("Bot đã start", {"mode": state.trading_mode.value})
-    return {"bot_state": state.bot_state}
+    return {"bot_state": state.bot_state, "accepted": True}
 
 
 @router.post("/bot/auto/run-once")
@@ -1178,6 +1267,12 @@ async def websocket_kline(websocket: WebSocket, channel: str) -> None:
                 ValueError,
             ):
                 await asyncio.sleep(1.0)
+            except RuntimeError as exc:
+                if "close message has been sent" in str(exc).lower():
+                    return
+                raise
+    except WebSocketDisconnect:
+        return
     finally:
         if websocket.client_state.name != "DISCONNECTED":
             try:

@@ -25,6 +25,14 @@ public actor TradingAPI {
         try await get("/api/status")
     }
 
+    public func login(password: String) async throws -> AuthResponse {
+        try await send("/api/auth/login", method: "POST", body: LoginRequest(password: password), authenticated: false)
+    }
+
+    public func logout() async throws -> AuthResponse {
+        try await post("/api/auth/logout", authenticated: false)
+    }
+
     public func markets() async throws -> [ThiTruong] {
         let response: DanhSachPhanHoi<ThiTruong> = try await get("/api/markets")
         return response.items
@@ -46,6 +54,11 @@ public actor TradingAPI {
 
     public func trades() async throws -> [LenhDaChot] {
         let response: DanhSachPhanHoi<LenhDaChot> = try await get("/api/trades")
+        return response.items
+    }
+
+    public func journal(category: String = "ALL", limit: Int = 100) async throws -> [NhatKy] {
+        let response: DanhSachPhanHoi<NhatKy> = try await get("/api/journal?category=\(category)&limit=\(limit)")
         return response.items
     }
 
@@ -123,22 +136,22 @@ public actor TradingAPI {
         return try decoder.decode(T.self, from: data)
     }
 
-    private func post<T: Decodable>(_ path: String) async throws -> T {
-        let request = try request(path: path, method: "POST")
+    private func post<T: Decodable>(_ path: String, authenticated: Bool = true) async throws -> T {
+        let request = try request(path: path, method: "POST", authenticated: authenticated)
         let (data, response) = try await session.data(for: request)
         try validate(response: response, data: data)
         return try decoder.decode(T.self, from: data)
     }
 
-    private func send<Body: Encodable, Output: Decodable>(_ path: String, method: String, body: Body) async throws -> Output {
-        var request = try request(path: path, method: method)
+    private func send<Body: Encodable, Output: Decodable>(_ path: String, method: String, body: Body, authenticated: Bool = true) async throws -> Output {
+        var request = try request(path: path, method: method, authenticated: authenticated)
         request.httpBody = try encoder.encode(body)
         let (data, response) = try await session.data(for: request)
         try validate(response: response, data: data)
         return try decoder.decode(Output.self, from: data)
     }
 
-    private func request(path: String, method: String) throws -> URLRequest {
+    private func request(path: String, method: String, authenticated: Bool = true) throws -> URLRequest {
         guard let url = URL(string: path, relativeTo: baseURL) else {
             throw URLError(.badURL)
         }
@@ -146,7 +159,7 @@ public actor TradingAPI {
         request.httpMethod = method
         request.setValue("application/json", forHTTPHeaderField: "content-type")
         request.setValue("application/json", forHTTPHeaderField: "accept")
-        if let token = authStore.loadToken(), !token.isEmpty {
+        if authenticated, let token = authStore.loadToken(), !token.isEmpty {
             request.setValue("Bearer \(token)", forHTTPHeaderField: "authorization")
         }
         return request
@@ -157,6 +170,18 @@ public actor TradingAPI {
             let message = String(data: data, encoding: .utf8) ?? "Backend trả lỗi không đọc được"
             throw TradingAPIError.requestFailed(message)
         }
+    }
+}
+
+private struct LoginRequest: Encodable { let password: String }
+
+public struct AuthResponse: Codable {
+    public let authenticated: Bool
+    public let expiresIn: Int?
+
+    enum CodingKeys: String, CodingKey {
+        case authenticated
+        case expiresIn = "expires_in"
     }
 }
 
@@ -185,9 +210,9 @@ public enum TradingControlAction: String, CaseIterable, Identifiable {
 
     public var title: String {
         switch self {
-        case .pauseNewTrades: return "Pause New Trades"
-        case .cancelOrders: return "Cancel Orders"
-        case .closeAll: return "Close All"
+        case .pauseNewTrades: return "Khóa lệnh mới"
+        case .cancelOrders: return "Hủy lệnh đang chờ"
+        case .closeAll: return "Đóng toàn bộ vị thế"
         }
     }
 }

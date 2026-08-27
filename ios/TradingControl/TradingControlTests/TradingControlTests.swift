@@ -123,3 +123,17 @@ import Testing
     let settings = try JSONDecoder().decode(CaiDatBot.self, from: data)
     #expect(settings.paperInitialBalance == 5000)
 }
+
+@Test func botControlDecodesBackendRejectionReason() throws {
+    let data = #"{"bot_state":"STOPPED","accepted":false,"reason":"Exchange chưa CONNECTED"}"#.data(using: .utf8)!
+    let response = try JSONDecoder().decode(PhanHoiBot.self, from: data)
+    #expect(response.accepted == false)
+    #expect(response.reason == "Exchange chưa CONNECTED")
+}
+
+@Test func loginResponseDecodesCookieSessionLifetime() throws {
+    let data = #"{"authenticated":true,"expires_in":43200}"#.data(using: .utf8)!
+    let response = try JSONDecoder().decode(AuthResponse.self, from: data)
+    #expect(response.authenticated)
+    #expect(response.expiresIn == 43_200)
+}

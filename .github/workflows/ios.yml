@@ -1,6 +1,7 @@
 name: iOS Build & Test
 
 on:
+  workflow_dispatch:
   push:
     branches: [main]
     paths:
@@ -22,6 +23,17 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Select Xcode
+        run: |
+          if [ -d /Applications/Xcode_16.4.app ]; then
+            sudo xcode-select -s /Applications/Xcode_16.4.app/Contents/Developer
+          elif [ -d /Applications/Xcode_16.3.app ]; then
+            sudo xcode-select -s /Applications/Xcode_16.3.app/Contents/Developer
+          else
+            sudo xcode-select -s /Applications/Xcode.app/Contents/Developer
+          fi
+          xcodebuild -version
+
       - name: Install XcodeGen
         run: brew install xcodegen
 
@@ -30,20 +42,36 @@ jobs:
           cd TradingControlApp
           xcodegen generate
 
-      - name: Build (iOS Simulator)
+      - name: Build Debug (iPhone 390pt)
         run: |
+          set -o pipefail
           xcodebuild \
             -project TradingControlApp/TradingControlApp.xcodeproj \
             -scheme TradingControlApp \
+            -configuration Debug \
             -sdk iphonesimulator \
             -destination 'platform=iOS Simulator,name=iPhone 16 Pro' \
-            clean build 2>&1 | xcpretty
+            clean build
 
-      - name: Test (iOS Simulator)
+      - name: Test (iPhone 390pt)
         run: |
+          set -o pipefail
           xcodebuild \
             -project TradingControlApp/TradingControlApp.xcodeproj \
             -scheme TradingControlApp \
+            -configuration Debug \
             -sdk iphonesimulator \
             -destination 'platform=iOS Simulator,name=iPhone 16 Pro' \
-            test 2>&1 | xcpretty
+            test
+
+      - name: Build Release (generic simulator)
+        run: |
+          set -o pipefail
+          xcodebuild \
+            -project TradingControlApp/TradingControlApp.xcodeproj \
+            -scheme TradingControlApp \
+            -configuration Release \
+            -sdk iphonesimulator \
+            -destination 'generic/platform=iOS Simulator' \
+            CODE_SIGNING_ALLOWED=NO \
+            build

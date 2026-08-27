@@ -8,6 +8,7 @@ public final class TradingViewModel: ObservableObject {
     @Published public private(set) var scanner: [TinHieuQuet] = []
     @Published public private(set) var positions: [ViThe] = []
     @Published public private(set) var trades: [LenhDaChot] = []
+    @Published public private(set) var journal: [NhatKy] = []
     @Published public private(set) var performance: HieuSuat?
     @Published public private(set) var operations: OperationsStatus?
     @Published public private(set) var latestBacktest: BacktestReport?
@@ -18,6 +19,9 @@ public final class TradingViewModel: ObservableObject {
     @Published public private(set) var isRefreshing = false
     @Published public var errorMessage: String?
     @Published public var tokenDraft: String = ""
+    @Published public var passwordDraft: String = ""
+    @Published public private(set) var isAuthenticated = false
+    @Published public private(set) var isAuthenticating = false
 
     private let api: TradingAPI
     private let authStore: SecureAuthStore
@@ -73,6 +77,12 @@ public final class TradingViewModel: ObservableObject {
         }
     }
 
+    public func restoreSession() async {
+        await refreshAll()
+        if isAuthenticated { start() }
+        else { errorMessage = nil }
+    }
+
     public func refreshAll() async {
         isRefreshing = true
         defer { isRefreshing = false }
@@ -84,6 +94,7 @@ public final class TradingViewModel: ObservableObject {
             async let nextScanner = api.scanner(timeframes: "15m,1h,4h")
             async let nextPositions = api.positions()
             async let nextTrades = api.trades()
+            async let nextJournal = api.journal()
             async let nextPerformance = api.performance()
             async let nextOperations = api.operations()
             async let nextExchange = api.exchange()
@@ -95,15 +106,47 @@ public final class TradingViewModel: ObservableObject {
             scanner = try await nextScanner
             positions = try await nextPositions
             trades = try await nextTrades
+            journal = try await nextJournal
             performance = try await nextPerformance
             operations = try await nextOperations
             exchange = try await nextExchange
             settings = try await nextSettings
             latestBacktest = await nextBacktest
             errorMessage = nil
+            isAuthenticated = true
         } catch {
             errorMessage = error.localizedDescription
+            if error.localizedDescription.contains("401") || error.localizedDescription.localizedCaseInsensitiveContains("token") {
+                isAuthenticated = false
+            }
         }
+    }
+
+    public func login() async {
+        let password = passwordDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !password.isEmpty else {
+            errorMessage = "Vui lòng nhập mật khẩu vận hành."
+            return
+        }
+        isAuthenticating = true
+        defer { isAuthenticating = false }
+        do {
+            let response = try await api.login(password: password)
+            isAuthenticated = response.authenticated
+            passwordDraft = ""
+            await refreshAll()
+            if isAuthenticated { start() }
+        } catch {
+            errorMessage = "Không thể đăng nhập. Hãy kiểm tra mật khẩu và kết nối mạng."
+        }
+    }
+
+    public func logout() async {
+        _ = try? await api.logout()
+        isAuthenticated = false
+        refreshTask?.cancel()
+        systemRealtime.close()
+        scannerRealtime.close()
     }
 
     public func saveToken() {
@@ -125,7 +168,11 @@ public final class TradingViewModel: ObservableObject {
             guard allowed else { return }
             let response = try await api.controlBot(action)
             status = try await api.status()
-            errorMessage = "Bot đã chuyển sang \(viBotState(response.botState))."
+            if response.accepted == false {
+                errorMessage = response.reason ?? "Backend từ chối thao tác điều khiển bot."
+            } else {
+                errorMessage = "Bot đã chuyển sang \(viBotState(response.botState))."
+            }
         } catch {
             errorMessage = error.localizedDescription
         }

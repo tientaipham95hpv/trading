@@ -1,10 +1,11 @@
 from fastapi import FastAPI
 
-from app.api.routes import configure_realtime, router
+from app.api.routes import auth_router, configure_realtime, router
 from app.services.app_state import state
 from app.services.exchange import ExchangeError
 
 app = FastAPI(title="Trading Automation API", version="1.0.0")
+app.include_router(auth_router)
 app.include_router(router)
 
 

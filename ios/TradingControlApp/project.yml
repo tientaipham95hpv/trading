@@ -29,3 +29,26 @@ targets:
           SWIFT_OPTIMIZATION_LEVEL: "-Onone"
         Release:
           SWIFT_OPTIMIZATION_LEVEL: "-O"
+  TradingControlAppTests:
+    type: bundle.unit-test
+    platform: iOS
+    deploymentTarget: "17.0"
+    sources:
+      - ../TradingControl/TradingControlTests
+    dependencies:
+      - package: TradingControl
+        product: TradingControl
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: live.cineviet.tradingcontrol.tests
+        SWIFT_VERSION: "5.0"
+schemes:
+  TradingControlApp:
+    build:
+      targets:
+        TradingControlApp: all
+        TradingControlAppTests: [test]
+    test:
+      gatherCoverageData: true
+      targets:
+        - TradingControlAppTests

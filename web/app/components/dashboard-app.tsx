@@ -493,9 +493,11 @@ function DashboardContent({ page }: { page: PageKey }) {
               <button
                 className="sidebar-icon-btn"
                 onClick={() => {
-                  api.clearToken();
-                  router.push("/");
-                  router.refresh();
+                  void api.logout().finally(() => {
+                    router.push("/");
+                    router.refresh();
+                    window.location.reload();
+                  });
                 }}
                 title="Đăng xuất"
                 type="button"
@@ -514,6 +516,9 @@ function DashboardContent({ page }: { page: PageKey }) {
               status={status}
               wsState={wsState}
             />
+            <div className="mt-2 border-t border-[var(--border-default)] pt-2 lg:hidden">
+              <BotControls mobile onDone={refresh} status={status} />
+            </div>
           </div>
         </header>
 
@@ -1134,6 +1139,9 @@ function MarketChart({
 
   useEffect(() => {
     let alive = true;
+    if (!effectiveSymbol) {
+      return () => { alive = false; };
+    }
     async function load() {
       setBusy(true);
       try {
@@ -1346,6 +1354,7 @@ function MarketChart({
     let stopped = false;
     let retry: number | undefined;
     let attempt = 0;
+    if (!effectiveSymbol) return undefined;
     const connect = () => {
       const socket = new WebSocket(wsUrl(`kline:${effectiveSymbol}:${interval}`));
       socketRef.current = socket;
@@ -3591,17 +3600,27 @@ function SettingsPage({
 /* ──────────────────────────── BOT CONTROLS ──────────────────────────── */
 
 function BotControls({
+  mobile = false,
   onDone,
   status,
 }: {
+  mobile?: boolean;
   onDone: () => Promise<void>;
   status: StatusPayload | null;
 }) {
   const [busy, setBusy] = useState<string | null>(null);
   async function act(action: "start" | "pause" | "stop") {
+    if (
+      action === "start" &&
+      status?.mode === "LIVE" &&
+      !window.confirm("Bật bot ở chế độ LIVE và cho phép sử dụng tiền thật?")
+    ) return;
     setBusy(action);
     try {
-      await api.bot(action);
+      const response = await api.bot(action);
+      if (response.accepted === false) {
+        window.alert(response.reason || "Backend từ chối thao tác này.");
+      }
       await onDone();
     } finally {
       setBusy(null);
@@ -3656,6 +3675,98 @@ function BotControls({
   const disabled = busy !== null;
   const canResetSafeMode =
     status?.bot_state === "SAFE_MODE" || status?.safe_mode === true;
+  if (mobile) {
+    const state = status?.bot_state ?? "STOPPED";
+    const stateLabel =
+      state === "RUNNING"
+        ? "Đang chạy"
+        : state === "PAUSED"
+          ? "Tạm dừng"
+          : state === "SAFE_MODE"
+            ? "Chế độ an toàn"
+            : "Đã dừng";
+    const stateTone =
+      state === "RUNNING"
+        ? "bg-[var(--color-profit)] shadow-[0_0_8px_rgba(34,197,94,0.55)]"
+        : state === "SAFE_MODE"
+          ? "bg-[var(--color-warning)]"
+          : "bg-[var(--text-muted)]";
+    return (
+      <div className="overflow-hidden rounded-xl border border-[var(--border-default)] bg-[linear-gradient(135deg,rgba(255,255,255,0.045),rgba(255,255,255,0.015))] shadow-[0_8px_24px_rgba(0,0,0,0.16)]">
+        <div className="flex items-center justify-between gap-3 px-3 py-2.5">
+          <div className="flex min-w-0 items-center gap-2.5">
+            <span className="grid h-8 w-8 shrink-0 place-items-center rounded-lg bg-[rgba(59,130,246,0.1)] text-[var(--color-accent)]">
+              <Bot size={16} />
+            </span>
+            <div className="min-w-0">
+              <p className="text-[10px] font-bold uppercase tracking-[0.14em] text-[var(--text-muted)]">Bot giao dịch</p>
+              <p className="mt-0.5 flex items-center gap-1.5 text-xs font-semibold text-[var(--text-secondary)]">
+                <span className={`h-1.5 w-1.5 rounded-full ${stateTone}`} />
+                {stateLabel}
+              </p>
+            </div>
+          </div>
+          <ModeBadge
+            current={normalizeMode(status?.mode)}
+            liveAllowed={Boolean(status?.live_readiness?.allowed)}
+            onDone={onDone}
+          />
+        </div>
+
+        <div className="grid grid-cols-[1fr_1fr_1fr_auto] gap-1.5 border-t border-[var(--border-default)] p-2">
+          <MobileBotAction
+            busy={busy === "start"}
+            disabled={disabled}
+            icon={<Play size={14} />}
+            label="Chạy"
+            onClick={() => void act("start")}
+            tone="safe"
+          />
+          <MobileBotAction
+            busy={busy === "pause"}
+            disabled={disabled}
+            icon={<Pause size={14} />}
+            label="Tạm dừng"
+            onClick={() => void act("pause")}
+            tone="warning"
+          />
+          <MobileBotAction
+            busy={busy === "stop"}
+            disabled={disabled}
+            icon={<Square size={13} />}
+            label="Dừng"
+            onClick={() => void act("stop")}
+            tone="neutral"
+          />
+          <MobileBotAction
+            busy={busy === "emergency"}
+            disabled={disabled}
+            icon={<ShieldAlert size={15} />}
+            label="Khẩn cấp"
+            onClick={() => void emergency()}
+            tone="danger"
+          />
+        </div>
+
+        <details className="group border-t border-[var(--border-default)]">
+          <summary className="flex cursor-pointer list-none items-center justify-center gap-1.5 py-2 text-[10px] font-semibold text-[var(--text-muted)] transition hover:text-[var(--text-secondary)] [&::-webkit-details-marker]:hidden">
+            Quản lý lệnh
+            <ChevronRight className="transition-transform group-open:rotate-90" size={12} />
+          </summary>
+          <div className="grid grid-cols-3 gap-1.5 px-2 pb-2">
+            <MobileBotAction busy={busy === "pause-new-trades"} disabled={disabled} icon={<ShieldX size={14} />} label="Khóa lệnh mới" onClick={() => void control("pause-new-trades")} tone="warning" />
+            <MobileBotAction busy={busy === "cancel-orders"} disabled={disabled} icon={<XCircle size={14} />} label="Hủy order" onClick={() => void control("cancel-orders")} tone="warning" />
+            <MobileBotAction busy={busy === "close-all"} disabled={disabled} icon={<Trash2 size={14} />} label="Đóng vị thế" onClick={() => void control("close-all")} tone="danger" />
+            {canResetSafeMode && (
+              <div className="col-span-3">
+                <MobileBotAction busy={busy === "reset-safe-mode"} disabled={disabled} icon={<RefreshCw size={14} />} label="Khôi phục SAFE_MODE" onClick={() => void resetSafeMode()} tone="warning" />
+              </div>
+            )}
+          </div>
+        </details>
+      </div>
+    );
+  }
   return (
     <div className="flex flex-wrap gap-1">
       <div className="flex rounded-lg border border-[var(--border-default)] bg-[rgba(255,255,255,0.03)] p-0.5">
@@ -3739,6 +3850,40 @@ function BotControls({
         </ActionIcon>
       </div>
     </div>
+  );
+}
+
+function MobileBotAction({
+  busy,
+  disabled,
+  icon,
+  label,
+  onClick,
+  tone,
+}: {
+  busy: boolean;
+  disabled: boolean;
+  icon: React.ReactNode;
+  label: string;
+  onClick: () => void;
+  tone: "safe" | "warning" | "neutral" | "danger";
+}) {
+  const tones = {
+    safe: "text-[var(--color-profit)] hover:bg-[rgba(34,197,94,0.1)]",
+    warning: "text-[var(--color-warning)] hover:bg-[rgba(245,158,11,0.1)]",
+    neutral: "text-[var(--text-secondary)] hover:bg-[rgba(255,255,255,0.06)]",
+    danger: "border-[rgba(239,68,68,0.2)] bg-[rgba(239,68,68,0.08)] text-[var(--color-loss)] hover:bg-[rgba(239,68,68,0.14)]",
+  };
+  return (
+    <button
+      className={`flex min-h-10 items-center justify-center gap-1 rounded-lg border border-transparent px-2 text-[10px] font-bold transition disabled:cursor-not-allowed disabled:opacity-40 ${tones[tone]}`}
+      disabled={disabled}
+      onClick={onClick}
+      type="button"
+    >
+      {busy ? <RefreshCw className="animate-spin" size={13} /> : icon}
+      <span className="whitespace-nowrap">{label}</span>
+    </button>
   );
 }
 
@@ -4249,6 +4394,7 @@ function ModeBadge({
     if (busy) return;
     const next = current === "DEMO" ? "LIVE" : "DEMO";
     if (next === "LIVE" && !liveAllowed) return;
+    if (next === "LIVE" && !window.confirm("Chuyển sang LIVE sẽ sử dụng tiền thật. Tiếp tục?")) return;
     setBusy(true);
     try {
       const result = await api.mode(next);
@@ -4259,7 +4405,7 @@ function ModeBadge({
       setBusy(false);
     }
   }
-  const canToggle = current === "DEMO" || liveAllowed;
+  const canToggle = current === "LIVE" || liveAllowed;
   return (
     <button
       className={`mode-badge ${badgeClass} ${canToggle ? "cursor-pointer hover:opacity-80" : ""}`}

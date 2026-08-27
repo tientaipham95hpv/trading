@@ -31,6 +31,7 @@ class JournalStorage:
 @pytest.fixture
 def api_app() -> FastAPI:
     app = FastAPI()
+    app.include_router(routes.auth_router)
     app.include_router(routes.router)
     return app
 
@@ -116,3 +117,74 @@ def test_websocket_requires_token_and_accepts_valid_bearer(monkeypatch, api_app:
             "channel": "status",
             "data": {"ok": True},
         }
+
+
+@pytest.mark.asyncio
+async def test_login_issues_httponly_cookie_that_authenticates_api(
+    monkeypatch, api_app: FastAPI
+) -> None:
+    monkeypatch.setattr(
+        routes,
+        "state",
+        SimpleNamespace(
+            settings=SimpleNamespace(
+                app_env="production",
+                api_auth_token="signing-secret",
+                operator_password="memorable-password",
+                auth_session_ttl_seconds=3600,
+            ),
+            storage=JournalStorage(),
+        ),
+    )
+    transport = httpx.ASGITransport(app=api_app)
+    async with httpx.AsyncClient(transport=transport, base_url="https://test") as client:
+        rejected = await client.post("/api/auth/login", json={"password": "wrong"})
+        accepted = await client.post(
+            "/api/auth/login", json={"password": "memorable-password"}
+        )
+        journal = await client.get("/api/journal")
+
+    assert rejected.status_code == 401
+    assert accepted.status_code == 200
+    cookie = accepted.headers["set-cookie"].lower()
+    assert "httponly" in cookie
+    assert "secure" in cookie
+    assert "samesite=strict" in cookie
+    assert journal.status_code == 200
+
+
+def test_websocket_accepts_authenticated_cookie(monkeypatch, api_app: FastAPI) -> None:
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        from fastapi.testclient import TestClient
+
+    class Realtime:
+        async def subscribe(self, channel: str):
+            import asyncio
+
+            queue = asyncio.Queue()
+            await queue.put({"channel": channel, "data": {"ok": True}})
+            return queue
+
+        async def unsubscribe(self, channel: str, queue) -> None:
+            return None
+
+    monkeypatch.setattr(
+        routes,
+        "state",
+        SimpleNamespace(
+            settings=SimpleNamespace(
+                app_env="local",
+                api_auth_token="signing-secret",
+                operator_password="memorable-password",
+                auth_session_ttl_seconds=3600,
+            ),
+            realtime=Realtime(),
+        ),
+    )
+    client = TestClient(api_app)
+    assert client.post(
+        "/api/auth/login", json={"password": "memorable-password"}
+    ).status_code == 200
+    with client.websocket_connect("/api/ws/status") as websocket:
+        assert websocket.receive_json()["data"] == {"ok": True}

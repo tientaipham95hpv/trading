@@ -568,9 +568,13 @@ public struct DanhSachPhanHoi<T: Codable>: Codable {
 
 public struct PhanHoiBot: Codable {
     public let botState: String
+    public let accepted: Bool?
+    public let reason: String?
 
     enum CodingKeys: String, CodingKey {
         case botState = "bot_state"
+        case accepted
+        case reason
     }
 }
 

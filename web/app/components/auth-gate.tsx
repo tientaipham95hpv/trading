@@ -8,7 +8,7 @@ import { api } from "./api";
 export function AuthGate({ children }: { children: ReactNode }) {
   const [checked, setChecked] = useState(false);
   const [authenticated, setAuthenticated] = useState(false);
-  const [token, setToken] = useState("");
+  const [password, setPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
 
@@ -20,16 +20,10 @@ export function AuthGate({ children }: { children: ReactNode }) {
     window.addEventListener(api.authExpiredEvent, expire);
 
     async function validateSession() {
-      if (!api.hasToken()) {
-        if (active) setChecked(true);
-        return;
-      }
       try {
         await api.status();
         if (active) setAuthenticated(true);
-      } catch {
-        api.clearToken();
-      } finally {
+      } catch { /* login form remains visible */ } finally {
         if (active) setChecked(true);
       }
     }
@@ -42,16 +36,15 @@ export function AuthGate({ children }: { children: ReactNode }) {
 
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (!token.trim()) return;
+    if (!password) return;
     setSubmitting(true);
     setError(null);
-    api.setToken(token);
     try {
+      await api.login(password);
       await api.status();
       setAuthenticated(true);
     } catch {
-      api.clearToken();
-      setError("Token không hợp lệ hoặc máy chủ chưa sẵn sàng.");
+      setError("Mật khẩu không hợp lệ hoặc máy chủ chưa sẵn sàng.");
     } finally {
       setSubmitting(false);
     }
@@ -73,28 +66,28 @@ export function AuthGate({ children }: { children: ReactNode }) {
         </div>
         <h1 className="text-xl font-bold">Đăng nhập Trading Control</h1>
         <p className="mt-2 text-sm text-[var(--text-muted)]">
-          Nhập token vận hành. Token chỉ được giữ trong phiên trình duyệt này.
+          Nhập mật khẩu vận hành. Phiên đăng nhập được bảo vệ bằng cookie HttpOnly.
         </p>
         <label
           className="mt-5 block text-xs font-bold uppercase tracking-wide text-[var(--text-secondary)]"
-          htmlFor="operator-token"
+          htmlFor="operator-password"
         >
-          Token truy cập
+          Mật khẩu
         </label>
         <input
           autoComplete="current-password"
           autoFocus
           className="field mt-2 w-full"
-          id="operator-token"
-          onChange={(event) => setToken(event.target.value)}
-          placeholder="Dán token tại đây"
+          id="operator-password"
+          onChange={(event) => setPassword(event.target.value)}
+          placeholder="Nhập mật khẩu vận hành"
           type="password"
-          value={token}
+          value={password}
         />
         {error ? <p className="mt-3 text-sm text-[var(--color-loss)]">{error}</p> : null}
         <button
           className="btn-primary mt-5 w-full"
-          disabled={submitting || !token.trim()}
+          disabled={submitting || !password}
           type="submit"
         >
           {submitting ? "Đang xác thực…" : "Đăng nhập"}
