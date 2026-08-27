@@ -1440,12 +1440,13 @@ private struct OrdersView: View {
     @ObservedObject var model: TradingViewModel
     @State private var query = ""
     @State private var side = "TẤT CẢ"
-    @State private var status = "TẤT CẢ"
+    @State private var kind = "TẤT CẢ"
 
     private var rows: [ExchangeOrder] {
         (model.exchange?.orders ?? []).filter {
             (query.isEmpty || $0.symbol.localizedCaseInsensitiveContains(query)) &&
-            (side == "TẤT CẢ" || $0.side == side) && (status == "TẤT CẢ" || $0.status == status)
+            (side == "TẤT CẢ" || $0.side == side) &&
+            (kind == "TẤT CẢ" || (kind == "BẢO VỆ" ? $0.reduceOnly : !$0.reduceOnly))
         }
     }
 
@@ -1455,12 +1456,12 @@ private struct OrdersView: View {
                 Picker("Hướng", selection: $side) {
                     Text("Tất cả").tag("TẤT CẢ"); Text("Mua").tag("BUY"); Text("Bán").tag("SELL")
                 }.pickerStyle(.segmented)
-                Picker("Trạng thái", selection: $status) {
-                    Text("Tất cả").tag("TẤT CẢ"); Text("Mới").tag("NEW"); Text("Đã khớp").tag("FILLED"); Text("Đã hủy").tag("CANCELED")
-                }
+                Picker("Loại lệnh", selection: $kind) {
+                    Text("Tất cả").tag("TẤT CẢ"); Text("Bảo vệ").tag("BẢO VỆ"); Text("Vào lệnh").tag("VÀO LỆNH")
+                }.pickerStyle(.segmented)
             }
-            Section("Lệnh đang chờ") {
-                if rows.isEmpty { EmptyContent("Không có lệnh phù hợp bộ lọc.") }
+            Section("Lệnh đang hoạt động trên Binance") {
+                if rows.isEmpty { EmptyContent("Không có lệnh đang hoạt động phù hợp bộ lọc.") }
                 ForEach(rows) { order in
                     VStack(alignment: .leading, spacing: 8) {
                         HStack {
@@ -1479,6 +1480,7 @@ private struct OrdersView: View {
         .tradingGlassList()
         .searchable(text: $query, prompt: "Lọc theo cặp giao dịch")
         .refreshable { await model.refreshAll() }
+        .overlay { if model.isRefreshing && rows.isEmpty { ProgressView("Đang tải lệnh…") } }
     }
 }
 
@@ -1487,11 +1489,25 @@ private struct StrategiesView: View {
     var body: some View {
         ScrollView {
             VStack(spacing: 14) {
+                SectionBlock(title: "Chiến lược đang chạy") {
+                    HStack {
+                        StatusChip(text: model.status?.botState == "RUNNING" ? "Đang hoạt động" : "Chưa chạy", color: model.status?.botState == "RUNNING" ? .green : .secondary)
+                        Spacer()
+                        Text(displayMode(model.status?.mode)).font(.caption.bold()).foregroundStyle(.cyan)
+                    }
+                    InfoRow(label: "Khung thời gian", value: model.settings?.scanTimeframes.joined(separator: " · ") ?? "15m · 1h · 4h")
+                    InfoRow(label: "Điểm tối thiểu", value: "\(model.settings?.minScoreToTrade ?? 0)")
+                    InfoRow(label: "R:R tối thiểu", value: number(model.status?.risk.minimumRiskReward))
+                    InfoRow(label: "Vị thế tối đa", value: "\(model.status?.risk.maxOpenPositions ?? 0)")
+                    InfoRow(label: "Danh sách theo dõi", value: "\(model.settings?.whitelist.count ?? 0) cặp")
+                }
                 if let report = model.latestBacktest {
                     StrategyCard(report.baseline, active: true)
                     if let candidate = report.candidate { StrategyCard(candidate, active: report.candidateApplied) }
                 } else {
-                    EmptyContent("Chưa có báo cáo chiến lược từ backend.")
+                    SectionBlock(title: "Backtest") {
+                        EmptyContent("Chưa có báo cáo backtest. Chiến lược phía trên vẫn lấy trực tiếp từ cấu hình production.")
+                    }
                 }
                 Text("Cấu hình chiến lược chỉ được thay đổi sau khi backtest và kiểm định trên website.")
                     .font(.footnote).foregroundStyle(.secondary).padding(.horizontal)
@@ -1522,13 +1538,7 @@ private struct StrategyCard: View {
 
 private struct AnalyticsView: View {
     @ObservedObject var model: TradingViewModel
-    private var curve: [AnalyticsPoint] {
-        var value = model.performance?.initialCapital ?? 0
-        return model.trades.reversed().enumerated().map { index, trade in
-            value += trade.netPnl
-            return AnalyticsPoint(index: index, equity: value)
-        }
-    }
+    private var curve: [EquityPoint] { model.equityHistory }
     var body: some View {
         ScrollView {
             VStack(spacing: 14) {
@@ -1536,9 +1546,9 @@ private struct AnalyticsView: View {
                     if curve.isEmpty { EmptyContent("Chưa đủ giao dịch để vẽ đường cong vốn.") }
                     else {
                         Chart(curve) { point in
-                            AreaMark(x: .value("Giao dịch", point.index), y: .value("Vốn", point.equity))
+                            AreaMark(x: .value("Thời gian", point.takenAt), y: .value("Vốn", point.equity))
                                 .foregroundStyle(.linearGradient(colors: [.cyan.opacity(0.35), .clear], startPoint: .top, endPoint: .bottom))
-                            LineMark(x: .value("Giao dịch", point.index), y: .value("Vốn", point.equity)).foregroundStyle(.cyan).lineStyle(.init(lineWidth: 2))
+                            LineMark(x: .value("Thời gian", point.takenAt), y: .value("Vốn", point.equity)).foregroundStyle(.cyan).lineStyle(.init(lineWidth: 2))
                         }.frame(height: 230)
                     }
                 }
@@ -1550,6 +1560,12 @@ private struct AnalyticsView: View {
                     MetricTile(title: "Sharpe", value: number(model.performance?.sharpe), tint: .purple)
                     MetricTile(title: "Kỳ vọng", value: money(model.performance?.expectancy), tint: .blue)
                 }
+                SectionBlock(title: "Dữ liệu equity thực") {
+                    InfoRow(label: "Số mẫu", value: "\(model.equityAnalytics?.samples ?? curve.count)")
+                    InfoRow(label: "Đỉnh vốn", value: money(model.equityAnalytics?.peakEquity))
+                    InfoRow(label: "Drawdown hiện tại", value: percent(model.equityAnalytics?.currentDrawdownPercent))
+                    InfoRow(label: "Lợi nhuận theo equity", value: percent(model.equityAnalytics?.returnPercent))
+                }
             }.padding()
         }
         .navigationTitle("Phân tích")
@@ -1558,17 +1574,10 @@ private struct AnalyticsView: View {
     }
 }
 
-private struct AnalyticsPoint: Identifiable {
-    let index: Int
-    let equity: Double
-    var id: Int { index }
-}
-
 private struct RiskView: View {
     @ObservedObject var model: TradingViewModel
     private var exposure: Double {
-        guard let balance = model.exchange?.balance.marginBalance, balance > 0 else { return 0 }
-        return max(0, 1 - (model.exchange?.balance.available ?? 0) / balance)
+        model.riskDashboard?.portfolio.grossExposureFraction ?? 0
     }
     private var level: (String, Color) {
         if model.status?.safeMode == true || exposure >= 0.8 { return ("CAO", .red) }
@@ -1586,12 +1595,23 @@ private struct RiskView: View {
                     ProgressView(value: exposure).tint(level.1)
                 }
                 SectionBlock(title: "Giới hạn bảo vệ") {
-                    InfoRow(label: "Exposure", value: percent(exposure * 100))
+                    InfoRow(label: "Exposure gộp", value: percent(exposure * 100))
+                    InfoRow(label: "Exposure ròng", value: percent((model.riskDashboard?.portfolio.netExposureFraction ?? 0) * 100))
+                    InfoRow(label: "Rủi ro đang mở", value: money(model.riskDashboard?.portfolio.openRisk))
+                    InfoRow(label: "Room rủi ro còn lại", value: money(model.riskDashboard?.portfolio.openRiskRemaining))
                     InfoRow(label: "Lỗ tối đa mỗi ngày", value: percent((model.status?.risk.maxDailyLoss ?? 0) * 100))
                     InfoRow(label: "Drawdown tuần tối đa", value: percent((model.status?.risk.maxWeeklyDrawdown ?? 0) * 100))
                     InfoRow(label: "Rủi ro mỗi lệnh", value: percent((model.status?.risk.riskPerTrade ?? 0) * 100))
                     InfoRow(label: "Số vị thế tối đa", value: "\(model.status?.risk.maxOpenPositions ?? 0)")
                     InfoRow(label: "R:R tối thiểu", value: number(model.status?.risk.minimumRiskReward))
+                }
+                SectionBlock(title: "Kiểm soát danh mục") {
+                    InfoRow(label: "Chế độ", value: model.riskDashboard?.portfolio.enforcementEnabled == true ? "Đang thực thi" : "Chỉ theo dõi")
+                    InfoRow(label: "Lần kiểm tra", value: "\(model.riskDashboard?.auditSummary.total ?? 0)")
+                    InfoRow(label: "Có thể nhận lệnh mới", value: model.riskDashboard?.portfolio.wouldRejectNewEntries == true ? "Không" : "Có")
+                    ForEach(model.riskDashboard?.portfolio.reasons ?? [], id: \.self) { reason in
+                        Label(reason, systemImage: "exclamationmark.triangle.fill").font(.footnote).foregroundStyle(.yellow)
+                    }
                 }
                 if model.status?.safeMode == true {
                     Label(model.status?.safeModeReason ?? "Hệ thống đang ở chế độ an toàn.", systemImage: "exclamationmark.triangle.fill")

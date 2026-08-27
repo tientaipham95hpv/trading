@@ -132,9 +132,9 @@ def capital_risk_profile_for_mode(
         risk_per_trade=min(max(settings.risk_per_trade, 0.001), 0.0025),
         max_risk_per_trade=min(max(settings.max_risk_per_trade, 0.001), 0.0025),
         max_leverage=min(int(settings.max_leverage), 10),
-        # Validation universe remains single-position regardless of account size
-        # or a stale runtime setting.
-        max_open_positions=1,
+        # DEMO can validate at most two concurrent symbols. Aggregate open-risk,
+        # margin, exposure and correlation gates remain authoritative.
+        max_open_positions=min(max(int(settings.max_open_positions), 1), 2),
         max_margin_per_trade=settings.max_margin_per_trade,
         max_total_margin=settings.max_total_margin,
         max_daily_loss=settings.max_daily_loss,

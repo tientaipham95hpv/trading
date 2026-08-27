@@ -487,6 +487,106 @@ public struct HieuSuat: Codable, Equatable {
     }
 }
 
+public struct EquityHistoryResponse: Codable, Equatable {
+    public let mode: String
+    public let points: [EquityPoint]
+}
+
+public struct EquityPoint: Codable, Identifiable, Equatable {
+    public let equity: Double
+    public let balance: Double
+    public let marginBalance: Double
+    public let unrealizedPnl: Double
+    public let openPositions: Int
+    public let source: String
+    public let takenAt: String
+
+    public var id: String { "\(takenAt)-\(source)" }
+
+    enum CodingKeys: String, CodingKey {
+        case equity, balance, source
+        case marginBalance = "margin_balance"
+        case unrealizedPnl = "unrealized_pnl"
+        case openPositions = "open_positions"
+        case takenAt = "taken_at"
+    }
+}
+
+public struct EquityAnalytics: Codable, Equatable {
+    public let equity: Double
+    public let peakEquity: Double
+    public let currentDrawdownPercent: Double
+    public let maxDrawdownPercent: Double
+    public let returnPercent: Double
+    public let mode: String
+    public let samples: Int
+    public let firstAt: String?
+    public let lastAt: String?
+
+    enum CodingKeys: String, CodingKey {
+        case equity, mode, samples
+        case peakEquity = "peak_equity"
+        case currentDrawdownPercent = "current_drawdown_percent"
+        case maxDrawdownPercent = "max_drawdown_percent"
+        case returnPercent = "return_percent"
+        case firstAt = "first_at"
+        case lastAt = "last_at"
+    }
+}
+
+public struct RiskDashboard: Codable, Equatable {
+    public let portfolio: PortfolioRiskSnapshot
+    public let auditSummary: RiskAuditSummary
+
+    enum CodingKeys: String, CodingKey {
+        case portfolio
+        case auditSummary = "audit_summary"
+    }
+}
+
+public struct PortfolioRiskSnapshot: Codable, Equatable {
+    public let mode: String
+    public let enforcementEnabled: Bool
+    public let equity: Double
+    public let grossExposure: Double
+    public let netExposure: Double
+    public let grossExposureFraction: Double
+    public let netExposureFraction: Double
+    public let openRisk: Double
+    public let openRiskFraction: Double
+    public let openRiskLimit: Double
+    public let openRiskRemaining: Double
+    public let exposureLimit: Double
+    public let wouldRejectNewEntries: Bool
+    public let reasons: [String]
+
+    enum CodingKeys: String, CodingKey {
+        case mode, equity, reasons
+        case enforcementEnabled = "enforcement_enabled"
+        case grossExposure = "gross_exposure"
+        case netExposure = "net_exposure"
+        case grossExposureFraction = "gross_exposure_fraction"
+        case netExposureFraction = "net_exposure_fraction"
+        case openRisk = "open_risk"
+        case openRiskFraction = "open_risk_fraction"
+        case openRiskLimit = "open_risk_limit"
+        case openRiskRemaining = "open_risk_remaining"
+        case exposureLimit = "exposure_limit"
+        case wouldRejectNewEntries = "would_reject_new_entries"
+    }
+}
+
+public struct RiskAuditSummary: Codable, Equatable {
+    public let total: Int
+    public let byDecision: [String: Int]
+    public let snapshots: Int
+
+    enum CodingKeys: String, CodingKey {
+        case total, snapshots
+        case byDecision = "by_decision"
+    }
+}
+
 public struct CaiDatBot: Codable, Equatable {
     public var whitelist: [String]
     public var blacklist: [String]

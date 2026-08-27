@@ -128,13 +128,14 @@ def test_validation_universe_defaults_to_only_deep_liquidity_symbols():
     )
 
 
-def test_validation_universe_rejects_more_than_one_open_position_setting():
+def test_validation_universe_allows_at_most_two_open_positions():
+    assert BotSettings(max_open_positions=2).max_open_positions == 2
     try:
-        BotSettings(max_open_positions=2)
+        BotSettings(max_open_positions=3)
     except ValueError:
         pass
     else:
-        raise AssertionError("Validation mode must hard-cap at one open position")
+        raise AssertionError("DEMO validation must hard-cap at two open positions")
 
 
 async def test_scanner_scores_multi_timeframe_long_signal():

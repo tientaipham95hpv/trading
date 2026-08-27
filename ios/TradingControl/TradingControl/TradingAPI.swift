@@ -107,6 +107,18 @@ public actor TradingAPI {
         try await get("/api/performance")
     }
 
+    public func equityHistory() async throws -> EquityHistoryResponse {
+        try await get("/api/equity/history")
+    }
+
+    public func equityAnalytics() async throws -> EquityAnalytics {
+        try await get("/api/equity/analytics")
+    }
+
+    public func riskDashboard() async throws -> RiskDashboard {
+        try await get("/api/risk")
+    }
+
     public func operations() async throws -> OperationsStatus {
         try await get("/api/operations")
     }

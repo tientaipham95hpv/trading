@@ -10,6 +10,9 @@ public final class TradingViewModel: ObservableObject {
     @Published public private(set) var trades: [LenhDaChot] = []
     @Published public private(set) var journal: [NhatKy] = []
     @Published public private(set) var performance: HieuSuat?
+    @Published public private(set) var equityHistory: [EquityPoint] = []
+    @Published public private(set) var equityAnalytics: EquityAnalytics?
+    @Published public private(set) var riskDashboard: RiskDashboard?
     @Published public private(set) var operations: OperationsStatus?
     @Published public private(set) var latestBacktest: BacktestReport?
     @Published public private(set) var exchange: ExchangeSnapshot?
@@ -120,6 +123,9 @@ public final class TradingViewModel: ObservableObject {
             async let nextTrades = try? api.trades()
             async let nextJournal = try? api.journal()
             async let nextPerformance = try? api.performance()
+            async let nextEquityHistory = try? api.equityHistory()
+            async let nextEquityAnalytics = try? api.equityAnalytics()
+            async let nextRiskDashboard = try? api.riskDashboard()
             async let nextOperations = try? api.operations()
             async let nextExchange = try? api.exchange()
             async let nextSettings = try? api.settings()
@@ -132,6 +138,9 @@ public final class TradingViewModel: ObservableObject {
             if let value = await nextTrades { trades = value }
             if let value = await nextJournal { journal = value }
             if let value = await nextPerformance { performance = value }
+            if let value = await nextEquityHistory { equityHistory = value.points }
+            if let value = await nextEquityAnalytics { equityAnalytics = value }
+            if let value = await nextRiskDashboard { riskDashboard = value }
             if let value = await nextOperations { operations = value }
             if let value = await nextExchange { exchange = value }
             if let value = await nextSettings { settings = value }
