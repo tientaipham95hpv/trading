@@ -211,7 +211,7 @@ class AutoTrader:
             await self.state.storage.save_portfolio_risk_audit(
                 snapshot_audit.model_dump(mode="json")
             )
-            current_open_risk_fraction = snapshot_audit.open_risk_fraction
+            current_open_risk_fraction = snapshot_audit.before.open_risk_fraction
             open_position_count = len(snapshot.positions)
             if (
                 open_position_count == 0
