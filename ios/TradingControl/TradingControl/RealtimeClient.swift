@@ -3,12 +3,18 @@ import Foundation
 public final class RealtimeClient {
     private let api: TradingAPI
     private let session: URLSession
+    private let authStore: SecureAuthStore
     private var task: URLSessionWebSocketTask?
     private var receiveTask: Task<Void, Never>?
 
-    public init(api: TradingAPI = .shared, session: URLSession = .shared) {
+    public init(
+        api: TradingAPI = .shared,
+        session: URLSession = .shared,
+        authStore: SecureAuthStore = .shared
+    ) {
         self.api = api
         self.session = session
+        self.authStore = authStore
     }
 
     deinit {
@@ -63,7 +69,11 @@ public final class RealtimeClient {
         receiveTask = Task { [weak self] in
             guard let self else { return }
             let url = await api.websocketURL(channel: channel)
-            let socket = session.webSocketTask(with: url)
+            var request = URLRequest(url: url)
+            if let token = authStore.loadToken(), !token.isEmpty {
+                request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+            }
+            let socket = session.webSocketTask(with: request)
             task = socket
             socket.resume()
             await onState(.live)

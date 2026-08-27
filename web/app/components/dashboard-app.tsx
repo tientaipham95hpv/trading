@@ -11,10 +11,11 @@ import {
   Clock,
   Crosshair,
   Database,
-  FileText,
   Gauge,
   GitCompare,
   ListFilter,
+  LogOut,
+  Menu,
   MessageSquare,
   Pause,
   Play,
@@ -27,6 +28,7 @@ import {
   ShieldAlert,
   ShieldX,
   Square,
+  Star,
   Target,
   Trash2,
   TrendingUp,
@@ -47,18 +49,16 @@ import {
   type Time,
 } from "lightweight-charts";
 import Link from "next/link";
-import { usePathname } from "next/navigation";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { usePathname, useRouter } from "next/navigation";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { api, wsUrl } from "./api";
+import { AuthGate } from "./auth-gate";
 import type {
   AiSignal,
   AIShadowConfig,
-  BacktestOptimizerReport,
-  BacktestReport,
   BotSettings,
   Candle,
-  DemoStability,
   ExchangeSnapshot,
   ExitAnalytics,
   SmartEntryPayload,
@@ -93,34 +93,35 @@ type PageKey =
 const nav = [
   { key: "dashboard", href: "/", label: "Tổng quan", icon: Gauge },
   { key: "markets", href: "/markets", label: "Thị trường", icon: WalletCards },
-  { key: "scanner", href: "/scanner", label: "Quét tín hiệu", icon: Activity },
+  { key: "scanner", href: "/signals", label: "Tín hiệu", icon: Activity },
   { key: "positions", href: "/positions", label: "Vị thế", icon: TrendingUp },
-  { key: "orders", href: "/orders", label: "Orders", icon: ListFilter },
-  { key: "trades", href: "/trades", label: "Lệnh đã chốt", icon: BarChart3 },
-  { key: "strategies", href: "/strategies", label: "Chiến lược", icon: Bot },
+  { key: "orders", href: "/orders", label: "Lệnh chờ", icon: ListFilter },
+  { key: "trades", href: "/history", label: "Lịch sử", icon: BarChart3 },
+  { key: "strategies", href: "/strategy", label: "Chiến lược", icon: Bot },
   { key: "analytics", href: "/analytics", label: "Phân tích", icon: BarChart3 },
   { key: "risk", href: "/risk", label: "Rủi ro", icon: ShieldAlert },
-  { key: "logs", href: "/logs", label: "Nhật ký", icon: FileText },
-  { key: "journal", href: "/journal", label: "Dòng thời gian", icon: Clock },
+  { key: "journal", href: "/journal", label: "Nhật ký", icon: Clock },
   { key: "settings", href: "/settings", label: "Cài đặt", icon: Settings },
 ] as const;
 
+const pageTitles: Record<PageKey, string> = {
+  dashboard: "Tổng quan",
+  markets: "Thị trường",
+  scanner: "Tín hiệu",
+  positions: "Vị thế",
+  orders: "Lệnh chờ",
+  trades: "Lịch sử giao dịch",
+  strategies: "Chiến lược",
+  analytics: "Phân tích hiệu suất",
+  risk: "Quản trị rủi ro",
+  logs: "Nhật ký hệ thống",
+  journal: "Nhật ký giao dịch",
+  settings: "Cài đặt",
+};
+
 /* ── Sidebar nav helpers ── */
 
-const navItems = {
-  dashboard: { key: "dashboard", href: "/", label: "Tổng quan", icon: Gauge },
-  markets: { key: "markets", href: "/markets", label: "Thị trường", icon: WalletCards },
-  scanner: { key: "scanner", href: "/scanner", label: "Signals", icon: Activity },
-  positions: { key: "positions", href: "/positions", label: "Positions", icon: TrendingUp },
-  orders: { key: "orders", href: "/orders", label: "Orders", icon: ListFilter },
-  trades: { key: "trades", href: "/trades", label: "History", icon: BarChart3 },
-  strategies: { key: "strategies", href: "/strategies", label: "Strategy", icon: Bot },
-  analytics: { key: "analytics", href: "/analytics", label: "Analytics", icon: BarChart3 },
-  risk: { key: "risk", href: "/risk", label: "Risk", icon: ShieldAlert },
-  logs: { key: "logs", href: "/logs", label: "Journal", icon: FileText },
-  journal: { key: "journal", href: "/journal", label: "Timeline", icon: Clock },
-  settings: { key: "settings", href: "/settings", label: "Settings", icon: Settings },
-};
+const navItems = Object.fromEntries(nav.map((item) => [item.key, item])) as Record<string, (typeof nav)[number]>;
 
 function NavGroup({ label, children }: { label: string; children: React.ReactNode }) {
   return (
@@ -173,10 +174,14 @@ function StatusPill({ label, tone }: { label: string; tone: "neutral" | "success
 /* ──────────────────────────── MAIN COMPONENT ──────────────────────────── */
 
 export function DashboardApp({ page }: { page: PageKey }) {
+  return <AuthGate><DashboardContent page={page} /></AuthGate>;
+}
+
+function DashboardContent({ page }: { page: PageKey }) {
   const pathname = usePathname();
+  const router = useRouter();
   const [status, setStatus] = useState<StatusPayload | null>(null);
   const [portfolioRisk, setPortfolioRisk] = useState<RiskPayload | null>(null);
-  const [stability, setStability] = useState<DemoStability | null>(null);
   const [markets, setMarkets] = useState<Market[]>([]);
   const [scanner, setScanner] = useState<ScannerResult[]>([]);
   const [positions, setPositions] = useState<Position[]>([]);
@@ -193,19 +198,19 @@ export function DashboardApp({ page }: { page: PageKey }) {
   const [operations, setOperations] = useState<OperationsStatus | null>(null);
   const [wsState, setWsState] = useState<WsState>("OFFLINE");
   const [systemStatusOpen, setSystemStatusOpen] = useState(false);
-  const systemServices = deriveSystemServices(status, exchange, operations, wsState);
+  const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
+  const systemServices = deriveSystemServices(status, exchange, operations);
   const [lastLiveAt, setLastLiveAt] = useState<number>(0);
   const lastLiveAtRef = useRef(0);
   const [error, setError] = useState<string | null>(null);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [hasLoaded, setHasLoaded] = useState(false);
 
-  async function refresh() {
+  const refresh = useCallback(async function refresh() {
     setIsRefreshing(true);
     try {
       const results = await Promise.allSettled([
         api.status().then(setStatus),
-        api.stability().then(setStability),
         api.markets().then((payload) => setMarkets(payload.items)),
         api.signals().then((payload) => setScanner(payload.items)),
         api.positions().then((payload) => setPositions(payload.items)),
@@ -233,7 +238,7 @@ export function DashboardApp({ page }: { page: PageKey }) {
       setHasLoaded(true);
       setIsRefreshing(false);
     }
-  }
+  }, [journalFilter]);
 
   useEffect(() => {
     const firstLoad = window.setTimeout(() => void refresh(), 0);
@@ -242,7 +247,7 @@ export function DashboardApp({ page }: { page: PageKey }) {
       window.clearTimeout(firstLoad);
       window.clearInterval(timer);
     };
-  }, []);
+  }, [refresh]);
 
   useEffect(() => {
     const sockets = new Map<string, WebSocket>();
@@ -372,7 +377,7 @@ export function DashboardApp({ page }: { page: PageKey }) {
     return () => window.clearInterval(timer);
   }, []);
 
-  const currentPage = nav.find((item) => item.key === page) ?? nav[0];
+  const currentPageTitle = pageTitles[page];
 
   return (
     <div className="flex min-h-screen bg-[var(--bg-base)] text-[var(--text-primary)]">
@@ -383,39 +388,33 @@ export function DashboardApp({ page }: { page: PageKey }) {
           <div className="w-8 h-8 rounded-lg bg-[var(--color-info)] flex items-center justify-center flex-shrink-0">
             <Bot size={18} className="text-white" />
           </div>
-          <span className="text-sm font-bold text-[var(--text-primary)] tracking-tight">Trading Bot</span>
+          <div className="min-w-0">
+            <span className="block truncate text-sm font-bold tracking-tight text-[var(--text-primary)]">Terminal Thuật toán</span>
+            <span className="block text-[10px] text-[var(--text-muted)]">Giao dịch Crypto</span>
+          </div>
         </div>
 
         {/* Nav groups */}
         <nav className="flex-1 overflow-y-auto scrollbar-thin py-3 px-3">
-          {/* OVERVIEW */}
-          <NavGroup label="OVERVIEW">
+          <NavGroup label="Không gian làm việc">
             <NavItem item={navItems.dashboard} />
-          </NavGroup>
-
-          {/* MARKET */}
-          <NavGroup label="MARKET">
             <NavItem item={navItems.markets} />
             <NavItem item={navItems.scanner} />
           </NavGroup>
 
-          {/* TRADING */}
-          <NavGroup label="TRADING">
+          <NavGroup label="Giao dịch">
             <NavItem item={navItems.positions} />
             <NavItem item={navItems.orders} />
             <NavItem item={navItems.trades} />
           </NavGroup>
 
-          {/* AI */}
-          <NavGroup label="AI">
+          <NavGroup label="Phân tích & AI">
             <NavItem item={navItems.strategies} />
             <NavItem item={navItems.analytics} />
+            <NavItem item={navItems.risk} />
           </NavGroup>
 
-          {/* SYSTEM */}
-          <NavGroup label="SYSTEM">
-            <NavItem item={navItems.risk} />
-            <NavItem item={navItems.logs} />
+          <NavGroup label="Hệ thống">
             <NavItem item={navItems.journal} />
             <NavItem item={navItems.settings} />
           </NavGroup>
@@ -438,7 +437,7 @@ export function DashboardApp({ page }: { page: PageKey }) {
             {/* Left: page title */}
             <div className="flex items-center gap-3 min-w-0">
               <h1 className="text-[15px] font-bold text-[var(--text-primary)] truncate">
-                {currentPage.label}
+                {currentPageTitle}
               </h1>
             </div>
 
@@ -451,27 +450,27 @@ export function DashboardApp({ page }: { page: PageKey }) {
               {exchange?.connection === "CONNECTED" ? (
                 <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded text-[11px] font-semibold bg-[rgba(34,197,94,0.08)] text-[var(--color-profit)]">
                   <div className="status-dot status-dot-live" />
-                  Exchange
+                  Binance đã kết nối
                 </span>
               ) : (
                 <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded text-[11px] font-semibold bg-[rgba(239,68,68,0.08)] text-[var(--color-loss)]">
                   <div className="status-dot status-dot-offline" />
-                  Exchange
+                  Binance mất kết nối
                 </span>
               )}
             </div>
 
             {/* Right: minimal controls */}
             <div className="flex items-center gap-2">
-              {/* Notifications */}
-              <button
+              {/* Journal / notifications */}
+              <Link
                 className="sidebar-icon-btn"
-                type="button"
-                title="Thông báo"
+                href="/journal"
+                title="Nhật ký và cảnh báo"
               >
                 <Zap size={16} />
                 {error && <span className="absolute top-1.5 right-1.5 w-2 h-2 rounded-full bg-[var(--color-loss)]" />}
-              </button>
+              </Link>
               {/* Settings */}
               <Link
                 href="/settings"
@@ -485,11 +484,23 @@ export function DashboardApp({ page }: { page: PageKey }) {
               <button
                 className="inline-flex items-center gap-1.5 rounded-lg border border-[var(--border-default)] bg-[rgba(255,255,255,0.03)] px-2.5 py-1.5 text-[11px] font-bold text-[var(--text-muted)] transition hover:bg-[rgba(255,255,255,0.06)] hover:text-[var(--text-secondary)]"
                 onClick={() => setSystemStatusOpen(true)}
-                title="System Status"
+                title="Trạng thái hệ thống"
                 type="button"
               >
                 <Activity size={13} />
-                <span className="hidden sm:inline">Status</span>
+                <span className="hidden sm:inline">Hệ thống</span>
+              </button>
+              <button
+                className="sidebar-icon-btn"
+                onClick={() => {
+                  api.clearToken();
+                  router.push("/");
+                  router.refresh();
+                }}
+                title="Đăng xuất"
+                type="button"
+              >
+                <LogOut size={16} />
               </button>
             </div>
           </div>
@@ -521,11 +532,9 @@ export function DashboardApp({ page }: { page: PageKey }) {
               exchange={exchange ?? status?.exchange ?? null}
               markets={markets}
               onDone={refresh}
-              operations={operations}
               performance={performance}
               positions={positions}
               scanner={scanner}
-              stability={stability}
               status={status}
             />
           )}
@@ -534,7 +543,7 @@ export function DashboardApp({ page }: { page: PageKey }) {
           {page === "positions" && (
             <Positions markets={markets} positions={positions} />
           )}
-          {page === "orders" && <Orders orders={exchange?.orders ?? []} />}
+          {page === "orders" && <Orders orders={exchange?.orders ?? []} trades={trades} />}
           {page === "trades" && <Trades trades={trades} />}
           {page === "strategies" && <Strategies scanner={scanner} />}
           {page === "analytics" && (
@@ -570,28 +579,72 @@ export function DashboardApp({ page }: { page: PageKey }) {
         </div>
       </div>
 
-      {/* ── Mobile bottom tab bar ── */}
-      <nav className="mobile-bottom-bar lg:hidden">
-        {nav.slice(0, 5).map((item) => {
+      {/* ── Điều hướng mobile ── */}
+      <nav aria-label="Điều hướng chính" className="mobile-bottom-bar lg:hidden">
+        {nav.slice(0, 4).map((item) => {
           const Icon = item.icon;
-          const active =
-            item.href === pathname ||
-            (item.href !== "/" && pathname.startsWith(item.href));
+          const active = item.href === pathname || (item.href !== "/" && pathname.startsWith(item.href));
           return (
             <Link
-              className={`flex flex-col items-center gap-0.5 px-3 py-1.5 rounded-lg transition ${active ? "text-[var(--color-info)]" : "text-[var(--text-muted)]"}`}
+              aria-current={active ? "page" : undefined}
+              className={`mobile-nav-item ${active ? "text-[var(--color-info)]" : "text-[var(--text-muted)]"}`}
               href={item.href}
               key={item.key}
             >
               <Icon size={18} />
-              <span className="text-[10px] font-semibold">{item.label.split(" ")[0]}</span>
+              <span>{item.label}</span>
             </Link>
           );
         })}
+        <button
+          aria-expanded={mobileMenuOpen}
+          className={`mobile-nav-item ${mobileMenuOpen ? "text-[var(--color-info)]" : "text-[var(--text-muted)]"}`}
+          onClick={() => setMobileMenuOpen(true)}
+          type="button"
+        >
+          <Menu size={18} />
+          <span>Thêm</span>
+        </button>
       </nav>
 
-      {/* System Status Drawer */}
+      {mobileMenuOpen && (
+        <div className="fixed inset-0 z-50 lg:hidden" role="dialog" aria-modal="true" aria-label="Tất cả chức năng">
+          <button className="absolute inset-0 bg-black/70" aria-label="Đóng menu" onClick={() => setMobileMenuOpen(false)} type="button" />
+          <div className="mobile-menu-sheet">
+            <div className="flex items-center justify-between border-b border-[var(--border-default)] px-4 py-3">
+              <div>
+                <h2 className="text-sm font-bold">Tất cả chức năng</h2>
+                <p className="mt-0.5 text-xs text-[var(--text-muted)]">Terminal giao dịch thuật toán</p>
+              </div>
+              <button className="sidebar-icon-btn" aria-label="Đóng menu" onClick={() => setMobileMenuOpen(false)} type="button"><X size={17} /></button>
+            </div>
+            <div className="grid grid-cols-2 gap-2 p-4">
+              {nav.map((item) => {
+                const Icon = item.icon;
+                const active = item.href === pathname || (item.href !== "/" && pathname.startsWith(item.href));
+                return <Link className={`mobile-menu-link ${active ? "mobile-menu-link-active" : ""}`} href={item.href} key={item.key} onClick={() => setMobileMenuOpen(false)}><Icon size={17}/><span>{item.label}</span></Link>;
+              })}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Ngăn trạng thái hệ thống */}
       <SystemStatusDrawer open={systemStatusOpen} onClose={() => setSystemStatusOpen(false)} services={systemServices} wsState={wsState} />
+    </div>
+  );
+}
+
+/* ──────────────────────────── SHARED PAGE PRIMITIVES ──────────────────────────── */
+
+function PageHeader({ title, description, actions }: { title: string; description?: string; actions?: React.ReactNode }) {
+  return (
+    <div className="page-header">
+      <div className="min-w-0">
+        <h2>{title}</h2>
+        {description && <p>{description}</p>}
+      </div>
+      {actions && <div className="flex shrink-0 items-center gap-2">{actions}</div>}
     </div>
   );
 }
@@ -602,140 +655,81 @@ function Dashboard({
   exchange,
   markets,
   onDone,
-  operations,
   performance,
   positions,
   scanner,
-  stability,
   status,
 }: {
   exchange: ExchangeSnapshot | null;
   markets: Market[];
   onDone: () => Promise<void>;
-  operations: OperationsStatus | null;
   performance: Performance | null;
   positions: Position[];
   scanner: ScannerResult[];
-  stability: DemoStability | null;
   status: StatusPayload | null;
 }) {
   const equitySeries = useMemo(
     () => buildEquitySeries(performance),
     [performance],
   );
+  const [activeChartSymbol, setActiveChartSymbol] = useState<string | null>(null);
   const chartSymbol =
     exchange?.positions[0]?.symbol ??
     status?.auto_trader?.last_symbol ??
     scanner.find((item) => item.action !== "NO_TRADE")?.symbol ??
     markets[0]?.symbol ??
     "BTCUSDT";
+  const selectedChartSymbol = activeChartSymbol ?? chartSymbol;
   const chartSymbols = useMemo(
     () =>
       Array.from(
         new Set([
-          chartSymbol,
+          selectedChartSymbol,
           ...markets.slice(0, 80).map((item) => item.symbol),
           ...scanner.slice(0, 40).map((item) => item.symbol),
         ]),
       ),
-    [chartSymbol, markets, scanner],
+    [selectedChartSymbol, markets, scanner],
   );
   return (
     <div className="grid gap-4">
-      <StatusBanner exchange={exchange} status={status} />
-      <CommandCenter exchange={exchange} onDone={onDone} status={status} />
+      <PageHeader
+        title="Tổng quan danh mục"
+        description="Theo dõi vốn, hiệu suất và cơ hội giao dịch theo thời gian thực."
+      />
       <PerformanceKpis
         exchange={exchange}
         performance={performance}
         positions={positions}
         status={status}
       />
-      <div className="grid gap-4 2xl:grid-cols-[minmax(0,1fr)_320px]">
-        <MarketChart
-          positions={positions}
-          scanner={scanner}
-          symbol={chartSymbol}
-          symbols={chartSymbols}
-        />
-        <TerminalRail markets={markets} scanner={scanner} symbol={chartSymbol} />
-      </div>
+      <DataPanel title="Đường cong vốn">
+        <EquityChart values={equitySeries} />
+      </DataPanel>
+      <section>
+        <div className="mb-3 flex items-end justify-between gap-3">
+          <div><h2 className="text-base font-bold">Tổng quan thị trường</h2><p className="mt-1 text-xs text-[var(--text-muted)]">Giá, khối lượng và tín hiệu kỹ thuật trực tiếp từ Binance.</p></div>
+        </div>
+        <div className="grid gap-4 2xl:grid-cols-[minmax(0,1fr)_320px]">
+          <MarketChart
+            key={selectedChartSymbol}
+            markets={markets}
+            positions={positions}
+            scanner={scanner}
+            symbol={selectedChartSymbol}
+            symbols={chartSymbols}
+          />
+          <TerminalRail markets={markets} onSelectSymbol={setActiveChartSymbol} scanner={scanner} symbol={selectedChartSymbol} />
+        </div>
+      </section>
       <div className="grid gap-4 xl:grid-cols-[1.15fr_0.85fr]">
         <OpenPositionsPanel positions={exchange?.positions ?? []} />
         <SignalFocus scanner={scanner} />
       </div>
-      <DataPanel title="Equity curve">
-        <EquityChart values={equitySeries} />
-      </DataPanel>
-      <SystemStatusFooter
-        exchange={exchange}
-        onDone={onDone}
-        operations={operations}
-        performance={performance}
-        stability={stability}
-        status={status}
-      />
-    </div>
-  );
-}
-
-/* ──────────────────────────── STATUS BANNER (replaces ActivitySummary) ──────────────────────────── */
-
-function StatusBanner({
-  exchange,
-  status,
-}: {
-  exchange: ExchangeSnapshot | null;
-  status: StatusPayload | null;
-}) {
-  const isRunning = status?.bot_state === "RUNNING";
-  const connected = exchange?.connection === "CONNECTED";
-  const hasOrders = Boolean(exchange?.orders.length);
-  const hasPositions = Boolean(exchange?.positions.length);
-
-  const statusColor =
-    status?.safe_mode || status?.emergency_stop
-      ? "border-[rgba(239,68,68,0.2)]"
-      : isRunning && connected
-        ? "border-[var(--color-profit)]/20"
-        : "border-[rgba(245,158,11,0.2)]";
-
-  const dotClass =
-    status?.safe_mode || status?.emergency_stop
-      ? "status-dot-offline"
-      : isRunning && connected
-        ? "status-dot-live"
-        : "status-dot-stale";
-
-  const title =
-    isRunning && connected
-      ? "Bot đang online"
-      : status?.safe_mode
-        ? "Bot đang SAFE_MODE"
-        : "Bot chưa sẵn sàng";
-
-  const detail =
-    hasOrders || hasPositions
-      ? `Đang có ${exchange?.orders.length ?? 0} order và ${exchange?.positions.length ?? 0} vị thế trên ${exchange?.mode ?? status?.mode ?? "mode hiện tại"}.`
-      : (status?.auto_trader?.last_reason ??
-        "Backend đang chạy và kết nối exchange, nhưng hiện chưa có lệnh/vị thế mở.");
-
-  return (
-    <div className={`glass-card border ${statusColor} overflow-hidden`}>
-      <div className="flex flex-col gap-3 px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
-        <div className="flex items-center gap-3 min-w-0">
-          <div className={`status-dot ${dotClass}`} style={{ width: 10, height: 10 }} />
-          <div className="min-w-0">
-            <p className="text-sm font-bold text-[var(--text-primary)] truncate">{title}</p>
-            <p className="text-xs text-[var(--text-secondary)] truncate">{detail}</p>
-          </div>
-        </div>
-        <div className="flex flex-wrap gap-2 shrink-0">
-          <StatusChip label="Mode" value={status?.mode ?? "-"} danger={status?.mode === "LIVE"} />
-          <StatusChip label="Bot" value={viBotState(status?.bot_state)} safe={isRunning} />
-          <StatusChip label="Exchange" value={viExchangeConnection(exchange?.connection)} safe={connected} />
-          <StatusChip label="Auto" value={viAutoStatus(status?.auto_trader?.last_status)} safe={status?.auto_trader?.last_status === "ORDER_SUBMITTED"} />
-        </div>
-      </div>
+      <details className="terminal-disclosure">
+        <summary>Điều khiển bot và chế độ giao dịch</summary>
+        <div className="pt-3"><CommandCenter exchange={exchange} onDone={onDone} status={status} /></div>
+      </details>
     </div>
   );
 }
@@ -764,64 +758,18 @@ function PerformanceKpis({
 
   return (
     <section className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
-      <Metric label="Equity" value={money(performance?.equity ?? exchange?.balance.margin_balance)} />
+      <Metric label="Tổng vốn" value={money(performance?.equity ?? exchange?.balance.margin_balance)} />
       <Metric
-        label="Today PnL"
+        label="PnL hôm nay"
         value={money(dailyPnl)}
         tone={dailyPnl >= 0 ? "good" : "bad"}
       />
       <Metric
-        label="Win Rate"
+        label="Tỷ lệ thắng"
         value={percent((performance?.win_rate ?? 0) * 100)}
         tone={(performance?.win_rate ?? 0) >= 0.5 ? "good" : "neutral"}
       />
-      <Metric label="Open Positions" value={`${openPositions} / ${maxPositions}`} />
-    </section>
-  );
-}
-
-/* ──────────────────────────── SYSTEM STATUS FOOTER ──────────────────────────── */
-
-function SystemStatusFooter({
-  exchange,
-  onDone,
-  operations,
-  performance,
-  stability,
-  status,
-}: {
-  exchange: ExchangeSnapshot | null;
-  onDone: () => Promise<void>;
-  operations: OperationsStatus | null;
-  performance: Performance | null;
-  stability: DemoStability | null;
-  status: StatusPayload | null;
-}) {
-  const [expanded, setExpanded] = useState(false);
-
-  return (
-    <section className="glass-card overflow-hidden">
-      <button
-        className="flex w-full items-center justify-between px-4 py-3 text-left"
-        onClick={() => setExpanded((v) => !v)}
-        type="button"
-      >
-        <span className="text-xs font-bold uppercase tracking-wider text-[var(--text-muted)]">
-          System Status
-        </span>
-        <span className="text-xs text-[var(--text-muted)]">
-          {expanded ? "▲ Ẩn" : "▼ Hiển thị"}
-        </span>
-      </button>
-      {expanded && (
-        <div className="border-t border-[var(--border-default)] p-4">
-          <div className="grid gap-4">
-            <OperationsPanel operations={operations} />
-            <StabilityPanel performance={performance} stability={stability} />
-            <LiveReadinessPanel onDone={onDone} status={status} />
-          </div>
-        </div>
-      )}
+      <Metric label="Vị thế đang mở" value={`${openPositions} / ${maxPositions}`} />
     </section>
   );
 }
@@ -842,22 +790,22 @@ function CommandCenter({
       <div className="grid gap-4 xl:grid-cols-[1.2fr_1fr]">
         <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
           <ModeCard
-            label="Trading mode"
+            label="Chế độ giao dịch"
             value={normalizeMode(status?.mode)}
             tone={status?.mode === "LIVE" ? "danger" : "warning"}
           />
           <ModeCard
-            label="Exchange"
+            label="Sàn giao dịch"
             value={viExchangeConnection(exchange?.connection)}
             tone={exchange?.connection === "CONNECTED" ? "safe" : "danger"}
           />
           <ModeCard
-            label="LIVE gate"
-            value={status?.live_readiness?.allowed ? "READY" : "LOCKED"}
+            label="Điều kiện LIVE"
+            value={status?.live_readiness?.allowed ? "SẴN SÀNG" : "ĐANG KHÓA"}
             tone={status?.live_readiness?.allowed ? "warning" : "safe"}
           />
           <ModeCard
-            label="Auto loop"
+            label="Vòng lặp tự động"
             value={viAutoStatus(status?.auto_trader?.last_status)}
             tone={
               status?.auto_trader?.last_status === "ORDER_SUBMITTED"
@@ -912,7 +860,7 @@ function OpenPositionsPanel({
                   </span>
                 </div>
                 <p className="mt-2 text-sm text-[var(--text-secondary)] num-display">
-                  Entry {money(position.entry_price)} / Mark{" "}
+                  Giá vào {money(position.entry_price)} / Giá hiện tại{" "}
                   {money(position.mark_price)} / Thanh lý{" "}
                   {money(position.liquidation_price)}
                 </p>
@@ -924,7 +872,7 @@ function OpenPositionsPanel({
                   {money(position.unrealized_pnl)}
                 </p>
                 <p className="mt-1 text-xs text-[var(--text-muted)] num-display">
-                  Qty {number(position.quantity)}
+                  Khối lượng {number(position.quantity)}
                 </p>
               </div>
             </article>
@@ -998,7 +946,7 @@ function SignalFocus({ scanner }: { scanner: ScannerResult[] }) {
                   <span>{frameState(trigger, "15m")}</span>
                 </div>
                 <div className="mt-2 grid grid-cols-2 gap-2 text-sm">
-                  <InfoPair label="Score cao nhất" value={String(bestScore)} />
+                  <InfoPair label="Điểm cao nhất" value={String(bestScore)} />
                   <InfoPair label="RR 15m" value={number(trigger?.risk_reward)} />
                 </div>
               </article>
@@ -1016,16 +964,53 @@ function SignalFocus({ scanner }: { scanner: ScannerResult[] }) {
 
 function TerminalRail({
   markets,
+  onSelectSymbol,
   scanner,
   symbol,
 }: {
   markets: Market[];
+  onSelectSymbol: (symbol: string) => void;
   scanner: ScannerResult[];
   symbol: string;
 }) {
-  const watchlist = markets
-    .filter((item) => item.symbol === symbol || ["BTCUSDT", "ETHUSDT", "SOLUSDT"].includes(item.symbol))
-    .slice(0, 6);
+  const [watchedSymbols, setWatchedSymbols] = useState<string[]>(["BTCUSDT", "ETHUSDT", "SOLUSDT"]);
+
+  useEffect(() => {
+    try {
+      const saved = window.localStorage.getItem("trading-watchlist-v1");
+      if (saved) {
+        const parsed = JSON.parse(saved) as unknown;
+        if (Array.isArray(parsed)) {
+          const normalized = parsed.filter((item): item is string => typeof item === "string").slice(0, 12);
+          window.setTimeout(() => setWatchedSymbols(normalized), 0);
+        }
+      }
+    } catch {
+      // Giữ danh sách mặc định nếu dữ liệu trình duyệt không hợp lệ.
+    }
+  }, []);
+
+  function setWatch(symbolToChange: string, enabled: boolean) {
+    setWatchedSymbols((current) => {
+      const next = enabled
+        ? Array.from(new Set([...current, symbolToChange])).slice(0, 12)
+        : current.filter((item) => item !== symbolToChange);
+      window.localStorage.setItem("trading-watchlist-v1", JSON.stringify(next));
+      return next;
+    });
+  }
+
+  const watchlist = watchedSymbols
+    .map((watched) => markets.find((item) => item.symbol === watched))
+    .filter((item): item is Market => Boolean(item));
+  const suggestedSymbols = Array.from(
+    new Map(
+      scanner
+        .filter((item) => item.action !== "NO_TRADE" && !watchedSymbols.includes(item.symbol))
+        .sort((a, b) => Math.max(b.long_score, b.short_score) - Math.max(a.long_score, a.short_score))
+        .map((item) => [item.symbol, item]),
+    ).values(),
+  ).filter((item) => markets.some((market) => market.symbol === item.symbol)).slice(0, 3);
   const latestByFrame = new Map<string, ScannerResult>();
   for (const item of scanner) {
     if (item.symbol !== symbol || !["4h", "1h", "15m"].includes(item.timeframe)) continue;
@@ -1034,23 +1019,47 @@ function TerminalRail({
   const currentSignal = latestByFrame.get("15m");
   return (
     <div className="grid content-start gap-4">
-      <DataPanel title="Watchlist">
+      <DataPanel
+        controls={
+          <button
+            className="btn-secondary !min-h-7 !px-2 !py-1 text-[11px]"
+            disabled={!symbol || watchedSymbols.includes(symbol)}
+            onClick={() => setWatch(symbol, true)}
+            title={watchedSymbols.includes(symbol) ? "Mã này đã được theo dõi" : "Thêm mã đang xem vào danh sách"}
+            type="button"
+          >
+            <Star size={12} /> {watchedSymbols.includes(symbol) ? "Đã theo dõi" : "Theo dõi mã này"}
+          </button>
+        }
+        title="Danh sách theo dõi"
+      >
         <div className="grid gap-1">
           {watchlist.length ? watchlist.map((item) => (
-            <div className={`flex items-center justify-between gap-3 rounded-lg px-3 py-2.5 transition ${item.symbol === symbol ? "bg-[rgba(59,130,246,0.08)] border border-[rgba(59,130,246,0.2)]" : "bg-[rgba(255,255,255,0.02)] border border-transparent hover:bg-[rgba(255,255,255,0.03)]"}`} key={item.symbol}>
-              <div className="min-w-0">
-                <strong className="block truncate text-sm num-display">{item.symbol.replace("USDT", "")}</strong>
-                <span className="text-[11px] text-[var(--text-muted)]">{compact(item.quote_volume)} vol</span>
-              </div>
-              <div className="text-right">
-                <strong className="block text-sm num-display">{money(item.last_price)}</strong>
-                <span className={`text-[11px] font-bold num-display ${item.price_change_percent >= 0 ? "text-[var(--color-profit)]" : "text-[var(--color-loss)]"}`}>{signedPercent(item.price_change_percent)}</span>
-              </div>
+            <div className={`flex items-center gap-2 rounded-lg px-3 py-2.5 transition ${item.symbol === symbol ? "border border-[rgba(59,130,246,0.2)] bg-[rgba(59,130,246,0.08)]" : "border border-transparent bg-[rgba(255,255,255,0.02)] hover:bg-[rgba(255,255,255,0.03)]"}`} key={item.symbol}>
+              <button className="flex min-w-0 flex-1 items-center justify-between gap-3 text-left" onClick={() => onSelectSymbol(item.symbol)} title={`Mở biểu đồ ${item.symbol}`} type="button">
+                <span className="min-w-0">
+                  <strong className="block truncate text-sm num-display">{item.symbol.replace("USDT", "")}</strong>
+                  <span className="text-[11px] text-[var(--text-muted)]">{compact(item.quote_volume)} khối lượng 24h</span>
+                </span>
+                <span className="text-right">
+                  <strong className="block text-sm num-display">{money(item.last_price)}</strong>
+                  <span className={`text-[11px] font-bold num-display ${item.price_change_percent >= 0 ? "text-[var(--color-profit)]" : "text-[var(--color-loss)]"}`}>{signedPercent(item.price_change_percent)}</span>
+                </span>
+              </button>
+              <button aria-label={`Bỏ theo dõi ${item.symbol}`} className="sidebar-icon-btn !h-7 !w-7 border-0" onClick={() => setWatch(item.symbol, false)} title="Bỏ theo dõi" type="button"><Star className="fill-current text-[var(--color-warning)]" size={13} /></button>
             </div>
-          )) : <EmptyState message="Chưa có dữ liệu market từ backend." title="Watchlist trống" />}
+          )) : <EmptyState message="Mở một mã trên biểu đồ rồi chọn Theo dõi mã này." title="Chưa theo dõi mã nào" />}
         </div>
+        {suggestedSymbols.length > 0 && (
+          <div className="mt-3 border-t border-[var(--border-default)] pt-3">
+            <p className="mb-2 text-[10px] font-bold uppercase tracking-wide text-[var(--text-muted)]">Gợi ý từ tín hiệu mạnh</p>
+            <div className="grid gap-1">
+              {suggestedSymbols.map((item) => <button className="flex items-center justify-between rounded-lg px-3 py-2 text-left text-xs text-[var(--text-secondary)] hover:bg-white/[0.04]" key={item.symbol} onClick={() => { setWatch(item.symbol, true); onSelectSymbol(item.symbol); }} type="button"><span><b className="text-[var(--text-primary)]">{item.symbol}</b> · {viAction(item.action)}</span><span className="flex items-center gap-1 text-[var(--color-ai)]"><Star size={12}/> Thêm · {Math.max(item.long_score, item.short_score)}</span></button>)}
+            </div>
+          </div>
+        )}
       </DataPanel>
-      <DataPanel title="Multi-timeframe signal">
+      <DataPanel title="Tín hiệu đa khung thời gian">
         <div className="grid gap-2">
           {["4h", "1h", "15m"].map((frame) => {
             const item = latestByFrame.get(frame);
@@ -1066,7 +1075,7 @@ function TerminalRail({
           })}
         </div>
         <div className="mt-3 rounded-lg border border-[var(--border-default)] bg-[rgba(255,255,255,0.02)] p-3">
-          <span className="text-xs text-[var(--text-muted)]">Entry 15m</span>
+          <span className="text-xs text-[var(--text-muted)]">Điểm vào 15m</span>
           <strong className="mt-1 block text-sm num-display">{currentSignal ? `${viAction(currentSignal.action)} · score ${Math.max(currentSignal.long_score, currentSignal.short_score)}` : "Đang chờ tín hiệu"}</strong>
         </div>
       </DataPanel>
@@ -1150,10 +1159,22 @@ function MarketChart({
 
   useEffect(() => {
     if (!containerRef.current || chartRef.current) return;
+    // lightweight-charts draws on canvas, so CSS var(...) strings are not
+    // resolved as colors. Use their concrete values or the canvas silently
+    // falls back to black, making candles and indicator lines invisible.
+    const chartColors = {
+      background: "#111621",
+      text: "#8492a6",
+      profit: "#22c55e",
+      loss: "#ef4444",
+      warning: "#f59e0b",
+      info: "#3b82f6",
+      ai: "#a78bfa",
+    };
     const chart = createChart(containerRef.current, {
       autoSize: true,
       height: 360,
-      layout: { background: { color: "var(--bg-elevated)" }, textColor: "var(--text-secondary)" },
+      layout: { background: { color: chartColors.background }, textColor: chartColors.text },
       grid: {
         vertLines: { color: "rgba(255, 255, 255, 0.04)" },
         horzLines: { color: "rgba(255, 255, 255, 0.04)" },
@@ -1167,21 +1188,21 @@ function MarketChart({
       crosshair: { mode: 1 },
     });
     const series = chart.addSeries(CandlestickSeries, {
-      upColor: "var(--color-profit)",
-      downColor: "var(--color-loss)",
+      upColor: chartColors.profit,
+      downColor: chartColors.loss,
       borderVisible: false,
-      wickUpColor: "var(--color-profit)",
-      wickDownColor: "var(--color-loss)",
+      wickUpColor: chartColors.profit,
+      wickDownColor: chartColors.loss,
     });
     const ema20 = chart.addSeries(LineSeries, {
-      color: "var(--color-warning)",
+      color: chartColors.warning,
       lineWidth: 2,
       title: "EMA20",
       priceLineVisible: false,
       lastValueVisible: false,
     });
     const ema50 = chart.addSeries(LineSeries, {
-      color: "var(--color-info)",
+      color: chartColors.info,
       lineWidth: 2,
       title: "EMA50",
       priceLineVisible: false,
@@ -1194,7 +1215,7 @@ function MarketChart({
       lastValueVisible: false,
     }, 1);
     const rsi = chart.addSeries(LineSeries, {
-      color: "var(--color-ai)",
+      color: chartColors.ai,
       lineWidth: 2,
       title: "RSI14",
       priceLineVisible: false,
@@ -1216,14 +1237,14 @@ function MarketChart({
       title: "Quá bán",
     });
     const macdLine = chart.addSeries(LineSeries, {
-      color: "var(--color-info)",
+      color: chartColors.info,
       lineWidth: 2,
       title: "MACD",
       priceLineVisible: false,
       lastValueVisible: false,
     }, 3);
     const macdSignal = chart.addSeries(LineSeries, {
-      color: "var(--color-warning)",
+      color: chartColors.warning,
       lineWidth: 2,
       title: "Signal",
       priceLineVisible: false,
@@ -1305,10 +1326,10 @@ function MarketChart({
     const position = positions.find((item) => item.symbol === effectiveSymbol && item.status === "OPEN");
     const signal = scanner.find((item) => item.symbol === effectiveSymbol && item.timeframe === "15m");
     const levels = [
-      position && { price: position.entry_price, color: "var(--color-info)", title: "ENTRY" },
-      position && { price: position.stop_loss, color: "var(--color-loss)", title: "SL" },
-      ...(position?.take_profits ?? signal?.take_profits ?? []).map((price, index) => ({ price, color: "var(--color-profit)", title: `TP${index + 1}` })),
-      !position && signal?.stop_loss && { price: signal.stop_loss, color: "var(--color-loss)", title: "SL" },
+      position && { price: position.entry_price, color: "#3b82f6", title: "ENTRY" },
+      position && { price: position.stop_loss, color: "#ef4444", title: "SL" },
+      ...(position?.take_profits ?? signal?.take_profits ?? []).map((price, index) => ({ price, color: "#22c55e", title: `TP${index + 1}` })),
+      !position && signal?.stop_loss && { price: signal.stop_loss, color: "#ef4444", title: "SL" },
     ].filter((item): item is { price: number; color: string; title: string } => Boolean(item && Number.isFinite(item.price) && item.price > 0));
     priceLinesRef.current = levels.map((level) => seriesRef.current!.createPriceLine({ ...level, lineWidth: 1, lineStyle: 2, axisLabelVisible: true }));
     const markerSignal = scanner.find((item) => item.symbol === effectiveSymbol && item.timeframe === interval && item.action !== "NO_TRADE") ?? signal;
@@ -1542,271 +1563,6 @@ function ModeCard({
   );
 }
 
-/* ──────────────────────────── OPERATIONS PANEL ──────────────────────────── */
-
-function OperationsPanel({ operations }: { operations: OperationsStatus | null }) {
-  const activeGateway =
-    operations?.mode === "LIVE" ? operations.gateway.live : operations?.gateway.demo;
-  const marketGateway = operations?.gateway.market;
-  const cacheHits =
-    (activeGateway?.cache.hits ?? 0) + (marketGateway?.cache.hits ?? 0);
-  const cacheMisses =
-    (activeGateway?.cache.misses ?? 0) + (marketGateway?.cache.misses ?? 0);
-  const cacheTotal = cacheHits + cacheMisses;
-  const cacheHitRate = cacheTotal > 0 ? (cacheHits / cacheTotal) * 100 : 0;
-  const circuitOpen =
-    activeGateway?.circuit_breaker.state === "open" ||
-    marketGateway?.circuit_breaker.state === "open";
-
-  return (
-    <section className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
-      <Metric
-        label="Binance circuit"
-        tone={circuitOpen ? "bad" : "good"}
-        value={circuitOpen ? "OPEN" : "CLOSED"}
-      />
-      <Metric
-        label="Cache hit"
-        value={cacheTotal ? percent(cacheHitRate) : "Chưa có mẫu"}
-      />
-      <Metric
-        label="Telegram bot"
-        tone={operations?.notifications.commands_enabled ? "good" : "bad"}
-        value={
-          operations?.notifications.commands_enabled
-            ? `${operations.notifications.sent} alert / ${operations.notifications.command_replies} reply`
-            : "Chưa cấu hình"
-        }
-      />
-      <Metric
-        label="AI training"
-        tone={operations?.ai_analytics.training.ready_for_training ? "good" : "neutral"}
-        value={
-          operations?.ai_analytics.training.execution_enabled
-            ? "EXECUTION ON"
-            : `${number(operations?.ai_analytics.training.sample_size ?? 0)} shadow mẫu`
-        }
-      />
-      <Metric
-        label="Equity samples"
-        value={String(operations?.equity.samples ?? 0)}
-      />
-      <Metric
-        label="Max DD equity"
-        value={percent(operations?.equity.max_drawdown_percent ?? 0)}
-      />
-      <Metric
-        label="Reconcile"
-        tone={operations?.reconciliation.safe_mode ? "bad" : "good"}
-        value={
-          operations?.reconciliation.last_reconciled_at
-            ? new Date(operations.reconciliation.last_reconciled_at).toLocaleString("vi-VN")
-            : "Chưa có"
-        }
-      />
-      <Metric
-        label="Rate usage"
-        value={`${number(activeGateway?.usage.private_weight_last_minute)} private / ${number(marketGateway?.usage.market_weight_last_minute)} market`}
-      />
-      <div className="glass-card p-4 md:col-span-2 xl:col-span-4 border-[rgba(245,158,11,0.15)]">
-        <div className="flex flex-wrap items-center justify-between gap-2">
-          <b className="text-sm text-[var(--color-warning)]">AI guardrail</b>
-          <span className="badge bg-[rgba(245,158,11,0.08)] text-[var(--color-warning)]">SHADOW ONLY</span>
-        </div>
-        <p className="mt-2 text-sm text-[var(--text-secondary)]">
-          {operations?.ai_analytics.training.next_step ?? "Đang tải trạng thái AI shadow."}
-        </p>
-        <p className="mt-1 text-xs text-[var(--text-muted)]">
-          Telegram command gần nhất: {operations?.notifications.last_command ?? "chưa có"} ·
-          unauthorized {number(operations?.notifications.unauthorized ?? 0)}
-        </p>
-      </div>
-    </section>
-  );
-}
-
-/* ──────────────────────────── STABILITY PANEL ──────────────────────────── */
-
-function StabilityPanel({
-  performance,
-  stability,
-}: {
-  performance: Performance | null;
-  stability: DemoStability | null;
-}) {
-  const incidents =
-    stability?.incidents.filter((item) => item.status === "OPEN") ?? [];
-  const totalClosedTrades = performance?.realized_pnl_events ?? performance?.total_trades ?? 0;
-  const labels: Record<string, string> = {
-    sample_size: "Kiểm định sau reset DEMO",
-    sample_duration: "Thời gian",
-    positive_expectancy: "Expectancy",
-    sl_protection: "Bảo vệ SL",
-    user_stream: "User stream",
-    reconciliation: "Đối soát",
-    duplicate_orders: "Trùng order",
-    order_ownership: "Ownership",
-    safe_mode: "Safe mode",
-  };
-  return (
-    <DataPanel title="Dữ liệu thực tế & độ ổn định DEMO">
-      <div className="mb-3 rounded-lg border border-[rgba(59,130,246,0.15)] bg-[rgba(59,130,246,0.04)] px-3 py-2 text-sm">
-        <b className="text-[var(--color-info)]">{number(totalClosedTrades)} giao dịch đã chốt thực tế</b>
-        <span className="text-[var(--text-muted)]"> · Toàn bộ lịch sử PnL</span>
-      </div>
-      <p className="mb-3 text-xs text-[var(--text-muted)]">
-        Bộ đếm sau reset DEMO chỉ là điều kiện kiểm định an toàn trước LIVE; không thay thế số liệu giao dịch thực tế.
-      </p>
-      <div className="grid gap-4 lg:grid-cols-[220px_1fr]">
-        <div className="glass-card p-4 border-[rgba(59,130,246,0.15)]">
-          <p className="text-xs font-bold uppercase text-[var(--text-muted)] tracking-wider">
-            Readiness score
-          </p>
-          <p className="mt-2 text-4xl font-black text-[var(--color-info)] num-display">
-            {stability?.score ?? 0}/100
-          </p>
-          <p
-            className={`mt-2 text-sm font-black ${stability?.verdict === "READY" ? "text-[var(--color-profit)]" : "text-[var(--color-warning)]"}`}
-          >
-            {stability?.verdict ?? "LOADING"}
-          </p>
-          <div className="mt-3 progress-track">
-            <div
-              className="progress-fill bg-[var(--color-info)]"
-              style={{ width: `${stability?.score ?? 0}%` }}
-            />
-          </div>
-          <p className="mt-3 text-xs text-[var(--text-muted)]">
-            Kiểm định sau reset: {String(stability?.metrics.trades ?? 0)}/50 lệnh ·{" "}
-            {Number(stability?.metrics.sample_days ?? 0).toFixed(2)}/7 ngày
-          </p>
-        </div>
-        <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-3">
-          {Object.entries(stability?.checks ?? {}).map(([key, check]) => (
-            <div
-              className={`glass-card p-3 ${check.passed ? "border-[var(--color-profit)]/15" : "border-[rgba(245,158,11,0.15)]"}`}
-              key={key}
-            >
-              <div className="flex items-center justify-between gap-2">
-                <strong className="text-sm">{labels[key] ?? key}</strong>
-                <span
-                  className={`badge ${check.passed ? "bg-[rgba(34,197,94,0.08)] text-[var(--color-profit)]" : "bg-[rgba(245,158,11,0.08)] text-[var(--color-warning)]"}`}
-                >
-                  {check.passed ? "PASS" : "WAIT"}
-                </span>
-              </div>
-              <p className="mt-2 text-xs text-[var(--text-muted)]">
-                {check.detail}
-              </p>
-            </div>
-          ))}
-        </div>
-      </div>
-      <div className="mt-4 border-t border-[var(--border-default)] pt-4">
-        <div className="flex items-center justify-between gap-3">
-          <strong className="text-sm">Incident đang mở</strong>
-          <StatusChip
-            label="Active"
-            value={String(incidents.length)}
-            danger={incidents.some((item) => item.severity === "CRITICAL")}
-            safe={incidents.length === 0}
-          />
-        </div>
-        <div className="mt-3 grid gap-2">
-          {incidents.length ? (
-            incidents.slice(0, 5).map((incident) => (
-              <div
-                className="glass-card p-3 border-[rgba(239,68,68,0.15)]"
-                key={incident.id}
-              >
-                <div className="flex justify-between gap-3">
-                  <strong className="text-sm text-[var(--color-loss)]">
-                    {incident.key}
-                  </strong>
-                  <span className="badge bg-[rgba(239,68,68,0.08)] text-[var(--color-loss)]">
-                    {incident.severity}
-                  </span>
-                </div>
-                <p className="mt-1 text-xs text-[var(--text-muted)]">
-                  {incident.message}
-                </p>
-              </div>
-            ))
-          ) : (
-            <p className="text-sm text-[var(--color-profit)]">
-              Không có incident vận hành đang mở.
-            </p>
-          )}
-        </div>
-      </div>
-    </DataPanel>
-  );
-}
-
-/* ──────────────────────────── LIVE READINESS ──────────────────────────── */
-
-function LiveReadinessPanel({
-  onDone,
-  status,
-}: {
-  onDone: () => Promise<void>;
-  status: StatusPayload | null;
-}) {
-  const readiness = status?.live_readiness;
-  async function toggleLive(enabled: boolean) {
-    await api.liveConfig({ live_enabled: enabled });
-    await onDone();
-  }
-  const checks = readiness
-    ? [
-        ["All tests", readiness?.all_tests_pass],
-        ["Demo stable", readiness?.demo_stable],
-        ["SL protection", readiness.sl_protection_pass],
-        ["Reconnect", readiness.reconnect_pass],
-        ["Reconciliation", readiness.reconciliation_pass],
-        ["Duplicate order", readiness.duplicate_order_tests_pass],
-      ]
-    : [];
-  return (
-    <DataPanel title="LIVE readiness">
-      <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
-        <StatusChip
-          label="Runtime LIVE"
-          value={readiness?.live_enabled ? "ON" : "OFF"}
-          danger={!!readiness?.live_enabled}
-        />
-        <button
-          className="btn-secondary inline-flex items-center gap-2 text-xs"
-          disabled={
-            readiness?.allowed !== true && readiness?.live_enabled !== true
-          }
-          onClick={() => void toggleLive(!(readiness?.live_enabled ?? false))}
-          type="button"
-        >
-          <Zap size={14} />
-          {readiness?.live_enabled ? "Tắt LIVE gate" : "Bật LIVE gate"}
-        </button>
-      </div>
-      <div className="grid gap-3 md:grid-cols-3">
-        {checks.map(([label, ok]) => (
-          <StatusChip
-            key={String(label)}
-            label={String(label)}
-            value={ok ? "PASS" : "BLOCK"}
-            safe={Boolean(ok)}
-            danger={!ok}
-          />
-        ))}
-      </div>
-      {(readiness?.blockers?.length ?? 0) ? (
-        <p className="mt-3 text-sm text-[var(--color-loss)]">
-          {(readiness?.blockers ?? []).join(" / ")}
-        </p>
-      ) : null}
-    </DataPanel>
-  );
-}
-
 /* ──────────────────────────── MARKETS PAGE ──────────────────────────── */
 
 function Markets({
@@ -1848,7 +1604,7 @@ function Markets({
             {([
               ["Giá", money(activeMeta.last_price)],
               ["24h%", signedPercent(activeMeta.price_change_percent)],
-              ["Volume", compact(activeMeta.quote_volume)],
+              ["Khối lượng", compact(activeMeta.quote_volume)],
               ["Spread", `${activeMeta.spread_bps.toFixed(2)} bps`],
             ] as const).map(([label, value]) => (
               <div className="rounded-lg border border-[var(--border-default)] bg-[rgba(255,255,255,0.02)] px-3 py-2" key={label}>
@@ -1907,7 +1663,6 @@ function buildAiSignals(items: ScannerResult[]): AiSignal[] {
     const rsi = item.indicators.rsi ?? 50;
     const adx = item.indicators.adx ?? 20;
     const macdHistogram = item.indicators.macd_histogram ?? 0;
-    const atrVal = item.indicators.atr ?? 0;
     const quoteVolume = item.quote_volume ?? 0;
 
     const action = item.action === "NO_TRADE" ? "HOLD" : item.action === "LONG" ? "BUY" : "SELL";
@@ -1959,9 +1714,9 @@ function Scanner({ scanner }: { scanner: ScannerResult[] }) {
   }, [signals]);
 
   function actionTone(action: "BUY" | "SELL" | "HOLD") {
-    if (action === "BUY") return { bg: "rgba(34,197,94,0.10)", text: "text-[var(--color-profit)]", border: "border-[rgba(34,197,94,0.25)]", label: "BUY" };
-    if (action === "SELL") return { bg: "rgba(239,68,68,0.10)", text: "text-[var(--color-loss)]", border: "border-[rgba(239,68,68,0.25)]", label: "SELL" };
-    return { bg: "rgba(255,255,255,0.04)", text: "text-[var(--text-muted)]", border: "border-[var(--border-default)]", label: "HOLD" };
+    if (action === "BUY") return { bg: "rgba(34,197,94,0.10)", text: "text-[var(--color-profit)]", border: "border-[rgba(34,197,94,0.25)]", label: "MUA" };
+    if (action === "SELL") return { bg: "rgba(239,68,68,0.10)", text: "text-[var(--color-loss)]", border: "border-[rgba(239,68,68,0.25)]", label: "BÁN" };
+    return { bg: "rgba(255,255,255,0.04)", text: "text-[var(--text-muted)]", border: "border-[var(--border-default)]", label: "GIỮ" };
   }
 
   function scoreTone(score: number) {
@@ -2005,7 +1760,7 @@ function Scanner({ scanner }: { scanner: ScannerResult[] }) {
             </span>
             <div className="text-right">
               <span className={`block text-sm font-black num-display ${scoreTone(sig.aiScore)}`}>{sig.aiScore}</span>
-              <span className="text-[10px] text-[var(--text-muted)]">AI Score</span>
+              <span className="text-[10px] text-[var(--text-muted)]">Điểm AI</span>
             </div>
             <ChevronRight size={14} className={`flex-shrink-0 text-[var(--text-muted)] transition-transform ${isActive ? "rotate-90" : ""}`} />
           </div>
@@ -2015,28 +1770,28 @@ function Scanner({ scanner }: { scanner: ScannerResult[] }) {
         <div className="grid grid-cols-4 gap-3 border-t border-white/[0.04] px-4 py-3">
           <div className="grid gap-1">
             <div className="flex items-center justify-between">
-              <span className="text-[10px] font-bold uppercase text-[var(--text-muted)]">Confidence</span>
+              <span className="text-[10px] font-bold uppercase text-[var(--text-muted)]">Độ tin cậy</span>
               <span className={`text-xs font-bold num-display ${scoreTone(sig.aiConfidence)}`}>{sig.aiConfidence}%</span>
             </div>
             {meterBar(sig.aiConfidence, "bg-[var(--color-info)]")}
           </div>
           <div className="grid gap-1">
             <div className="flex items-center justify-between">
-              <span className="text-[10px] font-bold uppercase text-[var(--text-muted)]">Momentum</span>
+              <span className="text-[10px] font-bold uppercase text-[var(--text-muted)]">Động lượng</span>
               <span className={`text-xs font-bold num-display ${scoreTone(sig.momentum)}`}>{sig.momentum}%</span>
             </div>
             {meterBar(sig.momentum, "bg-[var(--color-warning)]")}
           </div>
           <div className="grid gap-1">
             <div className="flex items-center justify-between">
-              <span className="text-[10px] font-bold uppercase text-[var(--text-muted)]">Trend</span>
+              <span className="text-[10px] font-bold uppercase text-[var(--text-muted)]">Xu hướng</span>
               <span className={`text-xs font-bold num-display ${scoreTone(sig.trend)}`}>{sig.trend}%</span>
             </div>
             {meterBar(sig.trend, "bg-[var(--color-profit)]")}
           </div>
           <div className="grid gap-1">
             <div className="flex items-center justify-between">
-              <span className="text-[10px] font-bold uppercase text-[var(--text-muted)]">Volume</span>
+              <span className="text-[10px] font-bold uppercase text-[var(--text-muted)]">Khối lượng</span>
               <span className={`text-xs font-bold num-display ${scoreTone(sig.volume)}`}>{sig.volume}%</span>
             </div>
             {meterBar(sig.volume, "bg-[var(--color-loss)]")}
@@ -2048,19 +1803,19 @@ function Scanner({ scanner }: { scanner: ScannerResult[] }) {
           <div className="border-t border-white/[0.04] px-4 py-4">
             <div className="grid grid-cols-2 gap-4 sm:grid-cols-4">
               <div>
-                <span className="text-[10px] font-bold uppercase text-[var(--text-muted)]">Entry</span>
+                <span className="text-[10px] font-bold uppercase text-[var(--text-muted)]">Giá vào</span>
                 <strong className="mt-1 block text-sm font-bold text-[var(--text-primary)] num-display">{sig.entry ? money(sig.entry) : "—"}</strong>
               </div>
               <div>
-                <span className="text-[10px] font-bold uppercase text-[var(--text-muted)]">Stop Loss</span>
+                <span className="text-[10px] font-bold uppercase text-[var(--text-muted)]">Cắt lỗ</span>
                 <strong className="mt-1 block text-sm font-bold text-[var(--color-loss)] num-display">{sig.stopLoss ? money(sig.stopLoss) : "—"}</strong>
               </div>
               <div>
-                <span className="text-[10px] font-bold uppercase text-[var(--text-muted)]">Take Profit</span>
+                <span className="text-[10px] font-bold uppercase text-[var(--text-muted)]">Chốt lời</span>
                 <strong className="mt-1 block text-sm font-bold text-[var(--color-profit)] num-display">{sig.takeProfit ? money(sig.takeProfit) : "—"}</strong>
               </div>
               <div>
-                <span className="text-[10px] font-bold uppercase text-[var(--text-muted)]">Risk / Reward</span>
+                <span className="text-[10px] font-bold uppercase text-[var(--text-muted)]">Rủi ro / Lợi nhuận</span>
                 <strong className={`mt-1 block text-sm font-bold num-display ${sig.riskReward && sig.riskReward >= 2 ? "text-[var(--color-profit)]" : sig.riskReward ? "text-[var(--color-warning)]" : "text-[var(--text-muted)]"}`}>{sig.riskReward ? `${number(sig.riskReward)}R` : "—"}</strong>
               </div>
             </div>
@@ -2083,7 +1838,7 @@ function Scanner({ scanner }: { scanner: ScannerResult[] }) {
                 onClick={(e) => e.stopPropagation()}
               >
                 <Target size={12} />
-                View Setup
+                Xem thiết lập
               </Link>
               <button
                 className={`inline-flex items-center gap-2 rounded-lg px-3 py-2 text-xs font-bold transition ${sig.decision === "HOLD" ? "cursor-not-allowed border border-[var(--border-default)] bg-[rgba(255,255,255,0.02)] text-[var(--text-muted)]" : sig.decision === "BUY" ? "bg-[var(--color-profit)] text-white hover:brightness-110" : "bg-[var(--color-loss)] text-white hover:brightness-110"}`}
@@ -2103,11 +1858,11 @@ function Scanner({ scanner }: { scanner: ScannerResult[] }) {
                     }),
                   );
                 }}
-                title={sig.decision === "HOLD" ? "Không có lệnh để execute" : "Copy lệnh vào clipboard"}
+                title={sig.decision === "HOLD" ? "Không có lệnh để thực thi" : "Sao chép thiết lập lệnh"}
                 type="button"
               >
                 <Zap size={12} />
-                Execute
+                Thực thi
               </button>
             </div>
           </div>
@@ -2123,7 +1878,7 @@ function Scanner({ scanner }: { scanner: ScannerResult[] }) {
         <div className="flex flex-wrap items-center gap-4">
           <div className="flex items-center gap-2">
             <Activity size={14} className="text-[var(--color-info)]" />
-            <span className="text-xs font-bold text-[var(--text-muted)] uppercase">AI Signal Terminal</span>
+            <span className="text-xs font-bold text-[var(--text-muted)] uppercase">Terminal tín hiệu AI</span>
           </div>
           <div className="flex flex-wrap gap-3 text-xs">
             <span className="inline-flex items-center gap-1.5 rounded-md bg-[rgba(34,197,94,0.08)] px-2 py-1 text-[var(--color-profit)]">
@@ -2139,7 +1894,7 @@ function Scanner({ scanner }: { scanner: ScannerResult[] }) {
               {summary.holdCount} HOLD
             </span>
             <span className="text-[var(--text-muted)]">·</span>
-            <span className="text-[var(--text-muted)]">Avg Score: <span className={`font-bold num-display ${scoreTone(summary.avgScore)}`}>{summary.avgScore}</span></span>
+            <span className="text-[var(--text-muted)]">Điểm trung bình: <span className={`font-bold num-display ${scoreTone(summary.avgScore)}`}>{summary.avgScore}</span></span>
             <span className="text-[var(--text-muted)]">·</span>
             <span className="text-[var(--text-muted)]">{summary.total} tổng</span>
           </div>
@@ -2151,9 +1906,9 @@ function Scanner({ scanner }: { scanner: ScannerResult[] }) {
               value={signal}
             >
               <option value="ALL">Tất cả</option>
-              <option value="BUY">BUY</option>
-              <option value="SELL">SELL</option>
-              <option value="HOLD">HOLD</option>
+              <option value="BUY">Mua</option>
+              <option value="SELL">Bán</option>
+              <option value="HOLD">Giữ</option>
             </select>
           </div>
         </div>
@@ -2167,7 +1922,7 @@ function Scanner({ scanner }: { scanner: ScannerResult[] }) {
           ))}
         </div>
       ) : (
-        <EmptyState message="Không có tín hiệu phù hợp bộ lọc." title="Chưa có signal" />
+        <EmptyState message="Không có tín hiệu phù hợp bộ lọc." title="Chưa có tín hiệu" />
       )}
     </div>
   );
@@ -2184,7 +1939,10 @@ function Positions({
   markets: Market[];
   positions: Position[];
 }) {
-  const marks = new Map(markets.map((item) => [item.symbol, item.last_price]));
+  const marks = useMemo(
+    () => new Map(markets.map((item) => [item.symbol, item.last_price])),
+    [markets],
+  );
   const [selected, setSelected] = useState<Position | null>(null);
 
   const openPositions = positions.filter((p) => p.status === "OPEN");
@@ -2208,19 +1966,19 @@ function Positions({
     <div className="grid gap-4">
       {/* Summary cards */}
       <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-        <Metric label="Open Positions" value={String(openPositions.length)} />
+        <Metric label="Vị thế đang mở" value={String(openPositions.length)} />
         <Metric
-          label="Total Exposure"
+          label="Tổng mức tiếp xúc"
           value={money(stats.totalExposure)}
           tone={stats.totalExposure > 0 ? "neutral" : "neutral"}
         />
         <Metric
-          label="Unrealized PnL"
+          label="PnL chưa chốt"
           value={money(stats.totalPnl)}
           tone={stats.totalPnl > 0 ? "good" : stats.totalPnl < 0 ? "bad" : "neutral"}
         />
         <Metric
-          label="Avg Risk per Pos"
+          label="Rủi ro TB mỗi vị thế"
           value={
             openPositions.length > 0
               ? percent(
@@ -2239,14 +1997,14 @@ function Positions({
       {/* Position table */}
       <section className="glass-card overflow-hidden">
         <div className="panel-header">
-          <h3>Position Terminal</h3>
+          <h3>Terminal vị thế</h3>
         </div>
         <div className="overflow-x-auto">
           {openPositions.length > 0 ? (
             <table className="hidden w-full min-w-[880px] border-collapse text-sm sm:table">
               <thead>
                 <tr className="border-b border-[var(--border-default)] text-left text-xs uppercase text-[var(--text-muted)]">
-                  {["Symbol", "Side", "Size", "Entry", "Mark", "PnL", "PnL %", "Stop Loss", "Take Profit"].map((col) => (
+                  {["Mã", "Hướng", "Khối lượng", "Giá vào", "Giá hiện tại", "PnL", "PnL %", "Cắt lỗ", "Chốt lời"].map((col) => (
                     <th className="px-4 py-3 font-bold" key={col}>{col}</th>
                   ))}
                 </tr>
@@ -2294,7 +2052,7 @@ function Positions({
             </table>
           ) : (
             <div className="p-8 text-center">
-              <EmptyState message="Không có vị thế đang mở." title="No open positions" />
+              <EmptyState message="Không có vị thế đang mở." title="Không có vị thế mở" />
             </div>
           )}
         </div>
@@ -2311,7 +2069,6 @@ function Positions({
               : (item.entry_price - mark) * item.remaining_quantity);
           const cost = item.entry_price * item.remaining_quantity;
           const pnlPct = cost > 0 ? (pnl / cost) * 100 : 0;
-          const sideColor = item.side === "LONG" ? "text-[var(--color-profit)]" : "text-[var(--color-loss)]";
           const pnlColor = pnl >= 0 ? "text-[var(--color-profit)]" : "text-[var(--color-loss)]";
           const isActive = selected?.id === item.id;
           return (
@@ -2323,7 +2080,7 @@ function Positions({
               <div className="flex items-center justify-between">
                 <div className="flex items-center gap-2">
                   <strong className="text-sm font-bold text-[var(--text-primary)] num-display">{item.symbol.replace("USDT", "")}</strong>
-                  <span className={`rounded-md px-1.5 py-0.5 text-[10px] font-bold ${item.side === "LONG" ? "bg-[rgba(34,197,94,0.10)] text-[var(--color-profit)]" : "bg-[rgba(239,68,68,0.10)] text-[var(--color-loss)]"}`}>{item.side}</span>
+                  <span className={`rounded-md px-1.5 py-0.5 text-[10px] font-bold ${item.side === "LONG" ? "bg-[rgba(34,197,94,0.10)] text-[var(--color-profit)]" : "bg-[rgba(239,68,68,0.10)] text-[var(--color-loss)]"}`}>{viSide(item.side)}</span>
                 </div>
                 <div className="text-right">
                   <strong className={`block text-sm font-bold num-display ${pnlColor}`}>{money(pnl)}</strong>
@@ -2408,7 +2165,7 @@ function PositionDrawer({
         <div className="flex items-center justify-between border-b border-[var(--border-default)] px-5 py-4">
           <div className="flex items-center gap-3">
             <strong className="text-base font-black text-[var(--text-primary)] num-display">{p.symbol.replace("USDT", "")}</strong>
-            <span className={`rounded-md px-2 py-0.5 text-xs font-bold ${p.side === "LONG" ? "bg-[rgba(34,197,94,0.10)] text-[var(--color-profit)]" : "bg-[rgba(239,68,68,0.10)] text-[var(--color-loss)]"}`}>{p.side}</span>
+            <span className={`rounded-md px-2 py-0.5 text-xs font-bold ${p.side === "LONG" ? "bg-[rgba(34,197,94,0.10)] text-[var(--color-profit)]" : "bg-[rgba(239,68,68,0.10)] text-[var(--color-loss)]"}`}>{viSide(p.side)}</span>
           </div>
           <button
             className="rounded-lg p-1.5 transition hover:bg-[rgba(255,255,255,0.06)]"
@@ -2423,7 +2180,7 @@ function PositionDrawer({
         <div className="flex-1 overflow-y-auto px-5 py-4">
           {/* PnL hero */}
           <div className="mb-5 rounded-xl border border-[var(--border-default)] bg-[rgba(255,255,255,0.02)] p-4">
-            <span className="text-[10px] font-bold uppercase text-[var(--text-muted)]">Unrealized PnL</span>
+            <span className="text-[10px] font-bold uppercase text-[var(--text-muted)]">PnL chưa chốt</span>
             <strong className={`mt-1 block text-2xl font-black num-display ${pnlColor}`}>{money(pnl)}</strong>
             <span className={`text-sm font-bold num-display ${pnlColor}`}>{signedPercent(pnlPct)}</span>
           </div>
@@ -2431,38 +2188,38 @@ function PositionDrawer({
           {/* Metrics grid */}
           <div className="mb-5 grid grid-cols-2 gap-3">
             <div className="rounded-lg border border-[var(--border-default)] bg-[rgba(255,255,255,0.02)] p-3">
-              <span className="text-[10px] font-bold uppercase text-[var(--text-muted)]">R-Multiple</span>
+              <span className="text-[10px] font-bold uppercase text-[var(--text-muted)]">Bội số R</span>
               <strong className={`mt-1 block text-lg font-black num-display ${rColor}`}>{number(rMultiple)}R</strong>
             </div>
             <div className="rounded-lg border border-[var(--border-default)] bg-[rgba(255,255,255,0.02)] p-3">
-              <span className="text-[10px] font-bold uppercase text-[var(--text-muted)]">Risk</span>
+              <span className="text-[10px] font-bold uppercase text-[var(--text-muted)]">Rủi ro</span>
               <strong className="mt-1 block text-lg font-black num-display text-[var(--color-loss)]">{money(riskAmount)}</strong>
-              <span className="text-[11px] text-[var(--text-muted)]">{percent(riskPct)} of margin</span>
+              <span className="text-[11px] text-[var(--text-muted)]">{percent(riskPct)} trên ký quỹ</span>
             </div>
           </div>
 
           {/* Detail rows */}
           <div className="rounded-xl border border-[var(--border-default)] bg-[rgba(255,255,255,0.02)] px-4">
-            <DrawerRow label="Entry" value={money(p.entry_price)} />
-            <DrawerRow label="Current" value={money(markPrice)} tone={pnlColor} />
-            <DrawerRow label="Stop Loss" value={money(p.stop_loss)} tone="text-[var(--color-loss)]" />
+            <DrawerRow label="Giá vào" value={money(p.entry_price)} />
+            <DrawerRow label="Giá hiện tại" value={money(markPrice)} tone={pnlColor} />
+            <DrawerRow label="Cắt lỗ" value={money(p.stop_loss)} tone="text-[var(--color-loss)]" />
             <DrawerRow
-              label="Take Profit"
+              label="Chốt lời"
               value={primaryTp ? money(primaryTp) : "—"}
               tone="text-[var(--color-profit)]"
             />
-            <DrawerRow label="Position Size" value={number(p.remaining_quantity)} />
-            <DrawerRow label="Notional" value={money(cost)} />
-            <DrawerRow label="SL Distance" value={`${money(slDistance)} (${percent(riskPct)})`} />
+            <DrawerRow label="Khối lượng vị thế" value={number(p.remaining_quantity)} />
+            <DrawerRow label="Giá trị danh nghĩa" value={money(cost)} />
+            <DrawerRow label="Khoảng cách SL" value={`${money(slDistance)} (${percent(riskPct)})`} />
             {tpDistance !== null && (
-              <DrawerRow label="TP Distance" value={money(tpDistance)} tone="text-[var(--color-profit)]" />
+              <DrawerRow label="Khoảng cách TP" value={money(tpDistance)} tone="text-[var(--color-profit)]" />
             )}
           </div>
 
           {/* Take profit ladder */}
           {p.take_profits.length > 1 && (
             <div className="mt-4">
-              <span className="mb-2 block text-[10px] font-bold uppercase text-[var(--text-muted)]">TP Ladder</span>
+              <span className="mb-2 block text-[10px] font-bold uppercase text-[var(--text-muted)]">Các mức chốt lời</span>
               <div className="grid gap-1.5">
                 {p.take_profits.map((tp, i) => {
                   const tpR = initialRisk > 0 ? ((tp - p.entry_price) * (p.side === "LONG" ? 1 : -1)) / initialRisk : 0;
@@ -2483,18 +2240,18 @@ function PositionDrawer({
             {p.break_even_active && (
               <span className="inline-flex items-center gap-1 rounded-md bg-[rgba(34,197,94,0.08)] px-2 py-1 text-[11px] font-bold text-[var(--color-profit)]">
                 <span className="inline-block h-1.5 w-1.5 rounded-full bg-[var(--color-profit)]" />
-                Break Even
+                Hòa vốn
               </span>
             )}
             {p.trailing_stop_active && (
               <span className="inline-flex items-center gap-1 rounded-md bg-[rgba(59,130,246,0.08)] px-2 py-1 text-[11px] font-bold text-[var(--color-info)]">
                 <span className="inline-block h-1.5 w-1.5 rounded-full bg-[var(--color-info)]" />
-                Trailing Stop
+                Cắt lỗ bám đuổi
               </span>
             )}
             {p.leverage && p.leverage > 1 && (
               <span className="inline-flex items-center gap-1 rounded-md bg-[rgba(245,158,11,0.08)] px-2 py-1 text-[11px] font-bold text-[var(--color-warning)]">
-                {p.leverage}x Leverage
+                {p.leverage}x Đòn bẩy
               </span>
             )}
           </div>
@@ -2508,8 +2265,10 @@ function PositionDrawer({
 
 function Orders({
   orders,
+  trades,
 }: {
   orders: ExchangeSnapshot['orders'];
+  trades: Trade[];
 }) {
   const [query, setQuery] = useState("");
   const [side, setSide] = useState("ALL");
@@ -2522,10 +2281,12 @@ function Orders({
   });
 
   return (
-    <DataPanel
-      controls={
-        <div className="flex flex-wrap gap-2">
-          <SearchBox query={query} setQuery={setQuery} />
+    <div className="grid gap-4">
+      <PageHeader title="Quản lý lệnh" description="Theo dõi lệnh đang chờ và lịch sử lệnh đã hoàn tất từ dữ liệu thật." />
+      <DataPanel
+        controls={
+          <div className="flex flex-wrap gap-2">
+            <SearchBox query={query} setQuery={setQuery} />
           <select
             className="terminal-select"
             onChange={(event) => setSide(event.target.value)}
@@ -2564,7 +2325,22 @@ function Orders({
           String(order.order_id),
         ])}
       />
-    </DataPanel>
+      </DataPanel>
+      <DataPanel title="Lịch sử lệnh">
+        <Table
+          columns={["Thời gian", "Mã", "Hướng", "Giá vào", "Giá thoát", "PnL", "Kết quả"]}
+          rows={trades.slice(0, 100).map((trade) => [
+            new Date(trade.created_at).toLocaleString("vi-VN"),
+            trade.symbol,
+            viSide(trade.side),
+            money(trade.entry_price),
+            money(trade.exit_price),
+            money(trade.net_pnl),
+            trade.net_pnl > 0 ? "Thắng" : trade.net_pnl < 0 ? "Thua" : "Hòa vốn",
+          ])}
+        />
+      </DataPanel>
+    </div>
   );
 }
 
@@ -2606,19 +2382,19 @@ function Trades({ trades }: { trades: Trade[] }) {
     <div className="grid gap-4">
       {/* Summary Metrics */}
       <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
-        <Metric label="Total Trades" value={String(totalTrades)} />
+        <Metric label="Tổng giao dịch" value={String(totalTrades)} />
         <Metric
-          label="Wins"
+          label="Lệnh thắng"
           value={String(wins)}
           tone={wins > 0 ? "good" : "neutral"}
         />
         <Metric
-          label="Losses"
+          label="Lệnh thua"
           value={String(losses)}
           tone={losses > 0 ? "bad" : "neutral"}
         />
         <Metric
-          label="Net PnL"
+          label="PnL ròng"
           value={money(netPnl)}
           tone={netPnl >= 0 ? "good" : "bad"}
         />
@@ -2631,10 +2407,10 @@ function Trades({ trades }: { trades: Trade[] }) {
           value={period}
           onChange={(e) => setPeriod(e.target.value as typeof period)}
         >
-          <option value="TODAY">Today</option>
-          <option value="7D">7D</option>
-          <option value="30D">30D</option>
-          <option value="ALL">All</option>
+          <option value="TODAY">Hôm nay</option>
+          <option value="7D">7 ngày</option>
+          <option value="30D">30 ngày</option>
+          <option value="ALL">Tất cả</option>
         </select>
         <SearchBox query={query} setQuery={setQuery} />
         <select
@@ -2642,25 +2418,25 @@ function Trades({ trades }: { trades: Trade[] }) {
           onChange={(event) => setSide(event.target.value)}
           value={side}
         >
-          <option value="ALL">All Sides</option>
-          <option value="LONG">Long</option>
-          <option value="SHORT">Short</option>
+          <option value="ALL">Tất cả vị thế</option>
+          <option value="LONG">Mua (LONG)</option>
+          <option value="SHORT">Bán (SHORT)</option>
         </select>
         <select
           className="terminal-select"
           onChange={(event) => setResult(event.target.value)}
           value={result}
         >
-          <option value="ALL">All Results</option>
-          <option value="WIN">Wins</option>
-          <option value="LOSS">Losses</option>
+          <option value="ALL">Tất cả kết quả</option>
+          <option value="WIN">Lệnh thắng</option>
+          <option value="LOSS">Lệnh thua</option>
         </select>
       </div>
 
       {/* Trades Table */}
       <div className="glass-card overflow-hidden">
         <Table
-          columns={["Date", "Pair", "Side", "Entry", "Exit", "PnL", "Strategy", "Duration"]}
+          columns={["Ngày", "Cặp", "Hướng", "Giá vào", "Giá thoát", "PnL", "Chiến lược", "Thời gian giữ"]}
           rows={filteredTrades.map((trade) => {
             const createdAt = new Date(trade.created_at);
             const closedAt = new Date(trade.created_at);
@@ -2694,46 +2470,53 @@ function Trades({ trades }: { trades: Trade[] }) {
   );
 }
 
-function viCloseReason(reason: string): string {
-  const value = reason.toUpperCase();
-  if (value === "TP" || value.includes("TAKE_PROFIT")) return "Chốt lời theo mục tiêu";
-  if (value === "SL" || value.includes("STOP")) return "Chạm Stop Loss";
-  if (value === "LIQUIDATION") return "Thanh lý vị thế";
-  if (value === "REALIZED_PNL") return "Đóng vị thế đã khớp";
-  return reason || "Đóng vị thế thủ công hoặc theo thị trường";
-}
-
 /* ──────────────────────────── STRATEGIES PAGE ──────────────────────────── */
 
 function Strategies({ scanner }: { scanner: ScannerResult[] }) {
-  type StrategyStatus = "ACTIVE" | "PAUSED";
-  type Strategy = { id: string; name: string; status: StrategyStatus; winRate: number; profitFactor: number; trades: number; riskPerTrade: number; maxPositions: number; description: string; minScore: number; minRiskReward: number; timeframe: string };
-  const [strategies, setStrategies] = useState<Strategy[]>([
-    { id: "trend-pullback", name: "Trend Pullback", status: "ACTIVE", winRate: 62.4, profitFactor: 1.84, trades: 128, riskPerTrade: 1, maxPositions: 3, description: "EMA 20/50/200 pullback với MACD, ADX và volume xác nhận.", minScore: 72, minRiskReward: 1.8, timeframe: "15m" },
-    { id: "breakout", name: "Breakout", status: "ACTIVE", winRate: 57.8, profitFactor: 1.56, trades: 94, riskPerTrade: .75, maxPositions: 2, description: "Phá vỡ Bollinger/VWAP cùng volume tăng và spread thấp.", minScore: 76, minRiskReward: 2, timeframe: "5m" },
-    { id: "mean-reversion", name: "Mean Reversion", status: "PAUSED", winRate: 51.2, profitFactor: 1.18, trades: 67, riskPerTrade: .5, maxPositions: 1, description: "Quay về VWAP trong vùng biến động thấp, ưu tiên thanh khoản tốt.", minScore: 70, minRiskReward: 1.5, timeframe: "15m" },
-  ]);
-  const [editing, setEditing] = useState<Strategy | null>(null);
-  const [draft, setDraft] = useState<Strategy | null>(null);
-  const openConfigure = (strategy: Strategy) => { setEditing(strategy); setDraft({ ...strategy }); };
-  const close = () => { setEditing(null); setDraft(null); };
-  const save = () => { if (draft) setStrategies((all) => all.map((item) => item.id === draft.id ? draft : item)); close(); };
-  const toggle = (id: string) => setStrategies((all) => all.map((item) => item.id === id ? { ...item, status: item.status === "ACTIVE" ? "PAUSED" : "ACTIVE" } : item));
+  const strategies = useMemo(() => {
+    const grouped = new Map<string, ScannerResult[]>();
+    for (const item of scanner) {
+      const name = item.strategy?.trim();
+      if (!name) continue;
+      grouped.set(name, [...(grouped.get(name) ?? []), item]);
+    }
+    return Array.from(grouped, ([name, items]) => {
+      const actionable = items.filter((item) => item.action !== "NO_TRADE");
+      const scores = items.map((item) => Math.max(item.long_score, item.short_score));
+      const riskRewards = items.map((item) => item.risk_reward).filter((value): value is number => value !== null);
+      return {
+        name,
+        items,
+        actionable: actionable.length,
+        averageScore: scores.length ? scores.reduce((sum, value) => sum + value, 0) / scores.length : 0,
+        bestRiskReward: riskRewards.length ? Math.max(...riskRewards) : null,
+        timeframes: Array.from(new Set(items.map((item) => item.timeframe))).join(", "),
+        symbols: new Set(items.map((item) => item.symbol)).size,
+        latest: items.reduce((latest, item) => item.scanned_at > latest ? item.scanned_at : latest, ""),
+      };
+    }).sort((left, right) => right.actionable - left.actionable || right.averageScore - left.averageScore);
+  }, [scanner]);
 
-  return <div className="space-y-5">
-    <div className="flex flex-col gap-2 sm:flex-row sm:items-end sm:justify-between"><div><p className="text-xs font-bold uppercase tracking-[0.12em] text-[var(--color-ai)]">Strategy management</p><h2 className="mt-1 text-xl font-bold">Chiến lược giao dịch</h2><p className="mt-1 text-sm text-[var(--text-muted)]">Theo dõi hiệu suất và kiểm soát rủi ro cho từng strategy.</p></div><div className="rounded-lg border border-[var(--border-default)] bg-[rgba(255,255,255,0.03)] px-3 py-2 text-xs text-[var(--text-secondary)]"><b className="text-[var(--color-profit)]">{strategies.filter((x) => x.status === "ACTIVE").length}</b> đang hoạt động / {strategies.length} strategies</div></div>
-    <div className="grid gap-4 xl:grid-cols-3">{strategies.map((strategy) => { const active = scanner.filter((item) => item.strategy === strategy.name); return <section className="glass-card flex flex-col p-4 transition-colors hover:border-[var(--border-strong)]" key={strategy.id}>
-      <div className="flex items-start justify-between gap-3"><div><h3 className="font-bold">{strategy.name}</h3><p className="mt-1 min-h-10 text-sm leading-5 text-[var(--text-muted)]">{strategy.description}</p></div><span className={`inline-flex shrink-0 items-center gap-1.5 rounded-full px-2 py-1 text-[10px] font-bold ${strategy.status === "ACTIVE" ? "bg-[rgba(34,197,94,0.1)] text-[var(--color-profit)]" : "bg-[rgba(245,158,11,0.1)] text-[var(--color-warning)]"}`}><span className={`status-dot ${strategy.status === "ACTIVE" ? "status-dot-live" : "status-dot-stale"}`} />{strategy.status}</span></div>
-      <div className="mt-4 grid grid-cols-3 gap-px overflow-hidden rounded-lg border border-[var(--border-default)] bg-[var(--border-default)]"><StrategyMetric label="Win rate" value={`${strategy.winRate}%`} tone="good" /><StrategyMetric label="Profit factor" value={strategy.profitFactor.toFixed(2)} tone={strategy.profitFactor >= 1.3 ? "good" : "neutral"} /><StrategyMetric label="Trades" value={String(strategy.trades)} tone="neutral" /></div>
-      <div className="mt-3 grid grid-cols-2 gap-2 text-sm"><InfoPair label="Risk / trade" value={`${strategy.riskPerTrade}%`} /><InfoPair label="Max positions" value={String(strategy.maxPositions)} /></div><div className="mt-3 rounded-lg bg-[rgba(255,255,255,0.025)] px-3 py-2 text-xs text-[var(--text-secondary)]">Signals phù hợp: <b className="num-display text-[var(--text-primary)]">{active.length}</b></div>
-      <div className="mt-4 flex gap-2 border-t border-[var(--border-default)] pt-3"><button className="btn-secondary flex-1 !px-3 !py-2" onClick={() => toggle(strategy.id)} type="button">{strategy.status === "ACTIVE" ? <Pause size={14} /> : <Play size={14} />}{strategy.status === "ACTIVE" ? "Pause" : "Activate"}</button><button className="btn-primary inline-flex items-center gap-1.5 !px-3 !py-2" onClick={() => openConfigure(strategy)} type="button"><Settings size={14} />Configure</button></div>
-    </section>; })}</div>
-    {editing && draft && <div aria-modal="true" className="fixed inset-0 z-50 flex justify-end bg-black/60 backdrop-blur-sm" onMouseDown={close} role="dialog"><section className="flex h-full w-full max-w-xl flex-col border-l border-[var(--border-strong)] bg-[var(--bg-surface)] shadow-2xl" onMouseDown={(event) => event.stopPropagation()}><div className="flex items-start justify-between border-b border-[var(--border-default)] px-5 py-4"><div><p className="text-xs font-bold uppercase tracking-[0.12em] text-[var(--color-ai)]">Configuration</p><h2 className="mt-1 text-lg font-bold">{editing.name}</h2><p className="mt-1 text-sm text-[var(--text-muted)]">Thiết lập được mở riêng để dashboard luôn gọn.</p></div><button aria-label="Đóng" className="sidebar-icon-btn" onClick={close} type="button"><X size={18} /></button></div>
-    <div className="scrollbar-thin flex-1 space-y-6 overflow-y-auto px-5 py-5"><div className="grid gap-4 sm:grid-cols-2"><StrategyField label="Tên strategy" value={draft.name} onChange={(v) => setDraft({ ...draft, name: v })} /><label className="grid gap-2 text-sm font-bold text-[var(--text-secondary)]">Trạng thái<select className="terminal-input" value={draft.status} onChange={(e) => setDraft({ ...draft, status: e.target.value as StrategyStatus })}><option value="ACTIVE">Active</option><option value="PAUSED">Paused</option></select></label><NumberField label="Risk per trade (%)" step={.05} value={draft.riskPerTrade} onChange={(v) => setDraft({ ...draft, riskPerTrade: v })} /><NumberField label="Max positions" value={draft.maxPositions} onChange={(v) => setDraft({ ...draft, maxPositions: v })} /></div><div className="border-t border-[var(--border-default)] pt-5"><h3 className="font-bold">Điều kiện vào lệnh</h3><div className="mt-4 grid gap-4 sm:grid-cols-3"><NumberField label="Min score" value={draft.minScore} onChange={(v) => setDraft({ ...draft, minScore: v })} /><NumberField label="Min RR" step={.1} value={draft.minRiskReward} onChange={(v) => setDraft({ ...draft, minRiskReward: v })} /><StrategyField label="Timeframe" value={draft.timeframe} onChange={(v) => setDraft({ ...draft, timeframe: v })} /></div></div></div><div className="flex justify-end gap-2 border-t border-[var(--border-default)] px-5 py-4"><button className="btn-secondary" onClick={close} type="button">Cancel</button><button className="btn-primary" onClick={save} type="button">Save configuration</button></div></section></div>}
+  return <div className="grid gap-5">
+    <PageHeader title="Chiến lược giao dịch" description="Trạng thái chiến lược được tổng hợp trực tiếp từ bộ quét và dữ liệu thị trường hiện tại." />
+    {strategies.length ? <div className="grid gap-4 md:grid-cols-2 2xl:grid-cols-3">
+      {strategies.map((strategy) => <section className="glass-card flex min-w-0 flex-col" key={strategy.name}>
+        <div className="flex items-start justify-between gap-3 border-b border-[var(--border-default)] pb-3">
+          <div className="min-w-0"><h3 className="truncate font-bold">{strategy.name}</h3><p className="mt-1 text-xs text-[var(--text-muted)]">{strategy.timeframes || "Chưa xác định khung thời gian"}</p></div>
+          <StatusChip label="Trạng thái" value="ĐANG QUÉT" safe />
+        </div>
+        <div className="mt-3 grid grid-cols-3 gap-px overflow-hidden rounded-lg border border-[var(--border-default)] bg-[var(--border-default)]">
+          <StrategyMetric label="Điểm TB" value={number(strategy.averageScore)} tone={strategy.averageScore >= 70 ? "good" : "neutral"} />
+          <StrategyMetric label="Tín hiệu" value={String(strategy.actionable)} tone={strategy.actionable ? "good" : "neutral"} />
+          <StrategyMetric label="Số mã" value={String(strategy.symbols)} tone="neutral" />
+        </div>
+        <div className="mt-3 grid grid-cols-2 gap-2"><InfoPair label="R:R tốt nhất" value={strategy.bestRiskReward === null ? "Chưa có" : `${number(strategy.bestRiskReward)}R`} /><InfoPair label="Mẫu đã quét" value={String(strategy.items.length)} /></div>
+        <p className="mt-3 border-t border-[var(--border-default)] pt-3 text-xs text-[var(--text-muted)]">Cập nhật gần nhất: {strategy.latest ? new Date(strategy.latest).toLocaleString("vi-VN") : "Chưa có"}</p>
+      </section>)}
+    </div> : <EmptyState title="Chưa có dữ liệu chiến lược" message="Backend chưa trả về chiến lược từ bộ quét. Không hiển thị dữ liệu mô phỏng." />}
   </div>;
 }
 function StrategyMetric({ label, value, tone }: { label: string; value: string; tone: "good" | "neutral" }) { return <div className="bg-[var(--bg-surface)] px-3 py-2.5"><p className="text-[10px] font-bold uppercase tracking-wide text-[var(--text-muted)]">{label}</p><p className={`mt-1 text-sm font-bold num-display ${tone === "good" ? "text-[var(--color-profit)]" : "text-[var(--text-primary)]"}`}>{value}</p></div>; }
-function StrategyField({ label, value, onChange }: { label: string; value: string; onChange: (value: string) => void }) { return <label className="grid gap-2 text-sm font-bold text-[var(--text-secondary)]">{label}<input className="terminal-input" onChange={(event) => onChange(event.target.value)} value={value} /></label>; }
 
 /* ──────────────────────────── INFO PAIR ──────────────────────────── */
 
@@ -2771,11 +2554,11 @@ function Analytics({
   const analytics = useMemo(() => buildAnalytics(filteredTrades, performance), [filteredTrades, performance]);
 
   return <div className="space-y-5">
-    <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between"><div><p className="text-xs font-bold uppercase tracking-[0.12em] text-[var(--color-ai)]">Performance analytics</p><h2 className="mt-1 text-xl font-bold">Hiệu suất giao dịch</h2><p className="mt-1 text-sm text-[var(--text-muted)]">Phân tích kết quả theo thời gian, strategy và symbol.</p></div><div className="inline-flex w-fit rounded-lg border border-[var(--border-default)] bg-[var(--bg-surface)] p-1">{(["7D", "30D", "90D", "ALL"] as Range[]).map((item) => <button className={`rounded-md px-3 py-1.5 text-xs font-bold transition ${range === item ? "bg-[var(--color-info)] text-white" : "text-[var(--text-muted)] hover:text-[var(--text-primary)]"}`} key={item} onClick={() => setRange(item)} type="button">{item}</button>)}</div></div>
-    <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-5"><Metric label="Net PnL" value={money(analytics.netPnl)} tone={analytics.netPnl >= 0 ? "good" : "bad"} /><Metric label="Win rate" value={percent(analytics.winRate)} tone={analytics.winRate >= 50 ? "good" : "bad"} /><Metric label="Profit factor" value={analytics.profitFactor === null ? "–" : analytics.profitFactor.toFixed(2)} tone={(analytics.profitFactor ?? 0) >= 1 ? "good" : "bad"} /><Metric label="Max drawdown" value={percent(analytics.maxDrawdown)} tone="bad" /><Metric label="Sharpe ratio" value={performance ? number(performance.sharpe) : "–"} tone={(performance?.sharpe ?? 0) > 0 ? "good" : "neutral"} /></div>
-    <section className="glass-card p-4 lg:p-5"><div className="flex items-center justify-between gap-3"><div><h3 className="font-bold">Equity curve</h3><p className="mt-1 text-xs text-[var(--text-muted)]">Diễn biến vốn dựa trên các lệnh đã đóng trong kỳ.</p></div><span className={`text-sm font-bold num-display ${analytics.netPnl >= 0 ? "text-[var(--color-profit)]" : "text-[var(--color-loss)]"}`}>{analytics.netPnl >= 0 ? "+" : ""}{money(analytics.netPnl)}</span></div><AnalyticsEquityCurve points={analytics.equityPoints} /></section>
-    <div className="grid gap-4 xl:grid-cols-2"><AnalyticsBreakdown title="Performance by strategy" subtitle="Nhóm theo strategy/reason từ dữ liệu lệnh." rows={analytics.byStrategy} /><AnalyticsBreakdown title="Performance by symbol" subtitle="Các symbol có kết quả trong kỳ đã chọn." rows={analytics.bySymbol} /></div>
-    <section className="glass-card p-4 lg:p-5"><div><h3 className="font-bold">Trading calendar</h3><p className="mt-1 text-xs text-[var(--text-muted)]">Mỗi ô là Net PnL của một ngày giao dịch. Đậm hơn = biên độ lớn hơn.</p></div><TradingHeatmap days={analytics.calendar} /></section>
+    <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between"><div><p className="text-xs font-bold uppercase tracking-[0.12em] text-[var(--color-ai)]">Phân tích hiệu suất</p><h2 className="mt-1 text-xl font-bold">Hiệu suất giao dịch</h2><p className="mt-1 text-sm text-[var(--text-muted)]">Phân tích kết quả theo thời gian, chiến lược và mã giao dịch.</p></div><div className="inline-flex w-fit rounded-lg border border-[var(--border-default)] bg-[var(--bg-surface)] p-1">{(["7D", "30D", "90D", "ALL"] as Range[]).map((item) => <button className={`rounded-md px-3 py-1.5 text-xs font-bold transition ${range === item ? "bg-[var(--color-info)] text-white" : "text-[var(--text-muted)] hover:text-[var(--text-primary)]"}`} key={item} onClick={() => setRange(item)} type="button">{item}</button>)}</div></div>
+    <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-5"><Metric label="PnL ròng" value={money(analytics.netPnl)} tone={analytics.netPnl >= 0 ? "good" : "bad"} /><Metric label="Tỷ lệ thắng" value={percent(analytics.winRate)} tone={analytics.winRate >= 50 ? "good" : "bad"} /><Metric label="Hệ số lợi nhuận" value={analytics.profitFactor === null ? "–" : analytics.profitFactor.toFixed(2)} tone={(analytics.profitFactor ?? 0) >= 1 ? "good" : "bad"} /><Metric label="Sụt giảm tối đa" value={percent(analytics.maxDrawdown)} tone="bad" /><Metric label="Hệ số Sharpe" value={performance ? number(performance.sharpe) : "–"} tone={(performance?.sharpe ?? 0) > 0 ? "good" : "neutral"} /></div>
+    <section className="glass-card p-4 lg:p-5"><div className="flex items-center justify-between gap-3"><div><h3 className="font-bold">Đường cong vốn</h3><p className="mt-1 text-xs text-[var(--text-muted)]">Diễn biến vốn dựa trên các lệnh đã đóng trong kỳ.</p></div><span className={`text-sm font-bold num-display ${analytics.netPnl >= 0 ? "text-[var(--color-profit)]" : "text-[var(--color-loss)]"}`}>{analytics.netPnl >= 0 ? "+" : ""}{money(analytics.netPnl)}</span></div><AnalyticsEquityCurve points={analytics.equityPoints} /></section>
+    <div className="grid gap-4 xl:grid-cols-2"><AnalyticsBreakdown title="Hiệu suất theo chiến lược" subtitle="Nhóm theo chiến lược và lý do từ dữ liệu giao dịch." rows={analytics.byStrategy} /><AnalyticsBreakdown title="Hiệu suất theo mã" subtitle="Các mã có kết quả trong kỳ đã chọn." rows={analytics.bySymbol} /></div>
+    <section className="glass-card p-4 lg:p-5"><div><h3 className="font-bold">Lịch giao dịch</h3><p className="mt-1 text-xs text-[var(--text-muted)]">Mỗi ô là PnL ròng của một ngày giao dịch. Đậm hơn = biên độ lớn hơn.</p></div><TradingHeatmap days={analytics.calendar} /></section>
     <div className="grid gap-4 md:grid-cols-3"><Metric label="Lệnh trong kỳ" value={String(filteredTrades.length)} /><Metric label="Lệnh thắng" value={String(analytics.wins)} tone="good" /><Metric label="Lệnh thua" value={String(analytics.losses)} tone="bad" /></div>
     <ExitAnalyticsPanel analytics={exitAnalytics} /><SmartEntryPanel analytics={smartEntry} />
   </div>;
@@ -2796,7 +2579,7 @@ function buildAnalytics(trades: Trade[], performance: Performance | null) {
   const calendar = dates.map((date) => { const id = date.toISOString().slice(0, 10); return { date: id, pnl: sorted.filter((item) => new Date(item.created_at).toISOString().slice(0, 10) === id).reduce((sum, item) => sum + item.net_pnl, 0) }; });
   return { netPnl, wins, losses, winRate: sorted.length ? wins / sorted.length * 100 : 0, profitFactor: grossLoss ? grossProfit / grossLoss : grossProfit ? null : 0, maxDrawdown, equityPoints, byStrategy: toRows((item) => item.reason || "Unclassified"), bySymbol: toRows((item) => item.symbol), calendar };
 }
-function AnalyticsEquityCurve({ points }: { points: number[] }) { if (!points.length) return <EmptyState title="Chưa có equity curve" message="Chưa có lệnh đã đóng trong khoảng thời gian đã chọn." />; const min = Math.min(...points); const max = Math.max(...points); const polyline = points.map((value, index) => `${(index / Math.max(1, points.length - 1)) * 100},${100 - ((value - min) / Math.max(1, max - min)) * 82 - 9}`).join(" "); return <svg aria-label="Equity curve" className="mt-5 h-64 w-full overflow-visible" preserveAspectRatio="none" viewBox="0 0 100 100"><defs><linearGradient id="equityFill" x1="0" x2="0" y1="0" y2="1"><stop stopColor="#22c55e" stopOpacity=".28"/><stop offset="1" stopColor="#22c55e" stopOpacity="0"/></linearGradient></defs><polyline fill="none" points={polyline} stroke="#22c55e" strokeWidth="1.5" vectorEffect="non-scaling-stroke"/></svg>; }
+function AnalyticsEquityCurve({ points }: { points: number[] }) { if (!points.length) return <EmptyState title="Chưa có đường cong vốn" message="Chưa có lệnh đã đóng trong khoảng thời gian đã chọn." />; const min = Math.min(...points); const max = Math.max(...points); const polyline = points.map((value, index) => `${(index / Math.max(1, points.length - 1)) * 100},${100 - ((value - min) / Math.max(1, max - min)) * 82 - 9}`).join(" "); return <svg aria-label="Đường cong vốn" className="mt-5 h-64 w-full overflow-visible" preserveAspectRatio="none" viewBox="0 0 100 100"><defs><linearGradient id="equityFill" x1="0" x2="0" y1="0" y2="1"><stop stopColor="#22c55e" stopOpacity=".28"/><stop offset="1" stopColor="#22c55e" stopOpacity="0"/></linearGradient></defs><polyline fill="none" points={polyline} stroke="#22c55e" strokeWidth="1.5" vectorEffect="non-scaling-stroke"/></svg>; }
 function AnalyticsBreakdown({ title, subtitle, rows }: { title: string; subtitle: string; rows: AnalyticsRow[] }) { return <section className="glass-card overflow-hidden"><div className="border-b border-[var(--border-default)] p-4"><h3 className="font-bold">{title}</h3><p className="mt-1 text-xs text-[var(--text-muted)]">{subtitle}</p></div>{rows.length ? <div className="divide-y divide-[var(--border-default)]">{rows.slice(0, 6).map((row) => <div className="grid grid-cols-[1fr_auto_auto] items-center gap-3 px-4 py-3 text-sm" key={row.name}><div className="min-w-0"><p className="truncate font-semibold">{row.name}</p><p className="mt-0.5 text-xs text-[var(--text-muted)]">{row.trades} trades · {row.winRate.toFixed(0)}% win</p></div><span className={`num-display font-bold ${row.pnl >= 0 ? "text-[var(--color-profit)]" : "text-[var(--color-loss)]"}`}>{row.pnl >= 0 ? "+" : ""}{money(row.pnl)}</span><span className="h-2 w-2 rounded-full bg-[var(--color-info)]" /></div>)}</div> : <div className="p-4"><EmptyState title="Chưa có dữ liệu" message="Chọn khoảng thời gian khác hoặc chờ thêm lệnh được đóng." /></div>}</section>; }
 function TradingHeatmap({ days }: { days: Array<{ date: string; pnl: number }> }) { const magnitude = Math.max(...days.map((day) => Math.abs(day.pnl)), 1); return <div className="mt-5 grid grid-cols-7 gap-2">{days.map((day) => { const opacity = Math.max(.12, Math.abs(day.pnl) / magnitude); const bg = day.pnl > 0 ? `rgba(34, 197, 94, ${opacity})` : day.pnl < 0 ? `rgba(239, 68, 68, ${opacity})` : "rgba(255,255,255,.035)"; return <div className="group relative aspect-square min-h-10 rounded-md border border-white/[0.04] p-1.5" key={day.date} style={{ background: bg }} title={`${day.date}: ${money(day.pnl)}`}><span className="text-[10px] text-[var(--text-secondary)]">{new Date(`${day.date}T00:00:00`).getDate()}</span><span className="absolute bottom-1.5 right-1.5 text-[9px] font-bold text-white/80">{day.pnl ? `${day.pnl > 0 ? "+" : ""}${Math.round(day.pnl)}` : ""}</span></div>; })}</div>; }
 
@@ -2814,15 +2597,15 @@ function ExitAnalyticsPanel({ analytics }: { analytics: ExitAnalytics | null }) 
     <section className="glass-card p-4 md:col-span-3 border-[var(--color-info)]/10">
       <div className="mb-4 flex flex-wrap items-start justify-between gap-3">
         <div>
-          <h3 className="font-bold">Exit Analytics · chỉ đọc</h3>
+          <h3 className="font-bold">Phân tích thoát lệnh · chỉ đọc</h3>
           <p className="mt-1 text-xs text-[var(--text-muted)]">
-            Quan sát lịch sử thoát lệnh, không thay đổi Stop Loss, Take Profit hoặc execution.
+            Quan sát lịch sử thoát lệnh, không thay đổi cắt lỗ, chốt lời hoặc quá trình thực thi.
           </p>
         </div>
         <StatusChip label="Chế độ" value={analytics?.read_only ? "READ-ONLY" : "Đang tải"} safe={!!analytics?.read_only} />
       </div>
       <div className="grid gap-3 md:grid-cols-5">
-        <Metric label="Close fills" value={String(analytics?.summary.close_fills ?? 0)} />
+        <Metric label="Lệnh đóng đã khớp" value={String(analytics?.summary.close_fills ?? 0)} />
         <Metric label="Realized PnL" value={money(analytics?.summary.realized_pnl)} />
         <Metric label="Commission" value={money(analytics?.summary.commission)} />
         <Metric label="Funding" value={money(analytics?.summary.funding)} />
@@ -2879,74 +2662,13 @@ function ExitBreakdown({
   );
 }
 
-/* ──────────────────────────── BACKTEST PANEL ──────────────────────────── */
-
-function BacktestPanel() {
-  const [symbol, setSymbol] = useState("BTCUSDT");
-  const [interval, setInterval] = useState("15m");
-  const [candidateScore, setCandidateScore] = useState(75);
-  const [report, setReport] = useState<BacktestReport | null>(null);
-  const [optimizer, setOptimizer] = useState<BacktestOptimizerReport | null>(null);
-  const [running, setRunning] = useState(false);
-  const [optimizing, setOptimizing] = useState(false);
-  const [message, setMessage] = useState("");
-  async function run() {
-    setRunning(true);
-    setMessage("");
-    try {
-      setReport(
-        await api.runBacktest({
-          symbol: symbol.toUpperCase(), interval, limit: 1000,
-          baseline: { name: "Baseline", min_score: 70, risk_fraction: 0.005, stop_atr_multiplier: 1.2, take_profit_r_multiples: [1, 1.8, 2.6], take_profit_fractions: [0.4, 0.3, 0.3] },
-          candidate: { name: "Candidate", min_score: candidateScore, risk_fraction: 0.005, stop_atr_multiplier: 1.2, take_profit_r_multiples: [1, 1.8, 2.6], take_profit_fractions: [0.4, 0.3, 0.3] },
-        }),
-      );
-    } catch (error) {
-      setMessage(error instanceof Error ? error.message : "Không chạy được backtest");
-    } finally { setRunning(false); }
-  }
-  async function optimize() {
-    setOptimizing(true);
-    setMessage("");
-    try {
-      setOptimizer(await api.optimizeBacktest({
-        run: { symbol: symbol.toUpperCase(), interval, limit: 1000 },
-        min_scores: [65, 70, 75],
-        stop_atr_multipliers: [1, 1.2],
-        risk_fractions: [0.003],
-        minimum_oos_trades: 2,
-        max_candidates: 6,
-      }));
-    } catch (error) {
-      setMessage(error instanceof Error ? error.message : "Không chạy được optimizer");
-    } finally { setOptimizing(false); }
-  }
-  const cards = report ? [report.baseline, report.candidate].filter((item): item is NonNullable<typeof item> => item !== null) : [];
-  return (
-    <section className="glass-card p-4 md:col-span-3">
-      <div className="mb-4 flex flex-wrap items-end gap-3">
-        <div><label className="mb-1 block text-xs text-[var(--text-muted)]">Cặp</label><input className="terminal-input" value={symbol} onChange={(event) => setSymbol(event.target.value)} /></div>
-        <div><label className="mb-1 block text-xs text-[var(--text-muted)]">Khung</label><select className="terminal-select" value={interval} onChange={(event) => setInterval(event.target.value)}><option>5m</option><option>15m</option><option>1h</option><option>4h</option></select></div>
-        <div><label className="mb-1 block text-xs text-[var(--text-muted)]">Score Candidate</label><input className="terminal-input w-28" type="number" min={0} max={100} value={candidateScore} onChange={(event) => setCandidateScore(Number(event.target.value))} /></div>
-        <button className="btn-primary" disabled={running} onClick={run} type="button">{running ? "Đang chạy…" : "Chạy so sánh"}</button>
-        <button className="btn-secondary text-[var(--color-info)] border-[rgba(59,130,246,0.3)]" disabled={optimizing || running} onClick={optimize} type="button">{optimizing ? "Đang tối ưu…" : "Tối ưu có giới hạn"}</button>
-      </div>
-      <p className="mb-4 text-xs text-[var(--color-warning)]">Candidate chỉ dùng để thử nghiệm, không tự áp dụng vào DEMO/LIVE. Khớp ở nến kế tiếp và ưu tiên SL khi cùng nến chạm SL/TP.</p>
-      {message && <p className="text-sm text-[var(--color-loss)]">{message}</p>}
-      {report && <div className="mb-3 text-xs text-[var(--text-muted)]">{report.symbol} · {report.interval} · {report.candle_count} nến · dữ liệu {report.dataset_fingerprint.slice(0, 12)}</div>}
-      <div className="grid gap-4 md:grid-cols-2">{cards.map((item) => <div className="glass-card p-4" key={item.config_fingerprint}><h4 className="mb-3 font-black">{item.config.name}</h4><div className="grid grid-cols-2 gap-2 text-sm"><span className="text-[var(--text-muted)]">PNL</span><b className="num-display">{money(item.metrics.pnl)}</b><span className="text-[var(--text-muted)]">Profit Factor</span><b className="num-display">{number(item.metrics.profit_factor)}</b><span className="text-[var(--text-muted)]">Max DD</span><b className="num-display">{percent(item.max_drawdown_percent)}</b><span className="text-[var(--text-muted)]">Expectancy</span><b className="num-display">{money(item.metrics.expectancy)}</b><span className="text-[var(--text-muted)]">Winrate</span><b className="num-display">{percent(item.metrics.winrate * 100)}</b><span className="text-[var(--text-muted)]">Average R</span><b className="num-display">{number(item.average_r)}</b><span className="text-[var(--text-muted)]">Sharpe / Sortino</span><b className="num-display">{number(item.metrics.sharpe)} / {number(item.metrics.sortino)}</b><span className="text-[var(--text-muted)]">OOS trades</span><b className="num-display">{item.metrics.out_of_sample_trades}</b></div></div>)}</div>
-      {optimizer && <div className="mt-5 glass-card p-4 border-[rgba(59,130,246,0.15)]"><div className="mb-3 flex flex-wrap justify-between gap-2"><h4 className="font-black">Xếp hạng Candidate theo Validation/OOS</h4><span className="text-xs text-[var(--text-muted)]">{optimizer.eligible_candidates}/{optimizer.evaluated_candidates} đủ điều kiện · dữ liệu {optimizer.dataset_fingerprint.slice(0, 12)}</span></div><p className="mb-3 text-xs text-[var(--color-warning)]">Chỉ đọc: kết quả không thể tự thay đổi Baseline, DEMO hoặc LIVE.</p><div className="overflow-x-auto"><table className="w-full min-w-[760px] text-left text-sm"><thead className="text-xs text-[var(--text-muted)]"><tr><th className="py-2">Hạng</th><th>Candidate</th><th>Điểm ổn định</th><th>Validation PNL</th><th>OOS PNL / lệnh</th><th>Walk-forward</th><th>Đánh giá</th></tr></thead><tbody>{optimizer.candidates.map((item) => { const validation = item.report.segments.find((segment) => segment.name === "VALIDATION"); const oos = item.report.segments.find((segment) => segment.name === "OUT_OF_SAMPLE"); return <tr className="border-t border-[var(--border-default)]" key={item.report.config_fingerprint}><td className="py-3 font-black">#{item.rank}</td><td>{item.report.config.name}</td><td className="num-display">{number(item.score)}</td><td className="num-display">{money(validation?.metrics.pnl)}</td><td className="num-display">{money(oos?.metrics.pnl)} / {oos?.metrics.trades ?? 0}</td><td className="num-display">{percent(item.profitable_walk_forward_ratio * 100)}</td><td className={item.eligible ? "text-[var(--color-profit)]" : "text-[var(--color-loss)]"}>{item.eligible ? "Đủ điều kiện nghiên cứu tiếp" : item.rejection_reasons.join("; ")}</td></tr>; })}</tbody></table></div></div>}
-    </section>
-  );
-}
-
 /* ──────────────────────────── SMART ENTRY PANEL ──────────────────────────── */
 
 function SmartEntryPanel({ analytics }: { analytics: SmartEntryPayload | null }) {
   return (
     <section className="glass-card p-4 md:col-span-3 border-[var(--color-info)]/10">
-      <h3 className="text-lg font-black">Smart Entry Analytics · Shadow only</h3>
-      <p className="mb-4 text-sm text-[var(--text-muted)]">Quan sát candidate từ nến đóng; không thay đổi Baseline hoặc gửi lệnh.</p>
+      <h3 className="text-lg font-black">Phân tích điểm vào thông minh · chỉ quan sát</h3>
+      <p className="mb-4 text-sm text-[var(--text-muted)]">Quan sát phương án từ nến đóng; không thay đổi Baseline hoặc gửi lệnh.</p>
       <div className="grid gap-3 md:grid-cols-3">
         <Metric label="Tổng evidence" value={number(analytics?.summary.total ?? 0)} />
         <Metric label="Sẽ vào lệnh (mô phỏng)" value={number(analytics?.summary.WOULD_ENTER ?? 0)} />
@@ -2986,18 +2708,22 @@ function SmartEntryPanel({ analytics }: { analytics: SmartEntryPayload | null })
         <p className="mt-1 text-xs text-[var(--text-muted)]">Cần tối thiểu {analytics?.performance.minimum_sample ?? 30} outcome; chỉ thống kê mô tả, không tối ưu threshold.</p>
         <div className="mt-3 grid gap-3 md:grid-cols-4">
           <Metric label="Sample outcome" value={number(analytics?.performance.sample_size ?? 0)} />
-          <Metric label="Win rate" value={analytics?.performance.overall.win_rate == null ? "Chưa có" : percent(analytics.performance.overall.win_rate)} />
+          <Metric label="Tỷ lệ thắng" value={analytics?.performance.overall.win_rate == null ? "Chưa có" : percent(analytics.performance.overall.win_rate)} />
           <Metric label="Return TB / trung vị" value={analytics?.performance.overall.average_return == null ? "Chưa có" : `${percent(analytics.performance.overall.average_return)} / ${percent(analytics.performance.overall.median_return ?? 0)}`} />
           <Metric label="MFE / MAE trung bình" value={analytics?.performance.overall.average_mfe == null ? "Chưa có" : `${percent(analytics.performance.overall.average_mfe)} / ${percent(analytics.performance.overall.average_mae ?? 0)}`} />
         </div>
         <div className="mt-3 flex flex-wrap gap-2 text-xs">{Object.entries(analytics?.performance.dimensions.horizon ?? {}).map(([key, metric]) => <span className="rounded-lg bg-[rgba(255,255,255,0.03)] px-2 py-1" key={key}>{key} nến · n={metric.sample_size} · WR {metric.win_rate == null ? "-" : percent(metric.win_rate)} · TB {metric.average_return == null ? "-" : percent(metric.average_return)}</span>)}</div>
       </div>
-      <div className="mt-4 grid gap-2">{(analytics?.items ?? []).slice(0, 15).map((item) => <div className="glass-card p-3" key={item.event_key}><div className="flex flex-wrap justify-between gap-2"><b>{item.symbol} · {item.side} · {item.timeframe}</b><span className={item.decision === "WOULD_ENTER" ? "text-[var(--color-profit)]" : "text-[var(--color-warning)]"}>{item.decision_label}</span></div><p className="mt-1 text-xs text-[var(--text-muted)]">{item.decision_description}</p><p className="mt-1 text-xs text-[var(--text-muted)]">Điểm {item.quality_score}/100 · Entry {number(item.entry_price)} · R:R {item.risk_reward === null ? "chưa xác minh" : number(item.risk_reward)} · {new Date(item.decision_at).toLocaleString("vi-VN")}</p>{item.reasons.length > 0 && <p className="mt-2 text-sm text-[var(--color-warning)]">{item.reasons.join("; ")}</p>}<div className="mt-2 flex flex-wrap gap-2 text-xs">{[4, 12, 24].map((horizon) => { const outcome = item.outcomes[String(horizon)]; return <span className="rounded-lg bg-[rgba(255,255,255,0.03)] px-2 py-1" key={horizon}>{horizon} nến: {outcome ? `${percent(outcome.return_fraction)} · MFE ${percent(outcome.mfe_fraction)} · MAE ${percent(outcome.mae_fraction)}` : "đang chờ đủ nến đóng"}</span>; })}</div></div>)}{(analytics?.items.length ?? 0) === 0 && <p className="text-sm text-[var(--text-muted)]">Chưa có candidate shadow được ghi nhận.</p>}</div>
+      <div className="mt-4 grid gap-2">{(analytics?.items ?? []).slice(0, 15).map((item) => <div className="glass-card p-3" key={item.event_key}><div className="flex flex-wrap justify-between gap-2"><b>{item.symbol} · {item.side} · {item.timeframe}</b><span className={item.decision === "WOULD_ENTER" ? "text-[var(--color-profit)]" : "text-[var(--color-warning)]"}>{item.decision_label}</span></div><p className="mt-1 text-xs text-[var(--text-muted)]">{item.decision_description}</p><p className="mt-1 text-xs text-[var(--text-muted)]">Điểm {item.quality_score}/100 · Giá vào {number(item.entry_price)} · R:R {item.risk_reward === null ? "chưa xác minh" : number(item.risk_reward)} · {new Date(item.decision_at).toLocaleString("vi-VN")}</p>{item.reasons.length > 0 && <p className="mt-2 text-sm text-[var(--color-warning)]">{item.reasons.join("; ")}</p>}<div className="mt-2 flex flex-wrap gap-2 text-xs">{[4, 12, 24].map((horizon) => { const outcome = item.outcomes[String(horizon)]; return <span className="rounded-lg bg-[rgba(255,255,255,0.03)] px-2 py-1" key={horizon}>{horizon} nến: {outcome ? `${percent(outcome.return_fraction)} · MFE ${percent(outcome.mfe_fraction)} · MAE ${percent(outcome.mae_fraction)}` : "đang chờ đủ nến đóng"}</span>; })}</div></div>)}{(analytics?.items.length ?? 0) === 0 && <p className="text-sm text-[var(--text-muted)]">Chưa có phương án quan sát được ghi nhận.</p>}</div>
     </section>
   );
 }
 
 /* ──────────────────────────── RISK PAGE ──────────────────────────── */
+
+function viRiskLevel(level: "LOW" | "MEDIUM" | "HIGH"): string {
+  return level === "LOW" ? "THẤP" : level === "MEDIUM" ? "TRUNG BÌNH" : "CAO";
+}
 
 function RiskMeter({ label, value, max }: { label: string; value: number; max: number }) {
   const ratio = max > 0 ? Math.max(0, Math.min(1, value / max)) : 0;
@@ -3009,7 +2735,7 @@ function RiskMeter({ label, value, max }: { label: string; value: number; max: n
     <div className="glass-card border border-white/[0.04] p-4 space-y-3">
       <div className="flex items-center justify-between gap-3">
         <p className="text-xs font-bold uppercase tracking-wide text-[var(--text-muted)]">{label}</p>
-        <span className="rounded-md px-2 py-1 text-[11px] font-bold" style={{ backgroundColor: bg, color }}>{level}</span>
+        <span className="rounded-md px-2 py-1 text-[11px] font-bold" style={{ backgroundColor: bg, color }}>{viRiskLevel(level)}</span>
       </div>
       <div className="text-xl font-bold num-display" style={{ color }}>{money(value)}</div>
       <div className="h-2 w-full overflow-hidden rounded-full bg-white/[0.06]">
@@ -3022,9 +2748,9 @@ function RiskMeter({ label, value, max }: { label: string; value: number; max: n
 
 function RiskStatusBadge({ severity }: { severity: "LOW" | "MEDIUM" | "HIGH" }) {
   const map: Record<"LOW" | "MEDIUM" | "HIGH", [string, string, string]> = {
-    LOW: ["LOW RISK", "var(--color-profit)", "rgba(34,197,94,0.08)"],
-    MEDIUM: ["MEDIUM RISK", "var(--color-warning)", "rgba(245,158,11,0.08)"],
-    HIGH: ["HIGH RISK", "var(--color-loss)", "rgba(239,68,68,0.08)"],
+    LOW: ["RỦI RO THẤP", "var(--color-profit)", "rgba(34,197,94,0.08)"],
+    MEDIUM: ["RỦI RO TRUNG BÌNH", "var(--color-warning)", "rgba(245,158,11,0.08)"],
+    HIGH: ["RỦI RO CAO", "var(--color-loss)", "rgba(239,68,68,0.08)"],
   };
   const [label, color, bg] = map[severity];
   return (
@@ -3080,29 +2806,29 @@ return (
     <div className="space-y-5">
   <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
         <div>
-          <p className="text-xs font-bold uppercase tracking-[0.12em] text-[var(--color-info)]">Risk center</p>
+          <p className="text-xs font-bold uppercase tracking-[0.12em] text-[var(--color-info)]">Trung tâm rủi ro</p>
           <h2 className="mt-1 text-xl font-bold">Trung tâm rủi ro</h2>
-          <p className="mt-1 text-sm text-[var(--text-muted)]">Tổng quan exposure, loss, drawdown và trạng thái rủi ro danh mục — ưu tiên rõ ràng, không gây rối.</p>
+          <p className="mt-1 text-sm text-[var(--text-muted)]">Tổng quan mức tiếp xúc, lỗ, sụt giảm và trạng thái rủi ro danh mục — ưu tiên rõ ràng, không gây rối.</p>
         </div>
         <RiskStatusBadge severity={riskStatus} />
       </div>
 
       <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
-        <RiskMeter label="Current Exposure" value={exposure} max={exposureLimit} />
-        <RiskMeter label="Max Exposure" value={exposureLimit} max={exposureLimit || 1} />
-        <RiskMeter label="Daily Loss" value={dailyLossUsed} max={dailyLossLimit} />
-        <RiskMeter label="Daily Loss Limit" value={dailyLossLimit} max={dailyLossLimit || 1} />
-        <RiskMeter label="Drawdown" value={currentDrawdownPct} max={maxDrawdownPct} />
-        <RiskMeter label="Max Drawdown" value={maxDrawdownPct} max={maxDrawdownPct || 1} />
+        <RiskMeter label="Mức tiếp xúc hiện tại" value={exposure} max={exposureLimit} />
+        <RiskMeter label="Mức tiếp xúc tối đa" value={exposureLimit} max={exposureLimit || 1} />
+        <RiskMeter label="Lỗ trong ngày" value={dailyLossUsed} max={dailyLossLimit} />
+        <RiskMeter label="Giới hạn lỗ ngày" value={dailyLossLimit} max={dailyLossLimit || 1} />
+        <RiskMeter label="Mức sụt giảm" value={currentDrawdownPct} max={maxDrawdownPct} />
+        <RiskMeter label="Sụt giảm tối đa" value={maxDrawdownPct} max={maxDrawdownPct || 1} />
       </div>
 
       <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-6">
-        <Metric label="Risk Status" value={riskStatus} tone={riskStatus === "HIGH" ? "bad" : riskStatus === "MEDIUM" ? "bad" : "good"} />
-        <Metric label="Current Exposure" value={`${money(exposure)} / ${money(exposureLimit)}`} />
-        <Metric label="Max Exposure" value={money(exposureLimit)} />
-        <Metric label="Daily Loss" value={`${money(dailyLossUsed)} / ${money(dailyLossLimit)}`} />
-        <Metric label="Drawdown" value={`${percent(currentDrawdownPct)} / ${percent(maxDrawdownPct)}`} />
-        <Metric label="Risk Engine" value={portfolioRisk?.portfolio.mode ?? "N/A"} />
+        <Metric label="Trạng thái rủi ro" value={viRiskLevel(riskStatus)} tone={riskStatus === "HIGH" ? "bad" : riskStatus === "MEDIUM" ? "bad" : "good"} />
+        <Metric label="Mức tiếp xúc hiện tại" value={`${money(exposure)} / ${money(exposureLimit)}`} />
+        <Metric label="Mức tiếp xúc tối đa" value={money(exposureLimit)} />
+        <Metric label="Lỗ trong ngày" value={`${money(dailyLossUsed)} / ${money(dailyLossLimit)}`} />
+        <Metric label="Mức sụt giảm" value={`${percent(currentDrawdownPct)} / ${percent(maxDrawdownPct)}`} />
+        <Metric label="Bộ máy rủi ro" value={portfolioRisk?.portfolio.mode ?? "N/A"} />
       </div>
 
       {(portfolioRisk?.portfolio.reasons.length ?? 0) > 0 && (
@@ -3111,18 +2837,18 @@ return (
         </div>
       )}
 
-      <DataPanel title="Portfolio Risk Engine · Shadow mode">
+      <DataPanel title="Bộ máy rủi ro danh mục · chế độ quan sát">
         <div className="mb-4 flex flex-wrap items-center justify-between gap-2">
           <p className="text-sm text-[var(--text-muted)]">Chỉ quan sát và audit; chưa chặn Baseline DEMO, không tác động LIVE.</p>
           <span className="rounded-md bg-[rgba(245,158,11,0.08)] px-2 py-1 text-[11px] font-bold text-[var(--color-warning)]">ENFORCEMENT OFF</span>
         </div>
         <div className="grid gap-3 md:grid-cols-3">
-          <Metric label="Gross exposure" value={`${money(portfolioRisk?.portfolio.gross_exposure)} · ${percent((portfolioRisk?.portfolio.gross_exposure_fraction ?? 0) * 100)}`} />
-          <Metric label="Net exposure" value={`${money(portfolioRisk?.portfolio.net_exposure)} · ${percent((portfolioRisk?.portfolio.net_exposure_fraction ?? 0) * 100)}`} />
-          <Metric label="Open risk đã xác minh" value={`${money(portfolioRisk?.portfolio.open_risk)} / ${money(portfolioRisk?.portfolio.open_risk_limit)}`} />
-          <Metric label="Ngân sách risk còn lại" value={money(portfolioRisk?.portfolio.open_risk_remaining)} />
-          <Metric label="LONG / SHORT notional" value={`${money(portfolioRisk?.portfolio.long_notional)} / ${money(portfolioRisk?.portfolio.short_notional)}`} />
-          <Metric label="Shadow decision" value={portfolioRisk?.portfolio.would_reject_new_entries ? "Sẽ từ chối lệnh mới" : "Còn room theo danh mục"} />
+          <Metric label="Mức tiếp xúc gộp" value={`${money(portfolioRisk?.portfolio.gross_exposure)} · ${percent((portfolioRisk?.portfolio.gross_exposure_fraction ?? 0) * 100)}`} />
+          <Metric label="Mức tiếp xúc ròng" value={`${money(portfolioRisk?.portfolio.net_exposure)} · ${percent((portfolioRisk?.portfolio.net_exposure_fraction ?? 0) * 100)}`} />
+          <Metric label="Rủi ro mở đã xác minh" value={`${money(portfolioRisk?.portfolio.open_risk)} / ${money(portfolioRisk?.portfolio.open_risk_limit)}`} />
+          <Metric label="Ngân sách rủi ro còn lại" value={money(portfolioRisk?.portfolio.open_risk_remaining)} />
+          <Metric label="Giá trị LONG / SHORT" value={`${money(portfolioRisk?.portfolio.long_notional)} / ${money(portfolioRisk?.portfolio.short_notional)}`} />
+          <Metric label="Quyết định quan sát" value={portfolioRisk?.portfolio.would_reject_new_entries ? "Sẽ từ chối lệnh mới" : "Còn dư địa theo danh mục"} />
         </div>
         <div className="mt-4 overflow-x-auto">
           <table className="w-full min-w-[720px] text-left text-sm">
@@ -3130,10 +2856,10 @@ return (
               <tr>
                 <th className="py-2">Symbol</th>
                 <th>Phía / quantity</th>
-                <th>Notional</th>
+                <th>Giá trị danh nghĩa</th>
                 <th>Tỷ trọng</th>
-                <th>Open risk</th>
-                <th>Stop Loss</th>
+                <th>Rủi ro đang mở</th>
+                <th>Cắt lỗ</th>
               </tr>
             </thead>
             <tbody>
@@ -3197,10 +2923,10 @@ function Logs({ logs }: { logs: LogItem[] }) {
 
 const JOURNAL_FILTERS: { key: JournalCategory; label: string; color: string }[] = [
   { key: "ALL", label: "All", color: "var(--text-secondary)" },
-  { key: "TRADING", label: "Trading", color: "var(--color-info)" },
+  { key: "TRADING", label: "Giao dịch", color: "var(--color-info)" },
   { key: "AI", label: "AI", color: "var(--color-ai)" },
-  { key: "RISK", label: "Risk", color: "var(--color-warning)" },
-  { key: "SYSTEM", label: "System", color: "var(--text-muted)" },
+  { key: "RISK", label: "Rủi ro", color: "var(--color-warning)" },
+  { key: "SYSTEM", label: "Hệ thống", color: "var(--text-muted)" },
   { key: "ERRORS", label: "Errors", color: "var(--color-loss)" },
 ];
 
@@ -3351,7 +3077,6 @@ function deriveSystemServices(
   status: StatusPayload | null,
   exchange: ExchangeSnapshot | null,
   operations: OperationsStatus | null,
-  wsState: WsState,
 ): ServiceEntry[] {
   const apiStatus: ServiceStatus = status ? "OPERATIONAL" : "OFFLINE";
   const exchangeStatus: ServiceStatus =
@@ -3376,7 +3101,6 @@ function deriveSystemServices(
         : "OFFLINE";
   const telegramStatus: ServiceStatus =
     operations?.notifications.configured ? "OPERATIONAL" : "OFFLINE";
-  const gateway = operations?.gateway?.demo;
   const totalCacheHits = (operations?.gateway?.demo?.cache?.hits ?? 0) + (operations?.gateway?.live?.cache?.hits ?? 0);
   const totalCacheMisses = (operations?.gateway?.demo?.cache?.misses ?? 0) + (operations?.gateway?.live?.cache?.misses ?? 0);
   const cacheStatus: ServiceStatus =
@@ -3406,15 +3130,15 @@ function deriveSystemServices(
       : "OFFLINE";
 
   return [
-    { name: "API", status: apiStatus, detail: status ? "Backend connected" : "Connecting...", icon: <Server size={14} /> },
-    { name: "Exchange", status: exchangeStatus, detail: viExchangeConnection(exchange?.connection), icon: <Building2 size={14} /> },
-    { name: "Market Data", status: marketDataStatus, detail: viExchangeFreshness(exchange?.freshness), icon: <BarChart3 size={14} /> },
-    { name: "AI Engine", status: aiStatus, detail: operations?.ai_analytics.training?.mode ?? "Loading", icon: <Brain size={14} /> },
-    { name: "Telegram", status: telegramStatus, detail: operations?.notifications.configured ? "Connected" : "Disabled", icon: <MessageSquare size={14} /> },
-    { name: "Cache", status: cacheStatus, detail: totalCacheHits + totalCacheMisses > 0 ? `${((totalCacheHits / (totalCacheHits + totalCacheMisses)) * 100).toFixed(0)}% hit rate` : "Loading", icon: <Database size={14} /> },
-    { name: "Reconcile", status: reconcileStatus, detail: operations?.reconciliation?.last_reconciled_at ? `Last: ${new Date(operations.reconciliation.last_reconciled_at).toLocaleTimeString()}` : "Loading", icon: <GitCompare size={14} /> },
-    { name: "Rate Limit", status: rateLimitStatus, detail: marketWeight > 0 ? `Weight: ${marketWeight}/min` : "Loading", icon: <Gauge size={14} /> },
-    { name: "Auto Loop", status: autoLoopStatus, detail: status?.auto_trader?.running ? `Cycles: ${status.auto_trader.cycles}` : "Stopped", icon: <RotateCw size={14} /> },
+    { name: "API", status: apiStatus, detail: status ? "Backend đã kết nối" : "Đang kết nối...", icon: <Server size={14} /> },
+    { name: "Sàn giao dịch", status: exchangeStatus, detail: viExchangeConnection(exchange?.connection), icon: <Building2 size={14} /> },
+    { name: "Dữ liệu thị trường", status: marketDataStatus, detail: viExchangeFreshness(exchange?.freshness), icon: <BarChart3 size={14} /> },
+    { name: "Bộ máy AI", status: aiStatus, detail: operations?.ai_analytics.training?.mode ?? "Đang tải", icon: <Brain size={14} /> },
+    { name: "Telegram", status: telegramStatus, detail: operations?.notifications.configured ? "Đã kết nối" : "Đã tắt", icon: <MessageSquare size={14} /> },
+    { name: "Bộ nhớ đệm", status: cacheStatus, detail: totalCacheHits + totalCacheMisses > 0 ? `${((totalCacheHits / (totalCacheHits + totalCacheMisses)) * 100).toFixed(0)}% lượt truy cập thành công` : "Đang tải", icon: <Database size={14} /> },
+    { name: "Đối soát", status: reconcileStatus, detail: operations?.reconciliation?.last_reconciled_at ? `Lần cuối: ${new Date(operations.reconciliation.last_reconciled_at).toLocaleTimeString()}` : "Đang tải", icon: <GitCompare size={14} /> },
+    { name: "Giới hạn API", status: rateLimitStatus, detail: marketWeight > 0 ? `Tải: ${marketWeight}/phút` : "Đang tải", icon: <Gauge size={14} /> },
+    { name: "Vòng lặp tự động", status: autoLoopStatus, detail: status?.auto_trader?.running ? `Chu kỳ: ${status.auto_trader.cycles}` : "Đã dừng", icon: <RotateCw size={14} /> },
   ];
 }
 
@@ -3425,7 +3149,123 @@ function statusClass(s: ServiceStatus): string {
   return "system-status-offline";
 }
 
+function viServiceStatus(status: ServiceStatus): string {
+  if (status === "OPERATIONAL") return "HOẠT ĐỘNG";
+  if (status === "WARNING") return "CẢNH BÁO";
+  if (status === "ERROR") return "LỖI";
+  return "NGẮT KẾT NỐI";
+}
+
 /* ── SystemStatusDrawer (Phase 16: enhanced with performance + runtime) ── */
+function SystemStatusDrawerContent({
+  onClose,
+  services,
+  wsState,
+}: {
+  onClose: () => void;
+  services: ServiceEntry[];
+  wsState: WsState;
+}) {
+  const [perfData, setPerfData] = useState<Performance | null>(null);
+  useEffect(() => {
+    api.performance().then(setPerfData).catch(() => {});
+  }, []);
+  const operational = services.filter((s) => s.status === "OPERATIONAL").length;
+  const warnings = services.filter((s) => s.status === "WARNING").length;
+  const errors = services.filter((s) => s.status === "ERROR" || s.status === "OFFLINE").length;
+  const healthPct = services.length > 0 ? Math.round((operational / services.length) * 100) : 0;
+  return (
+    <div className="fixed inset-0 z-50 flex justify-end" onClick={onClose}>
+      <div className="absolute inset-0 bg-black/40 backdrop-blur-sm" />
+      <div
+        className="relative ml-auto flex h-full w-full max-w-sm flex-col border-l border-[var(--border-default)] bg-[var(--bg-elevated)] shadow-2xl system-status-drawer-panel"
+        onClick={(e) => e.stopPropagation()}
+      >
+        {/* Header */}
+        <div className="flex items-center justify-between border-b border-[var(--border-default)] px-5 py-4">
+          <div>
+            <h3 className="text-sm font-bold text-[var(--text-primary)]">Trạng thái hệ thống</h3>
+            <p className="mt-0.5 text-xs text-[var(--text-muted)]">
+              {operational}/{services.length} dịch vụ hoạt động
+            </p>
+          </div>
+          <button className="rounded-lg p-1.5 transition hover:bg-[rgba(255,255,255,0.06)]" onClick={onClose} type="button">
+            <X size={16} className="text-[var(--text-muted)]" />
+          </button>
+        </div>
+
+        {/* Health overview bar */}
+        <div className="border-b border-[var(--border-default)] px-5 py-3">
+          <div className="flex items-center justify-between text-[11px]">
+            <span className="font-bold text-[var(--text-secondary)]">Sức khỏe hệ thống</span>
+            <span className={`font-bold ${healthPct === 100 ? "text-[var(--color-profit)]" : healthPct > 60 ? "text-[var(--color-warning)]" : "text-[var(--color-loss)]"}`}>{healthPct}%</span>
+          </div>
+          <div className="mt-2 progress-track">
+            <div
+              className={`progress-fill ${healthPct === 100 ? "bg-[var(--color-profit)]" : healthPct > 60 ? "bg-[var(--color-warning)]" : "bg-[var(--color-loss)]"}`}
+              style={{ width: `${healthPct}%` }}
+            />
+          </div>
+          <div className="mt-2 flex gap-3 text-[10px] text-[var(--text-muted)]">
+            <span className="flex items-center gap-1"><span className="status-dot status-dot-live" /> {operational} OK</span>
+            {warnings > 0 && <span className="flex items-center gap-1"><span className="status-dot status-dot-stale" /> {warnings} Cảnh báo</span>}
+            {errors > 0 && <span className="flex items-center gap-1"><span className="status-dot status-dot-offline" /> {errors} Lỗi</span>}
+          </div>
+        </div>
+
+        {/* Runtime info */}
+        <div className="border-b border-[var(--border-default)] px-5 py-3">
+          <span className="text-[10px] font-bold uppercase text-[var(--text-muted)]">Vận hành</span>
+          <div className="mt-2 grid grid-cols-2 gap-2">
+            <div className="rounded-lg border border-[var(--border-default)] bg-[rgba(255,255,255,0.02)] px-3 py-2">
+              <span className="text-[10px] text-[var(--text-muted)]">WebSocket</span>
+              <span className={`mt-0.5 block text-xs font-bold ${wsState === "LIVE" ? "text-[var(--color-profit)]" : wsState === "STALE" ? "text-[var(--color-warning)]" : "text-[var(--color-loss)]"}`}>{viWsState(wsState)}</span>
+            </div>
+            <div className="rounded-lg border border-[var(--border-default)] bg-[rgba(255,255,255,0.02)] px-3 py-2">
+              <span className="text-[10px] text-[var(--text-muted)]">Tổng vốn</span>
+              <span className="mt-0.5 block text-xs font-bold text-[var(--text-primary)]">{perfData ? money(perfData.equity) : "-"}</span>
+            </div>
+            <div className="rounded-lg border border-[var(--border-default)] bg-[rgba(255,255,255,0.02)] px-3 py-2">
+              <span className="text-[10px] text-[var(--text-muted)]">PnL ròng</span>
+              <span className={`mt-0.5 block text-xs font-bold ${(perfData?.net_pnl ?? 0) >= 0 ? "text-[var(--color-profit)]" : "text-[var(--color-loss)]"}`}>{perfData ? money(perfData.net_pnl) : "-"}</span>
+            </div>
+            <div className="rounded-lg border border-[var(--border-default)] bg-[rgba(255,255,255,0.02)] px-3 py-2">
+              <span className="text-[10px] text-[var(--text-muted)]">Tỷ lệ thắng</span>
+              <span className="mt-0.5 block text-xs font-bold text-[var(--text-primary)]">{perfData ? percent(perfData.win_rate * 100) : "-"}</span>
+            </div>
+          </div>
+        </div>
+
+        {/* Services list */}
+        <div className="flex-1 overflow-y-auto">
+          <div className="px-5 pt-3 pb-1">
+            <span className="text-[10px] font-bold uppercase text-[var(--text-muted)]">Dịch vụ</span>
+          </div>
+          {services.map((service) => (
+            <div className="flex items-center justify-between border-b border-white/[0.03] px-5 py-3 last:border-b-0 transition hover:bg-[rgba(255,255,255,0.02)]" key={service.name}>
+              <div className="flex items-center gap-3">
+                <span className="text-[var(--text-muted)]">{service.icon}</span>
+                <span className="text-sm font-semibold text-[var(--text-primary)]">{service.name}</span>
+              </div>
+              <div className="flex items-center gap-2">
+                <span className={`rounded-md px-2 py-0.5 text-[10px] font-bold ${statusClass(service.status)}`}>{viServiceStatus(service.status)}</span>
+              </div>
+            </div>
+          ))}
+        </div>
+
+        {/* Footer */}
+        <div className="border-t border-[var(--border-default)] px-5 py-3">
+          <div className="flex items-center justify-between">
+            <p className="text-[10px] text-[var(--text-muted)]">Cập nhật lần cuối: {new Date().toLocaleTimeString("vi-VN")}</p>
+            <button className="text-[10px] font-bold text-[var(--color-info)] hover:opacity-80 transition" onClick={() => api.performance().then(setPerfData).catch(() => {})} type="button">Làm mới</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function SystemStatusDrawer({
   open,
   onClose,
@@ -3438,105 +3278,7 @@ function SystemStatusDrawer({
   wsState: WsState;
 }) {
   if (!open) return null;
-  const operational = services.filter((s) => s.status === "OPERATIONAL").length;
-  const warnings = services.filter((s) => s.status === "WARNING").length;
-  const errors = services.filter((s) => s.status === "ERROR" || s.status === "OFFLINE").length;
-  const healthPct = services.length > 0 ? Math.round((operational / services.length) * 100) : 0;
-  const [perfData, setPerfData] = useState<Performance | null>(null);
-  useEffect(() => {
-    if (!open) return;
-    api.performance().then(setPerfData).catch(() => {});
-  }, [open]);
-  return (
-    <div className="fixed inset-0 z-50 flex justify-end" onClick={onClose}>
-      <div className="absolute inset-0 bg-black/40 backdrop-blur-sm" />
-      <div
-        className="relative ml-auto flex h-full w-full max-w-sm flex-col border-l border-[var(--border-default)] bg-[var(--bg-elevated)] shadow-2xl system-status-drawer-panel"
-        onClick={(e) => e.stopPropagation()}
-      >
-        {/* Header */}
-        <div className="flex items-center justify-between border-b border-[var(--border-default)] px-5 py-4">
-          <div>
-            <h3 className="text-sm font-bold text-[var(--text-primary)]">System Status</h3>
-            <p className="mt-0.5 text-xs text-[var(--text-muted)]">
-              {operational}/{services.length} services operational
-            </p>
-          </div>
-          <button className="rounded-lg p-1.5 transition hover:bg-[rgba(255,255,255,0.06)]" onClick={onClose} type="button">
-            <X size={16} className="text-[var(--text-muted)]" />
-          </button>
-        </div>
-
-        {/* Health overview bar */}
-        <div className="border-b border-[var(--border-default)] px-5 py-3">
-          <div className="flex items-center justify-between text-[11px]">
-            <span className="font-bold text-[var(--text-secondary)]">System Health</span>
-            <span className={`font-bold ${healthPct === 100 ? "text-[var(--color-profit)]" : healthPct > 60 ? "text-[var(--color-warning)]" : "text-[var(--color-loss)]"}`}>{healthPct}%</span>
-          </div>
-          <div className="mt-2 progress-track">
-            <div
-              className={`progress-fill ${healthPct === 100 ? "bg-[var(--color-profit)]" : healthPct > 60 ? "bg-[var(--color-warning)]" : "bg-[var(--color-loss)]"}`}
-              style={{ width: `${healthPct}%` }}
-            />
-          </div>
-          <div className="mt-2 flex gap-3 text-[10px] text-[var(--text-muted)]">
-            <span className="flex items-center gap-1"><span className="status-dot status-dot-live" /> {operational} OK</span>
-            {warnings > 0 && <span className="flex items-center gap-1"><span className="status-dot status-dot-stale" /> {warnings} Warn</span>}
-            {errors > 0 && <span className="flex items-center gap-1"><span className="status-dot status-dot-offline" /> {errors} Err</span>}
-          </div>
-        </div>
-
-        {/* Runtime info */}
-        <div className="border-b border-[var(--border-default)] px-5 py-3">
-          <span className="text-[10px] font-bold uppercase text-[var(--text-muted)]">Runtime</span>
-          <div className="mt-2 grid grid-cols-2 gap-2">
-            <div className="rounded-lg border border-[var(--border-default)] bg-[rgba(255,255,255,0.02)] px-3 py-2">
-              <span className="text-[10px] text-[var(--text-muted)]">WebSocket</span>
-              <span className={`mt-0.5 block text-xs font-bold ${wsState === "LIVE" ? "text-[var(--color-profit)]" : wsState === "STALE" ? "text-[var(--color-warning)]" : "text-[var(--color-loss)]"}`}>{viWsState(wsState)}</span>
-            </div>
-            <div className="rounded-lg border border-[var(--border-default)] bg-[rgba(255,255,255,0.02)] px-3 py-2">
-              <span className="text-[10px] text-[var(--text-muted)]">Equity</span>
-              <span className="mt-0.5 block text-xs font-bold text-[var(--text-primary)]">{perfData ? money(perfData.equity) : "-"}</span>
-            </div>
-            <div className="rounded-lg border border-[var(--border-default)] bg-[rgba(255,255,255,0.02)] px-3 py-2">
-              <span className="text-[10px] text-[var(--text-muted)]">Net PnL</span>
-              <span className={`mt-0.5 block text-xs font-bold ${(perfData?.net_pnl ?? 0) >= 0 ? "text-[var(--color-profit)]" : "text-[var(--color-loss)]"}`}>{perfData ? money(perfData.net_pnl) : "-"}</span>
-            </div>
-            <div className="rounded-lg border border-[var(--border-default)] bg-[rgba(255,255,255,0.02)] px-3 py-2">
-              <span className="text-[10px] text-[var(--text-muted)]">Win Rate</span>
-              <span className="mt-0.5 block text-xs font-bold text-[var(--text-primary)]">{perfData ? percent(perfData.win_rate * 100) : "-"}</span>
-            </div>
-          </div>
-        </div>
-
-        {/* Services list */}
-        <div className="flex-1 overflow-y-auto">
-          <div className="px-5 pt-3 pb-1">
-            <span className="text-[10px] font-bold uppercase text-[var(--text-muted)]">Services</span>
-          </div>
-          {services.map((service) => (
-            <div className="flex items-center justify-between border-b border-white/[0.03] px-5 py-3 last:border-b-0 transition hover:bg-[rgba(255,255,255,0.02)]" key={service.name}>
-              <div className="flex items-center gap-3">
-                <span className="text-[var(--text-muted)]">{service.icon}</span>
-                <span className="text-sm font-semibold text-[var(--text-primary)]">{service.name}</span>
-              </div>
-              <div className="flex items-center gap-2">
-                <span className={`rounded-md px-2 py-0.5 text-[10px] font-bold ${statusClass(service.status)}`}>{service.status}</span>
-              </div>
-            </div>
-          ))}
-        </div>
-
-        {/* Footer */}
-        <div className="border-t border-[var(--border-default)] px-5 py-3">
-          <div className="flex items-center justify-between">
-            <p className="text-[10px] text-[var(--text-muted)]">Last refresh: {new Date().toLocaleTimeString("vi-VN")}</p>
-            <button className="text-[10px] font-bold text-[var(--color-info)] hover:opacity-80 transition" onClick={() => api.performance().then(setPerfData).catch(() => {})} type="button">Refresh</button>
-          </div>
-        </div>
-      </div>
-    </div>
-  );
+  return <SystemStatusDrawerContent onClose={onClose} services={services} wsState={wsState} />;
 }
 
 /* ──────────────────────────── SETTINGS PAGE (REDESIGN PHASE 14) ──────────────────────────── */
@@ -3640,10 +3382,10 @@ function SettingsPage({
         minimum_training_samples: aiDraft.minimum_training_samples,
       });
       setAiDraft(updated);
-      setAiMsg("AI config saved.");
+      setAiMsg("Đã lưu cấu hình AI.");
       await onSaved();
     } catch (err) {
-      setAiMsg(err instanceof Error ? err.message : "Error saving AI config.");
+      setAiMsg(err instanceof Error ? err.message : "Lỗi khi lưu cấu hình AI.");
     } finally {
       setAiSaving(false);
     }
@@ -3661,9 +3403,9 @@ function SettingsPage({
       {/* Header */}
       <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
         <div>
-          <p className="text-xs font-bold uppercase tracking-[0.12em] text-[var(--text-muted)]">Configuration</p>
-          <h2 className="mt-1 text-xl font-bold">Settings</h2>
-          <p className="mt-1 text-sm text-[var(--text-muted)]">Trading parameters, risk limits, and system configuration.</p>
+          <p className="text-xs font-bold uppercase tracking-[0.12em] text-[var(--text-muted)]">Cấu hình</p>
+          <h2 className="mt-1 text-xl font-bold">Cài đặt</h2>
+          <p className="mt-1 text-sm text-[var(--text-muted)]">Tham số giao dịch, giới hạn rủi ro và cấu hình hệ thống.</p>
         </div>
         <div className="flex items-center gap-2">
           <div className="relative flex-1 sm:w-56">
@@ -3671,15 +3413,15 @@ function SettingsPage({
             <input
               className="terminal-input w-full pl-8 pr-3 text-xs"
               onChange={(e) => setSearchQuery(e.target.value)}
-              placeholder="Search settings..."
+              placeholder="Tìm kiếm cài đặt..."
               value={searchQuery}
             />
           </div>
           <button className="btn-primary" disabled={saving} onClick={() => void save()} type="button">
             {saving ? (
-              <span className="flex items-center gap-2"><RefreshCw size={12} className="animate-spin" /> Saving</span>
+              <span className="flex items-center gap-2"><RefreshCw size={12} className="animate-spin" /> Đang lưu</span>
             ) : (
-              <span className="flex items-center gap-2"><Settings size={13} /> Save</span>
+              <span className="flex items-center gap-2"><Settings size={13} /> Lưu</span>
             )}
           </button>
         </div>
@@ -3688,156 +3430,156 @@ function SettingsPage({
       {/* 2-column grid on large screens */}
       <div className="grid gap-4 2xl:grid-cols-2">
         {/* ── TRADING ── */}
-        <SettingsSection title="Trading" icon={<BarChart3 size={14} />} color="var(--color-info)" count={tradingCount}>
+        <SettingsSection title="Giao dịch" icon={<BarChart3 size={14} />} color="var(--color-info)" count={tradingCount}>
           {matchSearch("Universe Mode", "VALIDATION vs ALL_MARKET") && (
-            <SettingsRow title="Universe Mode" desc="VALIDATION uses whitelist. ALL_MARKET scans all USD-M contracts with filters.">
+            <SettingsRow title="Phạm vi thị trường" desc="VALIDATION dùng danh sách cho phép. ALL_MARKET quét toàn bộ hợp đồng USD-M có áp dụng bộ lọc.">
               <select className="terminal-select" value={draft.universe_mode} onChange={(e) => setDraft({ ...draft, universe_mode: e.target.value as "VALIDATION" | "ALL_MARKET" })}>
-                <option value="VALIDATION">Validation (whitelist)</option>
-                <option value="ALL_MARKET">All Market (with controls)</option>
+                <option value="VALIDATION">Kiểm định (danh sách cho phép)</option>
+                <option value="ALL_MARKET">Toàn thị trường (có kiểm soát)</option>
               </select>
             </SettingsRow>
           )}
-          {matchSearch("Max Scan Symbols", "Maximum number of symbols") && (
-            <SettingsRow title="Max Scan Symbols" desc="Maximum number of symbols to scan per cycle.">
+          {matchSearch("Số mã quét tối đa", "Số mã tối đa") && (
+            <SettingsRow title="Số mã quét tối đa" desc="Số mã tối đa được quét trong mỗi chu kỳ.">
               <NumberField label="" value={draft.max_scan_symbols} onChange={(v) => setDraft({ ...draft, max_scan_symbols: v })} />
             </SettingsRow>
           )}
-          {matchSearch("Min Quote Volume", "24h quote volume") && (
-            <SettingsRow title="Min Quote Volume" desc="Minimum 24h quote volume filter.">
+          {matchSearch("Khối lượng tối thiểu", "khối lượng 24 giờ") && (
+            <SettingsRow title="Khối lượng tối thiểu" desc="Bộ lọc khối lượng định giá tối thiểu trong 24 giờ.">
               <NumberField label="" value={draft.min_quote_volume} onChange={(v) => setDraft({ ...draft, min_quote_volume: v })} />
             </SettingsRow>
           )}
-          {matchSearch("Max Spread", "bid-ask spread") && (
-            <SettingsRow title="Max Spread (bps)" desc="Maximum allowed bid-ask spread in basis points.">
+          {matchSearch("Chênh lệch tối đa", "chênh lệch mua bán") && (
+            <SettingsRow title="Chênh lệch tối đa (bps)" desc="Chênh lệch giá mua-bán tối đa theo điểm cơ bản.">
               <NumberField label="" value={draft.max_spread_bps} onChange={(v) => setDraft({ ...draft, max_spread_bps: v })} />
             </SettingsRow>
           )}
-          {matchSearch("Min Listing Age", "days since listing") && (
-            <SettingsRow title="Min Listing Age (days)" desc="Minimum days since listing to consider a symbol.">
+          {matchSearch("Tuổi niêm yết tối thiểu", "số ngày niêm yết") && (
+            <SettingsRow title="Tuổi niêm yết tối thiểu (ngày)" desc="Số ngày niêm yết tối thiểu để một mã được xem xét.">
               <NumberField label="" value={draft.min_listing_age_days} onChange={(v) => setDraft({ ...draft, min_listing_age_days: v })} />
             </SettingsRow>
           )}
           {matchSearch("Min Score to Trade", "AI score required") && (
-            <SettingsRow title="Min Score to Trade" desc="Minimum AI score required to enter a trade.">
+            <SettingsRow title="Điểm tối thiểu để giao dịch" desc="Điểm AI tối thiểu cần có để vào giao dịch.">
               <NumberField label="" value={draft.min_score_to_trade} onChange={(v) => setDraft({ ...draft, min_score_to_trade: v })} />
             </SettingsRow>
           )}
-          {matchSearch("Taker Fee Rate", "backtesting") && (
-            <SettingsRow title="Taker Fee Rate" desc="Expected taker fee for backtesting calculations.">
+          {matchSearch("Phí taker", "kiểm thử chiến lược") && (
+            <SettingsRow title="Tỷ lệ phí taker" desc="Mức phí taker dự kiến dùng khi kiểm thử chiến lược.">
               <NumberField label="" step={0.0001} value={draft.taker_fee_rate} onChange={(v) => setDraft({ ...draft, taker_fee_rate: v })} />
             </SettingsRow>
           )}
-          {matchSearch("Slippage", "basis points") && (
-            <SettingsRow title="Slippage (bps)" desc="Expected slippage in basis points.">
+          {matchSearch("Trượt giá", "điểm cơ bản") && (
+            <SettingsRow title="Trượt giá (bps)" desc="Mức trượt giá dự kiến theo điểm cơ bản.">
               <NumberField label="" value={draft.slippage_bps} onChange={(v) => setDraft({ ...draft, slippage_bps: v })} />
             </SettingsRow>
           )}
         </SettingsSection>
 
         {/* ── RISK ── */}
-        <SettingsSection title="Risk Management" icon={<Shield size={14} />} color="var(--color-warning)" count={riskCount}>
+        <SettingsSection title="Quản trị rủi ro" icon={<Shield size={14} />} color="var(--color-warning)" count={riskCount}>
           {matchSearch("Risk per Trade", "Fraction of equity") && (
-            <SettingsRow title="Risk per Trade" desc="Fraction of equity risked per trade.">
+            <SettingsRow title="Rủi ro mỗi giao dịch" desc="Tỷ lệ vốn chịu rủi ro cho mỗi giao dịch.">
               <NumberField label="" step={0.0005} value={draft.risk_per_trade} onChange={(v) => setDraft({ ...draft, risk_per_trade: v })} />
             </SettingsRow>
           )}
           {matchSearch("Max Risk per Trade", "Hard cap") && (
-            <SettingsRow title="Max Risk per Trade" desc="Hard cap on risk fraction per single trade.">
+            <SettingsRow title="Rủi ro tối đa mỗi giao dịch" desc="Giới hạn cứng tỷ lệ rủi ro cho một giao dịch.">
               <NumberField label="" step={0.001} value={draft.max_risk_per_trade} onChange={(v) => setDraft({ ...draft, max_risk_per_trade: v })} />
             </SettingsRow>
           )}
           {matchSearch("Total Open Risk", "aggregate open risk") && (
-            <SettingsRow title="Total Open Risk" desc="Maximum aggregate open risk across all positions.">
+            <SettingsRow title="Tổng rủi ro đang mở" desc="Tổng rủi ro tối đa trên mọi vị thế đang mở.">
               <NumberField label="" step={0.001} value={draft.max_total_open_risk} onChange={(v) => setDraft({ ...draft, max_total_open_risk: v })} />
             </SettingsRow>
           )}
-          {matchSearch("Max Margin per Trade", "margin allocated") && (
-            <SettingsRow title="Max Margin per Trade" desc="Maximum margin allocated per single trade.">
+          {matchSearch("Ký quỹ tối đa mỗi giao dịch", "ký quỹ phân bổ") && (
+            <SettingsRow title="Ký quỹ tối đa mỗi giao dịch" desc="Mức ký quỹ tối đa phân bổ cho một giao dịch.">
               <NumberField label="" step={0.01} value={draft.max_margin_per_trade} onChange={(v) => setDraft({ ...draft, max_margin_per_trade: v })} />
             </SettingsRow>
           )}
-          {matchSearch("Total Margin", "total margin") && (
-            <SettingsRow title="Total Margin" desc="Maximum total margin across all positions.">
+          {matchSearch("Tổng ký quỹ", "tổng ký quỹ") && (
+            <SettingsRow title="Tổng ký quỹ tối đa" desc="Tổng mức ký quỹ tối đa trên mọi vị thế.">
               <NumberField label="" step={0.01} value={draft.max_total_margin} onChange={(v) => setDraft({ ...draft, max_total_margin: v })} />
             </SettingsRow>
           )}
           {matchSearch("Daily Loss Limit", "daily loss") && (
-            <SettingsRow title="Daily Loss Limit" desc="Maximum daily loss as fraction of equity before halt.">
+            <SettingsRow title="Giới hạn lỗ trong ngày" desc="Mức lỗ tối đa trong ngày theo tỷ lệ vốn trước khi dừng.">
               <NumberField label="" step={0.001} value={draft.max_daily_loss} onChange={(v) => setDraft({ ...draft, max_daily_loss: v })} />
             </SettingsRow>
           )}
-          {matchSearch("Weekly Drawdown", "weekly drawdown") && (
-            <SettingsRow title="Weekly Drawdown" desc="Maximum weekly drawdown as fraction of equity.">
+          {matchSearch("Sụt giảm tuần", "sụt giảm tuần") && (
+            <SettingsRow title="Sụt giảm tối đa trong tuần" desc="Mức sụt giảm tối đa trong tuần theo tỷ lệ vốn.">
               <NumberField label="" step={0.001} value={draft.max_weekly_drawdown} onChange={(v) => setDraft({ ...draft, max_weekly_drawdown: v })} />
             </SettingsRow>
           )}
-          {matchSearch("Max Leverage", "leverage allowed") && (
-            <SettingsRow title="Max Leverage" desc="Maximum leverage allowed for any position.">
+          {matchSearch("Đòn bẩy tối đa", "đòn bẩy được phép") && (
+            <SettingsRow title="Đòn bẩy tối đa" desc="Mức đòn bẩy tối đa được phép cho mọi vị thế.">
               <NumberField label="" value={draft.max_leverage} onChange={(v) => setDraft({ ...draft, max_leverage: v })} />
             </SettingsRow>
           )}
           {matchSearch("Max Open Positions", "concurrent open") && (
-            <SettingsRow title="Max Open Positions" desc="Maximum number of concurrent open positions.">
+            <SettingsRow title="Số vị thế mở tối đa" desc="Số vị thế được phép mở đồng thời.">
               <NumberField label="" value={draft.max_open_positions} onChange={(v) => setDraft({ ...draft, max_open_positions: v })} />
             </SettingsRow>
           )}
         </SettingsSection>
 
         {/* ── AI ── */}
-        <SettingsSection title="AI Shadow" icon={<Brain size={14} />} color="var(--color-ai)">
+        <SettingsSection title="AI quan sát" icon={<Brain size={14} />} color="var(--color-ai)">
           <div className="mx-1 mt-2">
             <span className="inline-flex items-center gap-1.5 rounded-md bg-[rgba(245,158,11,0.08)] px-2 py-1 text-[10px] font-bold text-[var(--color-warning)]">
-              SHADOW ONLY · READ ONLY
+              CHỈ QUAN SÁT · CHỈ ĐỌC
             </span>
             <p className="mt-2 text-xs text-[var(--text-muted)]">
-              AI collects and scores hypothetical signals only. No orders placed, no execution.
+              AI chỉ thu thập và chấm điểm tín hiệu giả định. Không đặt hay thực thi lệnh.
             </p>
           </div>
           {aiDraft ? (
             <>
               {matchSearch("Model", "AI model identifier") && (
-                <SettingsRow title="Model" desc="AI model identifier used for scoring.">
+                <SettingsRow title="Mô hình" desc="Định danh mô hình AI dùng để chấm điểm.">
                   <input className="terminal-input" maxLength={120} onChange={(e) => setAiDraft({ ...aiDraft, model: e.target.value })} type="text" value={aiDraft.model} />
                 </SettingsRow>
               )}
               {matchSearch("Outcome Horizon", "candles to evaluate") && (
-                <SettingsRow title="Outcome Horizon" desc="Number of candles to evaluate outcomes (4–96).">
+                <SettingsRow title="Khoảng đánh giá kết quả" desc="Số nến dùng để đánh giá kết quả (4–96).">
                   <NumberField label="" value={aiDraft.outcome_horizon} onChange={(v) => setAiDraft({ ...aiDraft, outcome_horizon: Math.min(96, Math.max(4, v)) })} />
                 </SettingsRow>
               )}
               {matchSearch("Min Training Samples", "minimum samples") && (
-                <SettingsRow title="Min Training Samples" desc="Minimum samples before reporting performance (50–10000).">
+                <SettingsRow title="Mẫu huấn luyện tối thiểu" desc="Số mẫu tối thiểu trước khi báo cáo hiệu suất (50–10000).">
                   <NumberField label="" value={aiDraft.minimum_training_samples} onChange={(v) => setAiDraft({ ...aiDraft, minimum_training_samples: Math.min(10000, Math.max(50, v)) })} />
                 </SettingsRow>
               )}
               <div className="flex items-center justify-between border-t border-[rgba(255,255,255,0.04)] py-3">
                 <span className="text-xs text-[var(--text-secondary)]">{aiMsg}</span>
                 <button className="btn-primary !bg-[var(--color-ai)] hover:!brightness-110" disabled={aiSaving} onClick={() => void saveAi()} type="button">
-                  {aiSaving ? "Saving..." : "Save AI Config"}
+                  {aiSaving ? "Đang lưu..." : "Lưu cấu hình AI"}
                 </button>
               </div>
             </>
           ) : (
-            <div className="py-6 text-center text-sm text-[var(--text-muted)]">Loading AI config...</div>
+            <div className="py-6 text-center text-sm text-[var(--text-muted)]">Đang tải cấu hình AI...</div>
           )}
         </SettingsSection>
 
         {/* ── NOTIFICATIONS ── */}
-        <SettingsSection title="Notifications" icon={<Bell size={14} />} color="var(--color-profit)" defaultOpen={false}>
+        <SettingsSection title="Thông báo" icon={<Bell size={14} />} color="var(--color-profit)" defaultOpen={false}>
           <div className="py-6 text-center text-sm text-[var(--text-muted)]">
-            Telegram notification settings are managed through bot commands.
+            Cài đặt thông báo Telegram được quản lý bằng lệnh của bot.
             <p className="mt-2 text-xs text-[var(--text-muted)]">
-              Use /status to check notification status. Unauthorized access attempts are logged.
+              Dùng /status để kiểm tra trạng thái thông báo. Mọi lần truy cập trái phép đều được ghi nhật ký.
             </p>
           </div>
         </SettingsSection>
 
         {/* ── SYSTEM ── */}
-        <SettingsSection title="System" icon={<Server size={14} />} color="var(--text-muted)" defaultOpen={false}>
+        <SettingsSection title="Hệ thống" icon={<Server size={14} />} color="var(--text-muted)" defaultOpen={false}>
           <div className="py-6 text-center text-sm text-[var(--text-muted)]">
-            Exchange connection, cache, and reconciliation settings are managed by the backend engine.
+            Kết nối sàn, bộ nhớ đệm và đối soát được quản lý bởi backend.
             <p className="mt-2 text-xs text-[var(--text-muted)]">
-              Rate limits and auto-loop timing are configured server-side.
+              Giới hạn API và chu kỳ tự động được cấu hình phía máy chủ.
             </p>
           </div>
         </SettingsSection>
@@ -4122,11 +3864,11 @@ function StatusLine({
   wsState: WsState;
 }) {
   const parts = [
-    status ? `Mode ${status.mode}` : "Đang tải trạng thái",
-    `Realtime ${viWsState(wsState)}`,
+    status ? `Chế độ ${status.mode}` : "Đang tải trạng thái",
+    `Thời gian thực ${viWsState(wsState)}`,
     exchange
-      ? `Exchange ${viExchangeFreshness(exchange.freshness)} · ${viExchangeConnection(exchange.connection)}`
-      : "Exchange -",
+      ? `Sàn ${viExchangeFreshness(exchange.freshness)} · ${viExchangeConnection(exchange.connection)}`
+      : "Sàn giao dịch -",
     lastLiveAt > 0
       ? `Cập nhật ${new Date(lastLiveAt).toLocaleTimeString("vi-VN")}`
       : null,
@@ -4157,57 +3899,6 @@ function LoadingGrid() {
           <div className="h-3 w-24 skeleton" />
           <div className="mt-4 h-7 w-32 skeleton" />
         </div>
-      ))}
-    </div>
-  );
-}
-
-/* ──────────────────────────── MODE SELECTOR ──────────────────────────── */
-
-function ModeSelector({
-  current,
-  liveAllowed,
-  onDone,
-}: {
-  current: "DEMO" | "LIVE";
-  liveAllowed: boolean;
-  onDone: () => Promise<void>;
-}) {
-  const [busy, setBusy] = useState(false);
-  async function change(mode: "DEMO" | "LIVE") {
-    if (mode === current) return;
-    if (
-      mode === "LIVE" &&
-      !window.confirm(
-        "Chuyển sang LIVE sẽ dùng tài khoản thật. Boss xác nhận tiếp tục?",
-      )
-    )
-      return;
-    setBusy(true);
-    try {
-      await api.mode(mode);
-      await onDone();
-    } finally {
-      setBusy(false);
-    }
-  }
-  return (
-    <div className="flex rounded-lg border border-[var(--border-default)] bg-[rgba(255,255,255,0.03)] p-0.5">
-      {(["DEMO", "LIVE"] as const).map((mode) => (
-        <button
-          className={`min-h-8 rounded-md px-3 py-1 text-xs font-bold transition ${current === mode ? "bg-[var(--color-info)] text-[var(--bg-base)]" : "text-[var(--text-secondary)] hover:bg-[rgba(255,255,255,0.04)] disabled:text-[var(--text-muted)] disabled:hover:bg-transparent"}`}
-          disabled={busy || (mode === "LIVE" && !liveAllowed)}
-          key={mode}
-          onClick={() => void change(mode)}
-          title={
-            mode === "LIVE" && !liveAllowed
-              ? "LIVE đang bị khóa bởi preflight"
-              : `Đổi sang ${mode}`
-          }
-          type="button"
-        >
-          {mode}
-        </button>
       ))}
     </div>
   );
@@ -4402,35 +4093,6 @@ function Metric({
   );
 }
 
-/* ──────────────────────────── COMPACT METRIC ──────────────────────────── */
-
-function CompactMetric({
-  label,
-  tone = "neutral",
-  value,
-}: {
-  label: string;
-  tone?: "neutral" | "good" | "bad";
-  value: string;
-}) {
-  const color =
-    tone === "good"
-      ? "text-[var(--color-profit)]"
-      : tone === "bad"
-        ? "text-[var(--color-loss)]"
-        : "text-[var(--text-primary)]";
-  return (
-    <div className="min-w-0 rounded-lg border border-[var(--border-default)] bg-[rgba(255,255,255,0.03)] px-3 py-2">
-      <p className="truncate text-[10px] font-bold uppercase text-[var(--text-muted)] tracking-wider">
-        {label}
-      </p>
-      <strong className={`mt-1 block break-words text-sm leading-tight num-display ${color}`}>
-        {value}
-      </strong>
-    </div>
-  );
-}
-
 /* ──────────────────────────── NUMBER FIELD ──────────────────────────── */
 
 function NumberField({
@@ -4482,41 +4144,6 @@ function StatusChip({
       <span className="text-[var(--text-muted)]">{label}</span>
       <span className={danger ? "text-[var(--color-loss)]" : safe ? "text-[var(--color-profit)]" : "text-[var(--text-secondary)]"}>{value}</span>
     </span>
-  );
-}
-
-/* ──────────────────────────── RISK GAUGE ──────────────────────────── */
-
-function RiskGauge({
-  label,
-  maxLabel,
-  tone,
-  value,
-}: {
-  label: string;
-  maxLabel: string;
-  tone: "good" | "bad" | "neutral";
-  value: number;
-}) {
-  const fillColor =
-    tone === "bad"
-      ? "bg-[var(--color-loss)]"
-      : tone === "good"
-        ? "bg-[var(--color-profit)]"
-        : "bg-[var(--color-info)]";
-  return (
-    <section className="glass-card p-4">
-      <div className="flex items-center justify-between gap-3">
-        <p className="text-[11px] font-bold uppercase text-[var(--text-muted)] tracking-wider">{label}</p>
-        <strong className="text-sm num-display text-[var(--text-primary)]">{maxLabel}</strong>
-      </div>
-      <div className="mt-3 progress-track">
-        <div
-          className={`progress-fill ${fillColor}`}
-          style={{ width: `${Math.max(0, Math.min(value, 100))}%` }}
-        />
-      </div>
-    </section>
   );
 }
 
@@ -4590,27 +4217,9 @@ function buildEquitySeries(performance: Performance | null) {
   ].filter((value) => Number.isFinite(value));
 }
 
-function profitFactor(performance: Performance | null) {
-  if (
-    !performance ||
-    performance.realized_pnl <= 0 ||
-    performance.fees_paid <= 0
-  )
-    return "-";
-  return (performance.realized_pnl / performance.fees_paid).toFixed(2);
-}
-
 function viAction(value: ScannerResult["action"]) {
   if (value === "NO_TRADE") return "Không vào lệnh";
   return value;
-}
-
-function viBotState(value: StatusPayload["bot_state"] | undefined) {
-  if (value === "RUNNING") return "Đang chạy";
-  if (value === "PAUSED") return "Tạm dừng";
-  if (value === "SAFE_MODE") return "SAFE_MODE";
-  if (value === "STOPPED") return "Đã dừng";
-  return "Đã dừng";
 }
 
 function normalizeMode(
@@ -4642,12 +4251,8 @@ function ModeBadge({
     if (next === "LIVE" && !liveAllowed) return;
     setBusy(true);
     try {
-      const res = await fetch(`/api/bot/mode`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ mode: next }),
-      });
-      if (res.ok) onDone();
+      const result = await api.mode(next);
+      if (result.accepted) onDone();
     } catch {
       /* ignore */
     } finally {
@@ -4660,7 +4265,7 @@ function ModeBadge({
       className={`mode-badge ${badgeClass} ${canToggle ? "cursor-pointer hover:opacity-80" : ""}`}
       disabled={busy || !canToggle}
       onClick={toggle}
-      title={current === "LIVE" ? "Switch to DEMO" : liveAllowed ? "Switch to LIVE" : "Live mode not ready"}
+      title={current === "LIVE" ? "Chuyển sang DEMO" : liveAllowed ? "Chuyển sang LIVE" : "Chế độ LIVE chưa sẵn sàng"}
       type="button"
     >
       <span className="flex items-center gap-1.5">
@@ -4692,7 +4297,7 @@ function viSide(value: string) {
 function viExchangeFreshness(value: ExchangeSnapshot["freshness"] | undefined) {
   if (value === "LIVE") return "Dữ liệu mới";
   if (value === "STALE") return "Dữ liệu cũ";
-  return "Offline";
+  return "Mất kết nối";
 }
 
 function viExchangeConnection(
@@ -4709,8 +4314,8 @@ function viAutoStatus(value: string | undefined) {
     IDLE: "Đang chờ",
     BLOCKED: "Bị chặn",
     SCANNING: "Đang quét",
-    NO_SIGNAL: "Chưa có signal",
-    NO_ACCEPTED_SIGNAL: "Signal bị chặn",
+    NO_SIGNAL: "Chưa có tín hiệu",
+    NO_ACCEPTED_SIGNAL: "Tín hiệu bị chặn",
     WAITING_POSITION: "Đang giữ lệnh",
     SUBMITTING: "Đang vào lệnh",
     ORDER_SUBMITTED: "Đã vào lệnh",
@@ -4721,9 +4326,9 @@ function viAutoStatus(value: string | undefined) {
 }
 
 function viWsState(value: WsState) {
-  if (value === "LIVE") return "RT";
+  if (value === "LIVE") return "Trực tiếp";
   if (value === "STALE") return "Chậm";
-  return "Offline";
+  return "Mất kết nối";
 }
 
 function viSortLabel(value: string) {

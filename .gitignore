@@ -16,3 +16,10 @@ runtime-config.json
 
 # Runtime health/status captures
 logs/
+
+# Local database backups and one-off UI exports/rollback copies
+backups/
+orders.html
+orders.js
+web/app/components/dashboard-app-original.tsx
+web/app/components/*.bak*

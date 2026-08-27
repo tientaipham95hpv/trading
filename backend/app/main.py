@@ -10,6 +10,8 @@ app.include_router(router)
 
 @app.on_event("startup")
 async def startup() -> None:
+    if state.settings.app_env.lower() == "production" and not state.settings.api_auth_token.strip():
+        raise RuntimeError("API_AUTH_TOKEN bắt buộc trong production")
     await state.storage.init()
     adapter = state.live_exchange if state.trading_mode.value == "LIVE" else state.demo_exchange
     if adapter.configured:

@@ -1,9 +1,23 @@
 import asyncio
+import json
+import secrets
+import uuid
 from datetime import UTC, datetime
 from typing import Annotated
 
 import httpx
-from fastapi import APIRouter, HTTPException, Query, WebSocket, WebSocketDisconnect
+import websockets
+from fastapi import (
+    APIRouter,
+    Depends,
+    HTTPException,
+    Query,
+    WebSocket,
+    WebSocketDisconnect,
+    WebSocketException,
+)
+from starlette.requests import HTTPConnection
+from websockets.exceptions import WebSocketException as UpstreamWebSocketException
 
 from app.domain.models import (
     AIShadowConfigResponse,
@@ -32,7 +46,33 @@ from app.services.exit_analytics import (
     normalize_exchange_closes,
 )
 
-router = APIRouter(prefix="/api")
+
+def require_api_auth(connection: HTTPConnection) -> None:
+    """Protect all operator APIs and WebSockets with one bearer token."""
+    runtime_settings = getattr(state, "settings", None)
+    if runtime_settings is None:  # Lightweight route-test doubles do not own app config.
+        return
+    expected = runtime_settings.api_auth_token.strip()
+    if not expected and runtime_settings.app_env.lower() != "production":
+        return
+
+    authorization = connection.headers.get("authorization", "")
+    candidate = authorization[7:].strip() if authorization.lower().startswith("bearer ") else ""
+    if connection.scope["type"] == "websocket" and not candidate:
+        candidate = connection.query_params.get("access_token", "")
+
+    if expected and candidate and secrets.compare_digest(candidate, expected):
+        return
+    if connection.scope["type"] == "websocket":
+        raise WebSocketException(code=1008)
+    raise HTTPException(
+        status_code=401,
+        detail="Yêu cầu token truy cập hợp lệ",
+        headers={"WWW-Authenticate": "Bearer"},
+    )
+
+
+router = APIRouter(prefix="/api", dependencies=[Depends(require_api_auth)])
 
 
 def _ai_config_response() -> AIShadowConfigResponse:
@@ -442,6 +482,54 @@ async def exit_analytics(
 @router.get("/logs")
 async def logs(limit: int = Query(default=100, ge=1, le=500)) -> dict[str, object]:
     return {"items": await state.storage.list_payloads("logs", limit)}
+
+
+@router.get("/journal")
+async def journal(
+    category: str = Query(default="ALL", pattern="^(ALL|TRADING|AI|RISK|SYSTEM|ERRORS)$"),
+    limit: int = Query(default=100, ge=1, le=500),
+    since: datetime | None = None,
+) -> dict[str, object]:
+    """Return recent journal/timeline entries, optionally filtered by category."""
+    entries: list[dict[str, object]] = []
+    logs = await state.storage.list_payloads("logs", limit=limit * 2)
+    # NOTE: When a dedicated journal event store exists, query it here.
+    # For now, derive entries from recent log payloads.
+    for item in logs:
+        msg = str(item.get("message", ""))
+        payload = item.get("payload") or {}
+        created_at = item.get("created_at", "")
+        level = str(item.get("level", "INFO")).upper()
+        # Derive category from content
+        lower_msg = msg.lower()
+        if level == "ERROR" or level == "CRITICAL":
+            cat = "ERRORS"
+        elif any(kw in lower_msg for kw in ("ai", "model", "training", "shadow", "confidence")):
+            cat = "AI"
+        elif any(kw in lower_msg for kw in ("risk", "limit", "exposure", "drawdown")):
+            cat = "RISK"
+        elif any(kw in lower_msg for kw in ("signal", "scanner", "scan", "entry", "exit", "order", "fill", "trade", "position")):
+            cat = "TRADING"
+        else:
+            cat = "SYSTEM"
+        if category != "ALL" and cat != category:
+            continue
+        if since:
+            try:
+                item_created_at = datetime.fromisoformat(str(created_at))
+            except ValueError:
+                continue
+            if item_created_at < since:
+                continue
+        entries.append({
+            "id": str(uuid.uuid5(uuid.NAMESPACE_URL, f"{created_at}:{msg}")),
+            "timestamp": created_at,
+            "category": cat,
+            "title": msg[:120],
+            "details": json.dumps(payload, ensure_ascii=False, default=str) if payload else "",
+            "meta": payload if isinstance(payload, dict) else None,
+        })
+    return {"items": entries[:limit]}
 
 
 @router.post("/notifications/devices")
@@ -1008,6 +1096,9 @@ async def reset_emergency_stop() -> dict[str, object]:
 
 @router.websocket("/ws/{channel}")
 async def websocket_channel(websocket: WebSocket, channel: str) -> None:
+    if channel.startswith("kline:"):
+        await websocket_kline(websocket, channel)
+        return
     await websocket.accept()
     channel = {
         "CHARTS_CACHE_STREAM_exchange": "exchange",
@@ -1021,6 +1112,79 @@ async def websocket_channel(websocket: WebSocket, channel: str) -> None:
         pass
     finally:
         await state.realtime.unsubscribe(channel, queue)
+
+
+async def websocket_kline(websocket: WebSocket, channel: str) -> None:
+    """Proxy one Binance public kline stream without exposing exchange URLs."""
+    parts = channel.split(":")
+    if len(parts) != 3:
+        await websocket.close(code=1008, reason="Kline channel phải có symbol và interval")
+        return
+    symbol, interval = parts[1].upper(), parts[2]
+    try:
+        Timeframe(interval)
+    except ValueError:
+        await websocket.close(code=1008, reason="Interval không được hỗ trợ")
+        return
+    if not symbol.isalnum() or len(symbol) > 20:
+        await websocket.close(code=1008, reason="Symbol không hợp lệ")
+        return
+
+    await websocket.accept()
+    stream_base = (
+        state.settings.binance_demo_stream_url
+        if state.trading_mode == TradingMode.DEMO
+        else "wss://fstream.binance.com"
+    ).rstrip("/")
+    upstream_url = f"{stream_base}/ws/{symbol.lower()}@kline_{interval}"
+    try:
+        while True:
+            try:
+                async with websockets.connect(
+                    upstream_url, ping_interval=20, ping_timeout=20
+                ) as upstream:
+                    async for raw in upstream:
+                        payload = json.loads(raw) if isinstance(raw, str) else raw
+                        kline = payload.get("k", {})
+                        if kline.get("s") != symbol or not kline:
+                            continue
+                        await websocket.send_json(
+                            {
+                                "channel": "kline",
+                                "symbol": symbol,
+                                "interval": interval,
+                                "event": "closed" if kline.get("x") else "update",
+                                "candle": {
+                                    "open_time": int(kline["t"]),
+                                    "open": float(kline["o"]),
+                                    "high": float(kline["h"]),
+                                    "low": float(kline["l"]),
+                                    "close": float(kline["c"]),
+                                    "volume": float(kline["v"]),
+                                    "close_time": int(kline["T"]),
+                                    "quote_volume": float(kline["q"]),
+                                },
+                            }
+                        )
+            except WebSocketDisconnect:
+                raise
+            except (
+                OSError,
+                UpstreamWebSocketException,
+                TimeoutError,
+                json.JSONDecodeError,
+                KeyError,
+                TypeError,
+                ValueError,
+            ):
+                await asyncio.sleep(1.0)
+    finally:
+        if websocket.client_state.name != "DISCONNECTED":
+            try:
+                await websocket.close()
+            except (RuntimeError, WebSocketDisconnect):
+                # The peer may disconnect between the state check and close().
+                pass
 
 
 def configure_realtime() -> None:

@@ -6,6 +6,7 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file="../.env", extra="ignore")
 
     app_env: str = "local"
+    api_auth_token: str = ""
     trading_mode: str = "DEMO"
     live_trading_enabled: bool = False
     binance_base_url: str = "https://fapi.binance.com"

@@ -1,107 +1,103 @@
-# Nền Tảng Trading Tự Động
+# Nền tảng Trading tự động
 
-Hệ thống điều khiển giao dịch futures tự động cho Binance USD-M Futures.
+Hệ thống điều khiển giao dịch Binance USD-M Futures. Trạng thái hiện tại là **DEMO end-to-end**; LIVE bị khóa cho đến khi toàn bộ readiness gate đạt yêu cầu và được duyệt thủ công.
 
-Phase hiện tại: chỉ là nền móng dự án. Giao dịch LIVE mặc định đang tắt.
-
-## Công nghệ
+## Thành phần
 
 - Backend: Python 3.12, FastAPI
-- Dữ liệu: PostgreSQL, Redis
-- Web: Next.js, TypeScript
+- Dữ liệu: PostgreSQL 16, Redis 7
+- Web: Next.js 16, TypeScript
 - iOS: SwiftUI
-- Hạ tầng: Docker Compose
+- Hạ tầng: Docker Compose, Nginx reverse proxy
 
-## Mặc định an toàn
+## Baseline an toàn hiện hành
 
-- Chế độ giao dịch mặc định là `DEMO`
-- Chế độ LIVE mặc định bị tắt
-- Ký quỹ mặc định là isolated
-- Đòn bẩy tối đa mặc định `5x`
-- Rủi ro mỗi lệnh mặc định `0.5%`
-- Mức lỗ tối đa mỗi ngày mặc định `4%`
-- Số vị thế mở tối đa mặc định `4`
-- Mọi kế hoạch lệnh đều bắt buộc có stop loss
-- Chặn martingale
-- Dừng khẩn cấp sẽ chặn thực thi lệnh
-- Binance API key chỉ nằm ở biến môi trường backend
+Cấu hình production ngày 2026-08-26:
 
-## Chạy
+- `TRADING_MODE=DEMO`, `LIVE_TRADING_ENABLED=false`
+- Isolated margin; tối đa `10x`
+- Rủi ro mục tiêu mỗi lệnh `0.25%`, trần `0.35%`
+- Daily loss limit `4%`; tối đa `1` vị thế mở
+- Portfolio risk đang `ENFORCED` cho entry mới
+- Mọi order plan bắt buộc có Stop Loss; không martingale
+- SAFE_MODE/emergency stop chặn entry khi trạng thái không chắc chắn
+- AI evaluator tắt; Smart Entry chỉ shadow/read-only
+- API và WebSocket bắt buộc Bearer token trong production
+- Secret chỉ nằm trong `.env` backend, không commit và không đưa vào frontend bundle
+
+## Authentication
+
+Production bắt buộc có `API_AUTH_TOKEN`. Tạo token bằng:
+
+```bash
+openssl rand -hex 32
+```
+
+Web hiển thị màn hình đăng nhập và chỉ giữ token trong `sessionStorage` của tab. iOS lưu cùng token trong Keychain. HTTP dùng header:
+
+```text
+Authorization: Bearer <token>
+```
+
+WebSocket trình duyệt truyền token qua tham số kết nối; iOS dùng Authorization header. `/health` vẫn mở để healthcheck, toàn bộ `/api/*` được bảo vệ.
+
+## Chạy và deploy
 
 ```bash
 cp .env.example .env
-docker compose up --build
+# điền API_AUTH_TOKEN và DEMO credentials
+./scripts/quick_start.sh
 ```
 
-Docker Compose dùng port riêng để không đụng service production trên VPS:
-
-- Web: `http://localhost:13000`
-- Backend: `http://localhost:18000`
-- PostgreSQL: `localhost:15432`
-- Redis: `localhost:16379`
-
-Kiểm tra backend:
+Sau khi sửa backend/web:
 
 ```bash
-curl http://localhost:18000/health
+./scripts/check.sh
+./scripts/deploy.sh
 ```
 
-Web:
+`deploy.sh` chỉ rebuild/recreate backend và web, chờ healthcheck; PostgreSQL và Redis không bị recreate.
 
-```bash
-cd web
-npm install
-npm run dev
-```
+Các cổng loopback:
 
-Production systemd trên VPS đang dùng:
-
-- Web: `127.0.0.1:3000`
-- Backend: `127.0.0.1:8000`
+- Web: `127.0.0.1:13000`
+- Backend: `127.0.0.1:18000`
+- PostgreSQL: `127.0.0.1:15432`
+- Redis: `127.0.0.1:16379`
 - Domain: `https://trading.cineviet.live`
 
-Test backend local:
+Kiểm tra:
+
+```bash
+./scripts/health_check.sh
+curl http://127.0.0.1:18000/health
+curl -H "Authorization: Bearer $API_AUTH_TOKEN" http://127.0.0.1:18000/api/status
+```
+
+## Quality gates
 
 ```bash
 cd backend
-python3 -m venv .venv
 . .venv/bin/activate
-pip install -e ".[dev]"
+ruff check .
 pytest
+
+cd ../web
+npm run lint
+npm run build
+npm audit --audit-level=high
 ```
 
-## Chế độ
+Baseline audit 2026-08-27: Ruff sạch, 195 backend tests pass, web lint không warning, production build pass, npm audit không có lỗ hổng.
 
-Các chế độ được phép là `DEMO` và `LIVE`.
+## Chức năng chính
 
-LIVE yêu cầu đồng thời:
+- Scanner đa khung thời gian, signal/data-quality gate
+- Risk engine, portfolio exposure/correlation enforcement
+- Order lifecycle với SL, nhiều TP, break-even/trailing
+- User stream, reconciliation, duplicate/orphan handling
+- SAFE_MODE, emergency stop và LIVE readiness gates
+- Dashboard realtime: market, scanner, positions, orders, trades, analytics, risk, journal, settings
+- Smart Entry và AI analytics shadow/read-only
 
-- `TRADING_MODE=LIVE`
-- `LIVE_TRADING_ENABLED=true`
-
-Không bật hai giá trị này nếu chưa được duyệt rõ ràng.
-
-## Phase 1 API
-
-- `GET /api/status`
-- `GET /api/markets`
-- `GET /api/scanner?limit=30&timeframes=1m,5m,15m,1h,4h`
-- `GET /api/signals`
-- `POST /api/positions/mark/{symbol}?price=...`
-- `GET /api/positions`
-- `GET /api/trades`
-- `GET /api/performance`
-- `GET /api/risk`
-- `GET /api/settings`
-- `PUT /api/settings`
-- `POST /api/bot/start`
-- `POST /api/bot/pause`
-- `POST /api/bot/stop`
-
-WebSocket:
-
-- `/api/ws/market`
-- `/api/ws/scanner`
-- `/api/ws/positions`
-- `/api/ws/performance`
-- `/api/ws/system`
+Các endpoint được liệt kê tự động tại `/docs` khi có token. Roadmap và tiêu chí LIVE nằm trong `docs/PHASES.md`; hướng dẫn vận hành ở `docs/DEPLOYMENT_GUIDE.md`.

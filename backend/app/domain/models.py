@@ -77,6 +77,7 @@ class Timeframe(StrEnum):
     M15 = "15m"
     H1 = "1h"
     H4 = "4h"
+    D1 = "1d"
 
 
 class SymbolCandidate(BaseModel):

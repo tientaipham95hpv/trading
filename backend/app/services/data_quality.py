@@ -9,6 +9,7 @@ _TIMEFRAME_MS = {
     Timeframe.M15: 900_000,
     Timeframe.H1: 3_600_000,
     Timeframe.H4: 14_400_000,
+    Timeframe.D1: 86_400_000,
 }
 
 

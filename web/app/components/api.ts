@@ -23,6 +23,16 @@ import type {
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL || "";
 const REQUEST_TIMEOUT_MS = 30_000;
+const AUTH_TOKEN_KEY = "trading-api-token";
+const AUTH_EXPIRED_EVENT = "trading-auth-expired";
+
+class AuthenticationError extends Error {}
+
+function authToken(): string {
+  return typeof window === "undefined"
+    ? ""
+    : window.sessionStorage.getItem(AUTH_TOKEN_KEY) || "";
+}
 
 function normalizeRequestError(path: string, error: unknown): Error {
   if (error instanceof DOMException && error.name === "AbortError") {
@@ -47,13 +57,20 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
         cache: "no-store",
         headers: {
           "content-type": "application/json",
+          ...(authToken() ? { authorization: `Bearer ${authToken()}` } : {}),
           ...(init?.headers || {}),
         },
       });
+      if (response.status === 401) {
+        window.sessionStorage.removeItem(AUTH_TOKEN_KEY);
+        window.dispatchEvent(new Event(AUTH_EXPIRED_EVENT));
+        throw new AuthenticationError("Phiên vận hành đã hết hạn hoặc token không hợp lệ.");
+      }
       if (!response.ok) throw new Error(await response.text());
       return response.json() as Promise<T>;
     } catch (error) {
       lastError = normalizeRequestError(path, error);
+      if (error instanceof AuthenticationError) throw error;
       if (!retryable || attempt > 0) throw lastError;
       await new Promise((resolve) => window.setTimeout(resolve, 400));
     } finally {
@@ -64,6 +81,11 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 }
 
 export const api = {
+  hasToken: () => Boolean(authToken()),
+  setToken: (token: string) =>
+    window.sessionStorage.setItem(AUTH_TOKEN_KEY, token.trim()),
+  clearToken: () => window.sessionStorage.removeItem(AUTH_TOKEN_KEY),
+  authExpiredEvent: AUTH_EXPIRED_EVENT,
   status: () => request<StatusPayload>("/api/status"),
   risk: () => request<RiskPayload>("/api/risk"),
   stability: () => request<DemoStability>("/api/demo/stability"),
@@ -159,5 +181,6 @@ export function wsUrl(channel: string): string {
     API_BASE || (typeof window === "undefined" ? "" : window.location.origin);
   const url = new URL(`/api/ws/${channel}`, base);
   url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
+  if (authToken()) url.searchParams.set("access_token", authToken());
   return url.toString();
 }
