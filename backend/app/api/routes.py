@@ -563,10 +563,26 @@ async def trades() -> dict[str, object]:
         if reset_at is not None:
             cutoff_ms = int(reset_at.timestamp() * 1000)
             rows = [row for row in rows if int(_float(row.get("time"))) >= cutoff_ms]
+        items = _exchange_trades_for_app(rows)
+        source = "BINANCE_USER_TRADES"
+        if not items:
+            lifecycle_events = await state.storage.lifecycle_analytics_events(
+                mode=state.trading_mode.value, limit=5000
+            )
+            if reset_at is not None:
+                cutoff_ms = int(reset_at.timestamp() * 1000)
+                lifecycle_events = [
+                    event
+                    for event in lifecycle_events
+                    if _event_time_ms(event) >= cutoff_ms
+                ]
+            items = _lifecycle_trades_for_app(lifecycle_events)
+            source = "BOT_LIFECYCLE_AUDIT"
         return {
-            "items": _exchange_trades_for_app(rows),
+            "items": items,
             "degraded": history.degraded,
             "reason": history.reason,
+            "source": source,
         }
     return {"items": [item.model_dump(mode="json") for item in state.execution.trades]}
 
@@ -735,12 +751,47 @@ async def performance() -> dict[str, object]:
         performance = _exchange_performance(
             snapshot, income, initial_capital=state.performance_initial_capital_for()
         )
+        lifecycle_events = await state.storage.lifecycle_analytics_events(
+            mode=state.trading_mode.value, limit=5000
+        )
+        reset_at = state.performance_reset_at_for()
+        if reset_at is not None:
+            cutoff_ms = int(reset_at.timestamp() * 1000)
+            lifecycle_events = [
+                event for event in lifecycle_events if _event_time_ms(event) >= cutoff_ms
+            ]
+        lifecycle_trades = _lifecycle_trades_for_app(lifecycle_events)
+        values = [float(item["net_pnl"]) for item in lifecycle_trades]
+        wins = [value for value in values if value > 0]
+        losses = [value for value in values if value < 0]
+        performance.total_trades = len(values)
+        performance.winning_trades = len(wins)
+        performance.losing_trades = len(losses)
+        performance.breakeven_trades = len(values) - len(wins) - len(losses)
+        performance.win_rate = len(wins) / len(values) if values else 0.0
+        performance.expectancy = sum(values) / len(values) if values else 0.0
+        gross_loss = abs(sum(losses))
+        performance.profit_factor = (
+            sum(wins) / gross_loss if gross_loss else (999.0 if wins else 0.0)
+        )
         if state.performance_initial_capital_for() is None:
             state.performance_initial_capital_by_mode[state.trading_mode] = (
                 performance.initial_capital
             )
             state.save_runtime_config()
-        return performance.model_dump(mode="json")
+        payload = performance.model_dump(mode="json")
+        payload["measurement"] = {
+            "trade_source": "BOT_LIFECYCLE_AUDIT",
+            "closed_bot_trades": len(lifecycle_trades),
+            "exchange_realized_pnl_events": performance.realized_pnl_events,
+            "legacy_income_events_excluded_from_trade_count": max(
+                performance.realized_pnl_events - len(lifecycle_trades), 0
+            ),
+            "reset_when_flat": state.performance_reset_pending_by_mode.get(
+                state.trading_mode, False
+            ),
+        }
+        return payload
     return state.execution.performance().model_dump(mode="json")
 
 
@@ -859,6 +910,42 @@ async def reset_performance() -> dict[str, object]:
     )
     return {
         "accepted": True,
+        "mode": state.trading_mode.value,
+        "performance_reset_at": reset_at.isoformat(),
+        "initial_capital": initial_capital,
+    }
+
+
+@router.post("/performance/reset-when-flat")
+async def reset_performance_when_flat() -> dict[str, object]:
+    if state.trading_mode not in {TradingMode.DEMO, TradingMode.LIVE}:
+        raise HTTPException(status_code=409, detail="Chỉ hỗ trợ DEMO hoặc LIVE")
+    snapshot = await _current_adapter().snapshot()
+    if snapshot.positions:
+        state.performance_reset_pending_by_mode[state.trading_mode] = True
+        state.save_runtime_config()
+        await state.storage.log(
+            "Đã xếp hàng mốc forward-test khi tài khoản phẳng",
+            {
+                "mode": state.trading_mode.value,
+                "open_positions": len(snapshot.positions),
+            },
+            level="WARNING",
+        )
+        return {
+            "accepted": True,
+            "pending": True,
+            "mode": state.trading_mode.value,
+            "reason": "Đang chờ vị thế hiện tại đóng theo SL/TP",
+        }
+    reset_at = datetime.now(UTC)
+    initial_capital = snapshot.balance.margin_balance or snapshot.balance.balance
+    state.set_performance_baseline(state.trading_mode, reset_at, initial_capital)
+    state.performance_reset_pending_by_mode[state.trading_mode] = False
+    state.save_runtime_config()
+    return {
+        "accepted": True,
+        "pending": False,
         "mode": state.trading_mode.value,
         "performance_reset_at": reset_at.isoformat(),
         "initial_capital": initial_capital,
@@ -1642,6 +1729,52 @@ def _exchange_trades_for_app(rows: list[dict[str, object]]) -> list[dict[str, ob
             }
         )
     return trades
+
+
+def _lifecycle_trades_for_app(events: list[dict[str, object]]) -> list[dict[str, object]]:
+    grouped: dict[str, list[dict[str, object]]] = {}
+    for event in events:
+        lifecycle_id = str(event.get("lifecycle_id") or "")
+        if lifecycle_id:
+            grouped.setdefault(lifecycle_id, []).append(event)
+
+    trades: list[dict[str, object]] = []
+    for lifecycle_id, lifecycle_events in grouped.items():
+        ordered = sorted(lifecycle_events, key=_event_time_ms)
+        final_events = [event for event in ordered if event.get("event_type") == "CLOSE_FILL"]
+        if not final_events:
+            continue
+        open_event = next(
+            (event for event in ordered if event.get("event_type") == "OPEN"), {}
+        )
+        close_events = [
+            event
+            for event in ordered
+            if event.get("event_type") in {"PARTIAL_CLOSE", "CLOSE_FILL"}
+        ]
+        final_event = final_events[-1]
+        gross_pnl = sum(_float(event.get("realized_pnl")) for event in close_events)
+        fee = abs(sum(_float(event.get("commission")) for event in close_events))
+        side = str(open_event.get("side") or "CLOSED")
+        event_at = str(final_event.get("event_at") or datetime.now(UTC).isoformat())
+        trades.append(
+            {
+                "id": lifecycle_id,
+                "symbol": str(final_event.get("symbol") or open_event.get("symbol") or "-"),
+                "side": side,
+                "entry_price": _float(open_event.get("entry_price")),
+                "exit_price": _float(final_event.get("last_fill_price")),
+                "quantity": _float(open_event.get("initial_quantity")),
+                "gross_pnl": gross_pnl,
+                "fee": fee,
+                "slippage": 0.0,
+                "funding": 0.0,
+                "net_pnl": gross_pnl - fee,
+                "reason": str(final_event.get("reason") or "Đóng vị thế"),
+                "created_at": event_at,
+            }
+        )
+    return sorted(trades, key=lambda item: str(item["created_at"]), reverse=True)
 
 
 def _exchange_performance(

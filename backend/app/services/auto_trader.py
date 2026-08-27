@@ -211,6 +211,28 @@ class AutoTrader:
                 snapshot_audit.model_dump(mode="json")
             )
             open_position_count = len(snapshot.positions)
+            if (
+                open_position_count == 0
+                and self.state.performance_reset_pending_by_mode.get(
+                    self.state.trading_mode, False
+                )
+            ):
+                reset_at = datetime.now(UTC)
+                initial_capital = snapshot.balance.margin_balance or snapshot.balance.balance
+                self.state.set_performance_baseline(
+                    self.state.trading_mode, reset_at, initial_capital
+                )
+                self.state.performance_reset_pending_by_mode[self.state.trading_mode] = False
+                self.state.save_runtime_config()
+                await self.state.storage.log(
+                    "Đã tạo mốc forward-test khi tài khoản phẳng",
+                    {
+                        "mode": self.state.trading_mode.value,
+                        "performance_reset_at": reset_at.isoformat(),
+                        "initial_capital": initial_capital,
+                    },
+                    level="WARNING",
+                )
             active_symbols = self._busy_exchange_symbols(snapshot)
             portfolio_exposure_fraction = self._exchange_portfolio_exposure_fraction(snapshot)
             stop_actions = await adapter.manage_open_position_stops()

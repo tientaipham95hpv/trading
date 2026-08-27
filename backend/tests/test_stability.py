@@ -34,9 +34,22 @@ class FakeAutoTrader:
 
 
 class FakeStorage:
-    def __init__(self):
+    def __init__(self, income):
         self.snapshots = []
         self.active = {}
+        self.events = [
+            {
+                "lifecycle_id": f"test-{index}",
+                "event_type": "CLOSE_FILL",
+                "event_at": datetime.fromtimestamp(row["time"] / 1000, UTC).isoformat(),
+                "realized_pnl": row["income"],
+                "commission": 0,
+            }
+            for index, row in enumerate(income)
+        ]
+
+    async def lifecycle_analytics_events(self, *, mode=None, limit=5000):
+        return self.events[:limit]
 
     async def save_stability_snapshot(self, payload):
         self.snapshots.append(payload)
@@ -91,7 +104,7 @@ def state_for(income, *, days=8):
         user_stream=FakeStream(),
         auto_trader=FakeAutoTrader(),
         safe_mode=False,
-        storage=FakeStorage(),
+        storage=FakeStorage(income),
     )
 
 

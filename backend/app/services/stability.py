@@ -61,19 +61,49 @@ class DemoStabilityService:
         performance = self.state.execution.performance()
         try:
             snapshot = await adapter.snapshot()
-            income = await asyncio.wait_for(
-                adapter.income_history(income_type="REALIZED_PNL", limit=500),
-                timeout=8.0,
+            lifecycle_reader = getattr(
+                self.state.storage, "lifecycle_analytics_events", None
             )
+            if not callable(lifecycle_reader):
+                raise TypeError("Lifecycle audit storage is unavailable")
+            events = await lifecycle_reader(mode=TradingMode.DEMO.value, limit=5000)
             reset_at = self._demo_reset_at()
             if reset_at:
-                reset_ms = int(reset_at.timestamp() * 1000)
-                income = [row for row in income if int(row.get("time") or 0) >= reset_ms]
-            realized_rows = sorted(
-                (row for row in income if str(row.get("incomeType")) == "REALIZED_PNL"),
-                key=lambda row: int(row.get("time") or 0),
-            )[-self.MAX_VALIDATION_TRADES :]
-            values = [float(row.get("income") or 0) for row in realized_rows]
+                events = [
+                    event
+                    for event in events
+                    if datetime.fromisoformat(str(event.get("event_at"))) >= reset_at
+                ]
+            grouped: dict[str, list[dict[str, object]]] = {}
+            for event in events:
+                lifecycle_id = str(event.get("lifecycle_id") or "")
+                if lifecycle_id:
+                    grouped.setdefault(lifecycle_id, []).append(event)
+            outcomes: list[tuple[datetime, float]] = []
+            for lifecycle_events in grouped.values():
+                final_events = [
+                    event
+                    for event in lifecycle_events
+                    if event.get("event_type") == "CLOSE_FILL"
+                ]
+                if not final_events:
+                    continue
+                close_events = [
+                    event
+                    for event in lifecycle_events
+                    if event.get("event_type") in {"PARTIAL_CLOSE", "CLOSE_FILL"}
+                ]
+                closed_at = max(
+                    datetime.fromisoformat(str(event.get("event_at")))
+                    for event in final_events
+                )
+                net_pnl = sum(
+                    float(event.get("realized_pnl") or 0)
+                    - abs(float(event.get("commission") or 0))
+                    for event in close_events
+                )
+                outcomes.append((closed_at, net_pnl))
+            values = [value for _, value in sorted(outcomes)[-self.MAX_VALIDATION_TRADES :]]
             trade_count = len(values)
             realized_pnl = sum(values)
             win_rate = sum(value > 0 for value in values) / trade_count if trade_count else 0.0
@@ -83,6 +113,7 @@ class DemoStabilityService:
                 gross_profit / gross_loss if gross_loss else (999.0 if gross_profit else 0.0)
             )
         except (
+            TypeError,
             ExchangeError,
             TimeoutError,
             OSError,

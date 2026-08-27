@@ -86,6 +86,10 @@ class AppState:
             TradingMode.DEMO: None,
             TradingMode.LIVE: None,
         }
+        self.performance_reset_pending_by_mode: dict[TradingMode, bool] = {
+            TradingMode.DEMO: False,
+            TradingMode.LIVE: False,
+        }
         self.performance_initial_capital_by_mode: dict[TradingMode, float | None] = {
             TradingMode.DEMO: None,
             TradingMode.LIVE: None,
@@ -347,6 +351,9 @@ class AppState:
                     if self.performance_reset_at_for(mode)
                     else None,
                     "initial_capital": self.performance_initial_capital_for(mode),
+                    "reset_when_flat": getattr(
+                        self, "performance_reset_pending_by_mode", {}
+                    ).get(mode, False),
                 }
                 for mode in (TradingMode.DEMO, TradingMode.LIVE)
             },
@@ -408,6 +415,15 @@ class AppState:
                     self.performance_initial_capital_by_mode[performance_mode] = float(
                         initial_capital
                     )
+                if isinstance(item.get("reset_when_flat"), bool):
+                    pending = getattr(self, "performance_reset_pending_by_mode", None)
+                    if pending is None:
+                        pending = {
+                            TradingMode.DEMO: False,
+                            TradingMode.LIVE: False,
+                        }
+                        self.performance_reset_pending_by_mode = pending
+                    pending[performance_mode] = item["reset_when_flat"]
         else:
             # Legacy timestamp belonged to the active environment only.
             reset_at = payload.get("performance_reset_at")

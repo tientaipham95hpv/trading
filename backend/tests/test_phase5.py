@@ -1,6 +1,10 @@
 import pytest
 
-from app.api.routes import _exchange_performance, _performance_income_rows
+from app.api.routes import (
+    _exchange_performance,
+    _lifecycle_trades_for_app,
+    _performance_income_rows,
+)
 from app.domain.models import (
     EmergencyStopState,
     ExchangeOrder,
@@ -30,6 +34,50 @@ def make_signal(**overrides):
     }
     data.update(overrides)
     return StrategySignal(**data)
+
+
+def test_lifecycle_trade_history_uses_only_completed_bot_lifecycles():
+    events = [
+        {
+            "lifecycle_id": "bot-1",
+            "event_type": "OPEN",
+            "event_at": "2026-08-27T09:00:00+00:00",
+            "symbol": "BTCUSDT",
+            "side": "LONG",
+            "entry_price": 100,
+            "initial_quantity": 1,
+        },
+        {
+            "lifecycle_id": "bot-1",
+            "event_type": "PARTIAL_CLOSE",
+            "event_at": "2026-08-27T09:10:00+00:00",
+            "realized_pnl": 2,
+            "commission": 0.1,
+        },
+        {
+            "lifecycle_id": "bot-1",
+            "event_type": "CLOSE_FILL",
+            "event_at": "2026-08-27T09:20:00+00:00",
+            "symbol": "BTCUSDT",
+            "reason": "TAKE_PROFIT",
+            "last_fill_price": 104,
+            "realized_pnl": 2,
+            "commission": 0.1,
+        },
+        {
+            "lifecycle_id": "still-open",
+            "event_type": "OPEN",
+            "event_at": "2026-08-27T09:30:00+00:00",
+            "symbol": "ETHUSDT",
+        },
+    ]
+
+    trades = _lifecycle_trades_for_app(events)
+
+    assert len(trades) == 1
+    assert trades[0]["id"] == "bot-1"
+    assert trades[0]["gross_pnl"] == pytest.approx(4)
+    assert trades[0]["net_pnl"] == pytest.approx(3.8)
 
 
 def test_risk_rejects_weekly_drawdown_correlation_and_stale_data():
