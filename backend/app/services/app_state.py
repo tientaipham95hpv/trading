@@ -307,17 +307,56 @@ class AppState:
                 else "✅ SAFE_MODE đang TẮT."
             )
         if command == "/report":
-            report = await self.equity_tracker.analytics(self.trading_mode.value)
-            return (
-                f"📈 BÁO CÁO {self.trading_mode.value}\n"
-                f"• Equity: {float(report.get('equity') or 0):.2f} USDT\n"
-                f"• Return: {float(report.get('return_percent') or 0):.2f}%\n"
-                f"• Max DD: {float(report.get('max_drawdown_percent') or 0):.2f}%\n"
-                f"• Mẫu: {int(report.get('samples') or 0)}"
-            )
+            return await self.telegram_forward_test_report()
         if command == "/reset_safe_mode":
             return "Reset SAFE_MODE phải làm trên web/app có kiểm tra vị thế và Face ID."
         return "Command chưa hỗ trợ. Gõ /help để xem danh sách lệnh an toàn."
+
+    async def telegram_forward_test_report(self) -> str:
+        """Build the same clean-cohort report for /report and the 21:00 sender."""
+        equity = await self.equity_tracker.analytics(self.trading_mode.value)
+        stability = self.stability.last_report
+        if stability is None:
+            stability = await self.stability.report()
+        metrics = stability.metrics
+        trades = int(metrics.get("trades") or 0)
+        wins = round(float(metrics.get("win_rate") or 0) * trades)
+        losses = max(trades - wins, 0)
+        expectancy = float(metrics.get("realized_pnl") or 0) / trades if trades else 0.0
+        if trades < 30:
+            assessment = "ĐANG THU THẬP · chưa đánh giá chiến lược"
+        elif trades < 50:
+            assessment = "ĐÁNH GIÁ SƠ BỘ · chưa đủ 50 lệnh"
+        else:
+            assessment = (
+                "ĐỦ ĐIỀU KIỆN XEM XÉT LIVE"
+                if stability.verdict == "READY"
+                else "ĐỦ MẪU · chưa đạt điều kiện LIVE"
+            )
+        blockers = stability.blockers[:3]
+        blocker_text = (
+            "\n⚠️ Chưa đạt: " + " | ".join(blockers)
+            if blockers and trades >= 30
+            else ""
+        )
+        return (
+            f"📈 FORWARD-TEST HẰNG NGÀY · {self.trading_mode.value}\n"
+            f"🔎 {assessment}\n"
+            f"• Cohort sạch: {trades}/30 · mục tiêu 50\n"
+            f"• Thắng / thua: {wins} / {losses}\n"
+            f"• Win rate: {float(metrics.get('win_rate') or 0) * 100:.1f}%\n"
+            f"• PnL thực nhận: {float(metrics.get('realized_pnl') or 0):+.2f} USDT\n"
+            f"• Expectancy: {expectancy:+.4f} USDT/lệnh\n"
+            f"• Profit factor: {float(metrics.get('profit_factor') or 0):.2f}\n"
+            f"• Thời gian: {float(metrics.get('sample_days') or 0):.1f}/7 ngày\n"
+            f"• Equity: {float(equity.get('equity') or 0):.2f} USDT\n"
+            f"• Drawdown tối đa: {float(equity.get('max_drawdown_percent') or 0):.2f}%\n"
+            f"• Vị thế / lệnh mở: {int(metrics.get('positions') or 0)} / "
+            f"{int(metrics.get('orders') or 0)}\n"
+            f"• LIVE readiness: {stability.score}% · {stability.verdict}"
+            f"{blocker_text}\n"
+            "➡️ Dữ liệu trước mốc reset không được tính. Bot không tự bật LIVE."
+        )
 
     def performance_reset_at_for(self, mode: TradingMode | None = None) -> datetime | None:
         return self.performance_reset_at_by_mode.get(mode or self.trading_mode)

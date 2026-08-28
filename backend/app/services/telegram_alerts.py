@@ -9,8 +9,10 @@ from __future__ import annotations
 import asyncio
 import time
 from collections.abc import Awaitable, Callable, Mapping
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
+from datetime import time as datetime_time
 from typing import Any
+from zoneinfo import ZoneInfo
 
 import httpx
 
@@ -20,6 +22,7 @@ class TelegramAlertService:
     DEDUPE_SECONDS = 60.0
     MAX_ATTEMPTS = 3
     MAX_QUEUE_SIZE = 200
+    VIETNAM_TZ = ZoneInfo("Asia/Ho_Chi_Minh")
 
     def __init__(
         self,
@@ -36,8 +39,10 @@ class TelegramAlertService:
         )
         self.task: asyncio.Task[None] | None = None
         self.command_task: asyncio.Task[None] | None = None
+        self.daily_report_task: asyncio.Task[None] | None = None
         self.running = False
         self.command_handler: Callable[[str, str], Awaitable[str]] | None = None
+        self.daily_report_provider: Callable[[], Awaitable[str]] | None = None
         self.update_offset: int | None = None
         self._recent: dict[str, float] = {}
         self.sent_count = 0
@@ -52,14 +57,21 @@ class TelegramAlertService:
     def configured(self) -> bool:
         return bool(self.bot_token and self.chat_id)
 
-    def start(self, command_handler: Callable[[str, str], Awaitable[str]] | None = None) -> None:
+    def start(
+        self,
+        command_handler: Callable[[str, str], Awaitable[str]] | None = None,
+        daily_report_provider: Callable[[], Awaitable[str]] | None = None,
+    ) -> None:
         if not self.configured or (self.task and not self.task.done()):
             return
         self.command_handler = command_handler
+        self.daily_report_provider = daily_report_provider
         self.running = True
         self.task = asyncio.create_task(self._worker())
         if command_handler is not None:
             self.command_task = asyncio.create_task(self._command_worker())
+        if daily_report_provider is not None:
+            self.daily_report_task = asyncio.create_task(self._daily_report_worker())
 
     async def stop(self) -> None:
         self.running = False
@@ -73,6 +85,12 @@ class TelegramAlertService:
             self.command_task.cancel()
             try:
                 await self.command_task
+            except asyncio.CancelledError:
+                pass
+        if self.daily_report_task and not self.daily_report_task.done():
+            self.daily_report_task.cancel()
+            try:
+                await self.daily_report_task
             except asyncio.CancelledError:
                 pass
 
@@ -120,6 +138,11 @@ class TelegramAlertService:
             event_key,
             ("ℹ️", "INFO", title.upper() or event_key, "Kiểm tra dashboard nếu cần thêm chi tiết."),
         )
+        severity = {
+            "INFO": "THÔNG TIN",
+            "WARNING": "CẢNH BÁO",
+            "CRITICAL": "NGHIÊM TRỌNG",
+        }.get(severity, severity)
         labels = {
             "mode": "Chế độ",
             "exchange": "Sàn",
@@ -142,14 +165,9 @@ class TelegramAlertService:
             "client_order_id": "Mã lệnh",
             "reason": "Lý do",
         }
-        context_keys = (
-            "mode",
-            "exchange",
-            "bot_state",
-            "live_enabled",
-            "safe_mode",
-            "emergency_stop",
-        )
+        # Mode/LIVE already appear together in the safety boundary. Repeating
+        # them as separate rows made mobile alerts longer without adding value.
+        context_keys = ("exchange", "bot_state", "safe_mode", "emergency_stop")
         body = str(data.get("body") or "").strip()
         lines = [f"{icon} {heading} · {severity}"]
         # Safety boundary first, from the queued snapshot (not live-mutated state).
@@ -175,7 +193,7 @@ class TelegramAlertService:
             "reason",
             "client_order_id",
         )
-        shown: set[str] = {"body", *context_keys}
+        shown: set[str] = {"body", "mode", "live_enabled", *context_keys}
         for key in context_keys:
             value = data.get(key)
             if value in (None, ""):
@@ -192,15 +210,9 @@ class TelegramAlertService:
                 f"{self._format_detail_value(key, value)}"
             )
             shown.add(key)
-        for key, value in data.items():
-            if key in shown or value in (None, ""):
-                continue
-            lines.append(
-                f"• {labels.get(key, key.replace('_', ' ').title())}: "
-                f"{self._format_detail_value(key, value)}"
-            )
         lines.append(f"➡️ {action}")
-        lines.append(f"🕒 {datetime.now(UTC).strftime('%Y-%m-%d %H:%M:%S UTC')}")
+        vietnam_now = datetime.now(UTC).astimezone(self.VIETNAM_TZ)
+        lines.append(f"🕒 {vietnam_now.strftime('%d/%m/%Y %H:%M:%S')} · UTC+7")
         return "\n".join(lines)[:4000]
 
     @staticmethod
@@ -353,6 +365,29 @@ class TelegramAlertService:
                     self.dropped_count += 1
             await asyncio.sleep(1.0)
 
+    async def _daily_report_worker(self) -> None:
+        """Send one native forward-test report at 21:00 Vietnam time."""
+        while self.running:
+            now = datetime.now(UTC).astimezone(self.VIETNAM_TZ)
+            target = datetime.combine(
+                now.date(), datetime_time(hour=21), tzinfo=self.VIETNAM_TZ
+            )
+            if target <= now:
+                target += timedelta(days=1)
+            await asyncio.sleep(max((target - now).total_seconds(), 1.0))
+            if not self.running or self.daily_report_provider is None:
+                continue
+            try:
+                report = await self.daily_report_provider()
+                if await self._post_message(report[:4000]):
+                    self.sent_count += 1
+                else:
+                    self.dropped_count += 1
+            except asyncio.CancelledError:
+                raise
+            except Exception:  # noqa: BLE001 - báo cáo lỗi không được làm chết alert worker
+                self.dropped_count += 1
+
     async def _poll_updates(self) -> list[dict[str, Any]]:
         payload: dict[str, Any] = {
             "timeout": 20,
@@ -408,6 +443,9 @@ class TelegramAlertService:
             "commands_enabled": self.configured and self.command_handler is not None,
             "worker_alive": self.task is not None and not self.task.done(),
             "command_worker_alive": self.command_task is not None and not self.command_task.done(),
+            "daily_report_alive": self.daily_report_task is not None
+            and not self.daily_report_task.done(),
+            "daily_report_time": "21:00 Asia/Ho_Chi_Minh",
             "queued": self.queue.qsize(),
             "queue_capacity": self.MAX_QUEUE_SIZE,
             "sent": self.sent_count,

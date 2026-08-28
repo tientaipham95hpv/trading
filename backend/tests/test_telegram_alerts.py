@@ -17,16 +17,16 @@ def test_alert_format_is_operator_friendly_and_vietnamese() -> None:
         },
     )
 
-    assert message.startswith("🚨 SAFE MODE · CRITICAL")
+    assert message.startswith("🚨 SAFE MODE · NGHIÊM TRỌNG")
     assert "🔒 Phạm vi: DEMO · không dùng vốn thật · LIVE TẮT · không gửi lệnh" in message
     assert "Thiếu stop bảo vệ" in message
-    assert "• Chế độ: DEMO · không dùng vốn thật" in message
-    assert "• LIVE: TẮT · không gửi lệnh" in message
+    assert "• Chế độ:" not in message
+    assert "• LIVE:" not in message
     assert "• Bot: STOPPED · không phát lệnh" in message
     assert "• Mã: BTCUSDT" in message
     assert "• Hướng: LONG · mua" in message
     assert "➡️ Không resume trước khi xử lý nguyên nhân." in message
-    assert message.endswith("UTC")
+    assert message.endswith("UTC+7")
     assert "[SAFE_MODE]" not in message
 
 
@@ -47,7 +47,7 @@ def test_english_titles_are_humanized_for_operators() -> None:
         },
     )
 
-    assert message.startswith("✅ ĐÃ MỞ VỊ THẾ · INFO")
+    assert message.startswith("✅ ĐÃ MỞ VỊ THẾ · THÔNG TIN")
     assert "📌 Mở vị thế" in message
     assert "Position open" not in message
     assert "• Khối lượng: 0.01" in message
@@ -63,7 +63,7 @@ def test_lifecycle_alert_shows_warning_severity_and_exit_price() -> None:
         {"symbol": "BTCUSDT", "exit_price": 64000.0, "realized_pnl": -12.5},
     )
 
-    assert message.startswith("⚠️ DỪNG LỖ · WARNING")
+    assert message.startswith("⚠️ DỪNG LỖ · CẢNH BÁO")
     assert "• Giá đóng: 64,000" in message
     assert "• PnL thực nhận: -12.5" in message
 
@@ -165,3 +165,12 @@ async def test_alert_worker_continues_after_bad_item() -> None:
 
     assert delivered == ["good"]
     assert service.dropped_count == 1
+
+
+def test_status_exposes_native_daily_report_schedule() -> None:
+    service = TelegramAlertService("token", "123")
+
+    status = service.status()
+
+    assert status["daily_report_alive"] is False
+    assert status["daily_report_time"] == "21:00 Asia/Ho_Chi_Minh"

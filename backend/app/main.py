@@ -30,7 +30,10 @@ async def startup() -> None:
     state.stability.start()
     state.smart_entry_collector.start()
     state.equity_tracker.start()
-    state.telegram_alerts.start(command_handler=state.handle_telegram_command)
+    state.telegram_alerts.start(
+        command_handler=state.handle_telegram_command,
+        daily_report_provider=state.telegram_forward_test_report,
+    )
     configure_realtime()
     await state.realtime.start()
 
