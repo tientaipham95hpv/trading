@@ -244,6 +244,29 @@ class BinanceFuturesAdapter(ExchangeAdapter):
         await self._close_position_market(plan)
         await self.snapshot()
 
+    async def close_unknown_managed_position_fail_closed(
+        self, symbol: str, *, lifecycle_id: str
+    ) -> None:
+        """Flatten one app-prefixed entry that this execution instance never submitted."""
+        symbol = symbol.upper()
+        snapshot = await self.snapshot()
+        position = next((item for item in snapshot.positions if item.symbol == symbol), None)
+        await self.cancel_all_orders(symbol)
+        if position is None:
+            await self.snapshot()
+            return
+        plan = OrderPlan(
+            client_order_id=lifecycle_id,
+            symbol=symbol,
+            side=Side.LONG if position.side == "LONG" else Side.SHORT,
+            quantity=position.quantity,
+            entry_price=position.entry_price,
+            stop_loss=position.entry_price,
+            leverage=min(position.leverage or 1, 5),
+        )
+        await self._close_position_market(plan)
+        await self.snapshot()
+
     async def snapshot(self) -> ExchangeSnapshot:
         if not self.configured:
             self.snapshot_cache = ExchangeSnapshot(

@@ -1512,10 +1512,15 @@ def configure_realtime() -> None:
 
 async def _submit_order(plan: OrderPlan) -> dict[str, object]:
     symbol = plan.symbol.upper()
+    hard_blacklist = {
+        item.strip().upper()
+        for item in state.settings.scanner_blacklist.split(",")
+        if item.strip()
+    }
     if (
         state.bot_settings.universe_mode == "VALIDATION"
         and symbol not in state.bot_settings.whitelist
-    ) or symbol in state.bot_settings.blacklist:
+    ) or symbol in state.bot_settings.blacklist or symbol in hard_blacklist:
         raise HTTPException(
             status_code=400,
             detail="Symbol không nằm trong universe được phép giao dịch",

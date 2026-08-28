@@ -295,6 +295,15 @@ class AutoTrader:
                 reason = "Symbol đang có vị thế hoặc lệnh mở"
                 rejection_reasons[reason] = rejection_reasons.get(reason, 0) + 1
                 continue
+            if result.symbol.upper() in self._configured_hard_blacklist():
+                reason = "Symbol nằm trong blacklist an toàn của hệ thống"
+                rejection_reasons[reason] = rejection_reasons.get(reason, 0) + 1
+                await self.state.storage.log(
+                    "Auto-trader hard blacklist skip",
+                    {"symbol": result.symbol, "mode": self.state.trading_mode.value},
+                    level="WARNING",
+                )
+                continue
             quality = result.data_quality
             self.last_data_quality = quality.model_dump(mode="json") if quality else None
             if quality is None or not quality.accepted:
@@ -804,10 +813,35 @@ class AutoTrader:
         self, adapter: Any, fact: dict[str, object]
     ) -> None:
         """Repair a missing OPEN from the exact entry fill after the submit path settles."""
-        await asyncio.sleep(2)
+        # Give the synchronous submit path enough time to persist its richer OPEN
+        # fact. This task is only a recovery path for a missing write.
+        await asyncio.sleep(5)
         lifecycle_id = str(fact.get("lifecycle_id") or "")
-        plan = adapter.submitted_plan(str(fact.get("symbol") or ""))
+        symbol = str(fact.get("symbol") or "").upper()
+        plan = adapter.submitted_plan(symbol)
         if plan is None or plan.client_order_id != lifecycle_id:
+            existing = await self.state.storage.lifecycle_open_event(
+                mode=self.state.trading_mode.value, lifecycle_id=lifecycle_id
+            )
+            if existing is not None and existing.get("risk_verifiable") is True:
+                return
+            reason = f"Entry bot-owned không thuộc execution instance: {lifecycle_id}"
+            try:
+                await adapter.close_unknown_managed_position_fail_closed(
+                    symbol, lifecycle_id=lifecycle_id
+                )
+            finally:
+                self.state.enter_safe_mode(reason)
+                await self.state.storage.log(
+                    "Unknown managed entry closed fail-closed",
+                    {
+                        "mode": self.state.trading_mode.value,
+                        "symbol": symbol,
+                        "lifecycle_id": lifecycle_id,
+                        "reason": reason,
+                    },
+                    level="CRITICAL",
+                )
             return
         try:
             existing = await self.state.storage.lifecycle_open_event(
@@ -1291,6 +1325,12 @@ class AutoTrader:
         mode = getattr(self.state, "trading_mode", None)
         value = getattr(mode, "value", mode)
         return value == TradingMode.DEMO.value
+
+    def _configured_hard_blacklist(self) -> set[str]:
+        """Environment safety blacklist cannot be cleared by a runtime settings update."""
+        settings = getattr(self.state, "settings", None)
+        raw = str(getattr(settings, "scanner_blacklist", "") or "")
+        return {symbol.strip().upper() for symbol in raw.split(",") if symbol.strip()}
 
     def _allows_demo_high_vol(self) -> bool:
         settings = getattr(self.state, "settings", None)

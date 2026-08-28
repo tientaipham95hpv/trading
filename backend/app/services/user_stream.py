@@ -231,7 +231,10 @@ class UserStreamWatchdog:
                 recorder = getattr(self.state.storage, "save_lifecycle_analytics_event", None)
                 if lifecycle_fact is not None and recorder is not None:
                     await recorder(lifecycle_fact)
-                    if lifecycle_fact.get("event_type") == "ENTRY_FILL":
+                    if (
+                        lifecycle_fact.get("event_type") == "ENTRY_FILL"
+                        and lifecycle_fact.get("order_status") == "FILLED"
+                    ):
                         task = asyncio.create_task(
                             self.state.auto_trader.repair_lifecycle_open_from_entry_fill(
                                 adapter, lifecycle_fact
@@ -380,6 +383,7 @@ def _lifecycle_fact(mode: TradingMode, event: dict[str, Any]) -> dict[str, objec
         "client_order_id": client_id,
         "order_id": order_id,
         "trade_id": trade_id,
+        "order_status": status,
         "side": str(order.get("S") or ""),
         "last_fill_quantity": float(order.get("l") or 0),
         "cumulative_quantity": float(order.get("z") or 0),
