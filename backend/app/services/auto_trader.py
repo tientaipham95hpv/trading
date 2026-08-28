@@ -515,6 +515,21 @@ class AutoTrader:
                         "WAITING_POSITION",
                         f"{plan.symbol} đang có vị thế hoặc lệnh mở",
                     )
+                # A scan can take tens of seconds. Honor STOP/PAUSE that arrived
+                # while market data and risk checks were running, immediately
+                # before the first exchange submission is allowed.
+                if self.state.bot_state != BotState.RUNNING:
+                    self.rejected += 1
+                    return await self._skip(
+                        "BOT_STATE_CHANGED",
+                        f"Bot đã chuyển sang {self.state.bot_state.value}; hủy entry",
+                    )
+                if self.state.emergency_stop.active or self.state.safe_mode:
+                    self.rejected += 1
+                    return await self._skip(
+                        "BLOCKED",
+                        self.state.safe_mode_reason or "Emergency Stop/SAFE_MODE đã bật",
+                    )
                 result = await adapter.submit_order_plan(plan)
             except (ExchangeCredentialsError, ExchangeError) as exc:
                 self.rejected += 1
