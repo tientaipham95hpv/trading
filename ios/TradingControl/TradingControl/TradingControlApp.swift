@@ -536,8 +536,14 @@ private struct ModeControlPanel: View {
 private struct SystemStateBanner: View {
     @ObservedObject var model: TradingViewModel
 
+    private var exchange: ExchangeSnapshot? {
+        model.status?.exchange ?? model.exchange
+    }
+
     private var isHealthy: Bool {
-        model.status?.botState == "RUNNING" && model.exchange?.connection == "CONNECTED" && model.status?.safeMode != true
+        model.status?.botState == "RUNNING"
+            && exchange?.connection == "CONNECTED"
+            && model.status?.safeMode != true
     }
 
     var body: some View {
@@ -563,12 +569,12 @@ private struct SystemStateBanner: View {
     }
 
     private var summary: String {
-        let orders = model.exchange?.orders.count ?? 0
-        let positions = model.exchange?.positions.count ?? 0
+        let orders = exchange?.orders.count ?? 0
+        let positions = exchange?.positions.count ?? 0
         if orders > 0 || positions > 0 {
             return "Có \(orders) order và \(positions) vị thế trên \(model.status?.mode ?? "mode hiện tại")."
         }
-        return model.status?.autoTrader?.lastReason ?? "Backend chạy, exchange \(viExchangeConnection(model.exchange?.connection)), hiện chưa có lệnh/vị thế mở."
+        return model.status?.autoTrader?.lastReason ?? "Backend chạy, exchange \(viExchangeConnection(exchange?.connection)), hiện chưa có lệnh/vị thế mở."
     }
 }
 
