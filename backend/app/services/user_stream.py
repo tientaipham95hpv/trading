@@ -223,7 +223,10 @@ class UserStreamWatchdog:
             if event_type == "ORDER_TRADE_UPDATE" and hasattr(adapter, "handle_user_stream_event"):
                 lifecycle_actions = await adapter.handle_user_stream_event(event)
                 lifecycle_fact = _lifecycle_fact(self.state.trading_mode, event)
-                if lifecycle_fact is not None:
+                if lifecycle_fact is not None and lifecycle_fact.get("event_type") in {
+                    "PARTIAL_CLOSE",
+                    "CLOSE_FILL",
+                }:
                     await self._notify_lifecycle(lifecycle_fact)
                 recorder = getattr(self.state.storage, "save_lifecycle_analytics_event", None)
                 if lifecycle_fact is not None and recorder is not None:
@@ -325,21 +328,32 @@ def _lifecycle_fact(mode: TradingMode, event: dict[str, Any]) -> dict[str, objec
         return None
     client_id = str(order.get("c") or "")
     status = str(order.get("X") or "")
-    if status not in {"FILLED", "PARTIALLY_FILLED"} or not any(
-        marker in client_id for marker in ("-tp-", "-sl-", "-be-", "-lock-", "-repair-", "-close")
-    ):
+    if status not in {"FILLED", "PARTIALLY_FILLED"}:
+        return None
+    close_markers = ("-tp-", "-sl-", "-be-", "-lock-", "-repair-", "-close")
+    is_close = any(marker in client_id for marker in close_markers)
+    is_managed_entry = client_id.startswith(("a-demo-", "a-live-")) and not is_close
+    if not is_close and not is_managed_entry:
         return None
     event_time = int(event.get("E") or order.get("T") or 0)
     event_at = datetime.fromtimestamp(event_time / 1000, UTC) if event_time else datetime.now(UTC)
-    event_type = "PARTIAL_CLOSE" if status == "PARTIALLY_FILLED" else "CLOSE_FILL"
-    if "-tp-" in client_id:
+    event_type = (
+        "ENTRY_FILL"
+        if is_managed_entry
+        else "PARTIAL_CLOSE"
+        if status == "PARTIALLY_FILLED"
+        else "CLOSE_FILL"
+    )
+    if is_managed_entry:
+        reason = "ENTRY"
+    elif "-tp-" in client_id:
         reason = "TAKE_PROFIT"
     elif any(marker in client_id for marker in ("-sl-", "-be-", "-lock-", "-repair-")):
         reason = "STOP_LOSS"
     else:
         reason = "MARKET_CLOSE"
     lifecycle_id = client_id
-    for marker in ("-tp-", "-sl-", "-be-", "-lock-", "-repair-", "-close"):
+    for marker in close_markers:
         lifecycle_id = lifecycle_id.split(marker)[0]
     order_id = str(order.get("i") or "")
     trade_id = str(order.get("t") or "")

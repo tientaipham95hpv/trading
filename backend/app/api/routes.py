@@ -1777,16 +1777,43 @@ def _lifecycle_trades_for_app(events: list[dict[str, object]]) -> list[dict[str,
         if not final_events:
             continue
         open_event = next(
-            (event for event in ordered if event.get("event_type") == "OPEN"), {}
+            (
+                event
+                for event in ordered
+                if event.get("event_type") == "OPEN"
+                and event.get("risk_verifiable") is True
+                and _float(event.get("entry_price")) > 0
+            ),
+            None,
         )
+        if open_event is None:
+            continue
         close_events = [
             event
             for event in ordered
             if event.get("event_type") in {"PARTIAL_CLOSE", "CLOSE_FILL"}
         ]
+        entry_events = [
+            event for event in ordered if event.get("event_type") == "ENTRY_FILL"
+        ]
         final_event = final_events[-1]
         gross_pnl = sum(_float(event.get("realized_pnl")) for event in close_events)
-        fee = abs(sum(_float(event.get("commission")) for event in close_events))
+        fee = abs(
+            sum(
+                _float(event.get("commission"))
+                for event in [*entry_events, *close_events]
+            )
+        )
+        entry_quantity = sum(_float(event.get("last_fill_quantity")) for event in entry_events)
+        entry_notional = sum(
+            _float(event.get("last_fill_quantity")) * _float(event.get("last_fill_price"))
+            for event in entry_events
+        )
+        exact_entry_price = (
+            entry_notional / entry_quantity
+            if entry_quantity > 0 and entry_notional > 0
+            else _float(open_event.get("entry_price"))
+        )
         side = str(open_event.get("side") or "CLOSED")
         event_at = str(final_event.get("event_at") or datetime.now(UTC).isoformat())
         trades.append(
@@ -1794,7 +1821,7 @@ def _lifecycle_trades_for_app(events: list[dict[str, object]]) -> list[dict[str,
                 "id": lifecycle_id,
                 "symbol": str(final_event.get("symbol") or open_event.get("symbol") or "-"),
                 "side": side,
-                "entry_price": _float(open_event.get("entry_price")),
+                "entry_price": exact_entry_price,
                 "exit_price": _float(final_event.get("last_fill_price")),
                 "quantity": _float(open_event.get("initial_quantity")),
                 "gross_pnl": gross_pnl,

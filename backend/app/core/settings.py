@@ -66,6 +66,8 @@ class Settings(BaseSettings):
     demo_test_min_score: int = Field(default=80, ge=70, le=84)
     demo_test_min_risk_reward: float = Field(default=1.8, ge=1.5, le=2.0)
     demo_test_allow_high_vol_regime: bool = True
+    # DEMO-only anti-chase gate. LIVE keeps its existing production policy.
+    demo_test_max_long_ema20_distance_atr: float = Field(default=1.75, ge=1.0, le=3.0)
     taker_fee_rate: float = 0.0005
     maker_fee_rate: float = 0.0002
     slippage_bps: float = 2.0

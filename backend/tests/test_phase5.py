@@ -46,6 +46,15 @@ def test_lifecycle_trade_history_uses_only_completed_bot_lifecycles():
             "side": "LONG",
             "entry_price": 100,
             "initial_quantity": 1,
+            "risk_verifiable": True,
+        },
+        {
+            "lifecycle_id": "bot-1",
+            "event_type": "ENTRY_FILL",
+            "event_at": "2026-08-27T09:00:01+00:00",
+            "last_fill_quantity": 1,
+            "last_fill_price": 101,
+            "commission": 0.2,
         },
         {
             "lifecycle_id": "bot-1",
@@ -77,7 +86,8 @@ def test_lifecycle_trade_history_uses_only_completed_bot_lifecycles():
     assert len(trades) == 1
     assert trades[0]["id"] == "bot-1"
     assert trades[0]["gross_pnl"] == pytest.approx(4)
-    assert trades[0]["net_pnl"] == pytest.approx(3.8)
+    assert trades[0]["entry_price"] == pytest.approx(101)
+    assert trades[0]["net_pnl"] == pytest.approx(3.6)
 
 
 def test_risk_rejects_weekly_drawdown_correlation_and_stale_data():

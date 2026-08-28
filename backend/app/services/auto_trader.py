@@ -451,7 +451,9 @@ class AutoTrader:
                     rejection_reasons[rejection] = rejection_reasons.get(rejection, 0) + 1
                     continue
 
-            return await self._submit(plan, timeframe=result.timeframe.value)
+            return await self._submit(
+                plan, timeframe=result.timeframe.value, entry_evidence=result
+            )
 
         return await self._skip(
             "NO_ACCEPTED_SIGNAL",
@@ -466,7 +468,13 @@ class AutoTrader:
             return "; ".join(audit.reasons) or "Portfolio risk từ chối entry mới"
         return None
 
-    async def _submit(self, plan: OrderPlan, *, timeframe: str) -> dict[str, object]:
+    async def _submit(
+        self,
+        plan: OrderPlan,
+        *,
+        timeframe: str,
+        entry_evidence: Any | None = None,
+    ) -> dict[str, object]:
         self.last_status = "SUBMITTING"
         self.last_symbol = plan.symbol
         if (
@@ -513,7 +521,9 @@ class AutoTrader:
                 return await self._skip("ORDER_ERROR", f"{plan.symbol}: {exc}")
             await self._persist_exchange_result(plan, result)
             if result.accepted:
-                await self._record_lifecycle_open(plan, result, timeframe=timeframe)
+                await self._record_lifecycle_open(
+                    plan, result, timeframe=timeframe, entry_evidence=entry_evidence
+                )
             if result.critical_alert:
                 self.state.enter_safe_mode(result.critical_alert)
                 await self.state.notifications.alert(
@@ -621,6 +631,7 @@ class AutoTrader:
         result: ExchangeExecutionResult,
         *,
         timeframe: str,
+        entry_evidence: Any | None = None,
     ) -> None:
         raw_order = result.order.get("raw")
         raw_order = raw_order if isinstance(raw_order, dict) else {}
@@ -633,17 +644,35 @@ class AutoTrader:
         event_at = (
             datetime.fromtimestamp(exchange_time_ms / 1000, UTC) if exchange_time_ms > 0 else None
         )
-        entry_price = float(
+        order_entry_price = float(
             raw_order.get("avgPrice")
             or result.order.get("avg_price")
             or result.order.get("price")
             or 0
         )
+        position = next(
+            (
+                item
+                for item in result.positions
+                if str(item.get("symbol") or "").upper() == plan.symbol.upper()
+            ),
+            {},
+        )
+        entry_price = float(position.get("entry_price") or 0) or order_entry_price
         executed_quantity = float(
             result.order.get("executed_quantity") or raw_order.get("executedQty") or 0
         )
+        if executed_quantity <= 0:
+            executed_quantity = float(position.get("quantity") or 0)
         initial_risk = abs(entry_price - plan.stop_loss) * executed_quantity
         evidence_verifiable = event_at is not None and entry_price > 0 and executed_quantity > 0
+        indicators = getattr(entry_evidence, "indicators", None)
+        atr = float(getattr(indicators, "atr", 0) or 0)
+        ema20 = getattr(indicators, "ema20", None)
+        signal_price = float(getattr(entry_evidence, "price", 0) or plan.entry_price)
+        ema20_distance_atr = (
+            abs(signal_price - float(ema20)) / atr if ema20 is not None and atr > 0 else None
+        )
         await self.state.storage.save_lifecycle_analytics_event(
             {
                 "event_key": f"{self.state.trading_mode.value}:{plan.client_order_id}:OPEN",
@@ -660,6 +689,18 @@ class AutoTrader:
                 "initial_risk": initial_risk,
                 "risk_verifiable": evidence_verifiable and initial_risk > 0,
                 "timeframe": timeframe,
+                "signal_price": signal_price,
+                "signal_score": max(
+                    int(getattr(entry_evidence, "long_score", 0) or 0),
+                    int(getattr(entry_evidence, "short_score", 0) or 0),
+                ),
+                "signal_regime": str(
+                    getattr(getattr(entry_evidence, "regime", None), "value", "")
+                ),
+                "signal_reasons": list(getattr(entry_evidence, "reasons", []) or []),
+                "signal_atr": atr or None,
+                "signal_ema20": float(ema20) if ema20 is not None else None,
+                "ema20_distance_atr": ema20_distance_atr,
                 "take_profits": plan.take_profits,
                 "entry_order_id": result.order.get("order_id"),
                 "entry_client_order_id": plan.client_order_id,
@@ -1030,6 +1071,8 @@ class AutoTrader:
             h4 = by_symbol_frame.get((trigger.symbol, Timeframe.H4))
             if h1 is None or h4 is None:
                 reason = "Thiếu nến đóng xác nhận 1h/4h"
+            elif self._demo_long_is_overextended(trigger, h1):
+                reason = "DEMO bỏ LONG đuổi giá: cách EMA20 quá 1.75 ATR"
             elif h4.regime == MarketRegime.PANIC or (
                 h4.regime == MarketRegime.HIGH_VOL and not self._allows_demo_high_vol()
             ):
@@ -1075,6 +1118,18 @@ class AutoTrader:
                     continue
             rejected[reason] = rejected.get(reason, 0) + 1
         return accepted, rejected
+
+    def _demo_long_is_overextended(self, trigger: Any, h1: Any) -> bool:
+        if not self._uses_demo_test_profile() or trigger.action != SignalAction.LONG:
+            return False
+        maximum = float(self.state.settings.demo_test_max_long_ema20_distance_atr)
+        for item in (trigger, h1):
+            atr = float(getattr(item.indicators, "atr", 0) or 0)
+            ema20 = getattr(item.indicators, "ema20", None)
+            price = float(getattr(item, "price", 0) or 0)
+            if atr > 0 and ema20 is not None and (price - float(ema20)) / atr > maximum:
+                return True
+        return False
 
     def _uses_demo_test_profile(self) -> bool:
         mode = getattr(self.state, "trading_mode", None)

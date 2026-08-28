@@ -48,6 +48,35 @@ def test_lifecycle_storage_model_keeps_mode_and_event_identity():
     assert row.payload["risk_verifiable"] is True
 
 
+def test_managed_entry_fill_is_recorded_with_exact_fee_and_price():
+    fact = _lifecycle_fact(
+        TradingMode.DEMO,
+        {
+            "E": 1_700_000_000_000,
+            "o": {
+                "s": "BTCUSDT",
+                "c": "a-demo-BTCUSDT-abc",
+                "X": "FILLED",
+                "i": 10,
+                "t": 11,
+                "S": "BUY",
+                "l": "0.2",
+                "z": "0.2",
+                "L": "50025",
+                "rp": "0",
+                "n": "0.4",
+                "N": "USDT",
+            },
+        },
+    )
+
+    assert fact is not None
+    assert fact["event_type"] == "ENTRY_FILL"
+    assert fact["lifecycle_id"] == "a-demo-BTCUSDT-abc"
+    assert fact["last_fill_price"] == 50025
+    assert fact["commission"] == 0.4
+
+
 def test_break_even_stop_fill_maps_back_to_original_lifecycle():
     fact = _lifecycle_fact(
         TradingMode.DEMO,

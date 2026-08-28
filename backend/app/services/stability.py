@@ -81,6 +81,18 @@ class DemoStabilityService:
                     grouped.setdefault(lifecycle_id, []).append(event)
             outcomes: list[tuple[datetime, float]] = []
             for lifecycle_events in grouped.values():
+                verified_open = next(
+                    (
+                        event
+                        for event in lifecycle_events
+                        if event.get("event_type") == "OPEN"
+                        and event.get("risk_verifiable") is True
+                        and float(event.get("entry_price") or 0) > 0
+                    ),
+                    None,
+                )
+                if verified_open is None:
+                    continue
                 final_events = [
                     event
                     for event in lifecycle_events
@@ -93,6 +105,11 @@ class DemoStabilityService:
                     for event in lifecycle_events
                     if event.get("event_type") in {"PARTIAL_CLOSE", "CLOSE_FILL"}
                 ]
+                entry_events = [
+                    event
+                    for event in lifecycle_events
+                    if event.get("event_type") == "ENTRY_FILL"
+                ]
                 closed_at = max(
                     datetime.fromisoformat(str(event.get("event_at")))
                     for event in final_events
@@ -101,7 +118,7 @@ class DemoStabilityService:
                     float(event.get("realized_pnl") or 0)
                     - abs(float(event.get("commission") or 0))
                     for event in close_events
-                )
+                ) - sum(abs(float(event.get("commission") or 0)) for event in entry_events)
                 outcomes.append((closed_at, net_pnl))
             values = [value for _, value in sorted(outcomes)[-self.MAX_VALIDATION_TRADES :]]
             trade_count = len(values)

@@ -38,14 +38,24 @@ class FakeStorage:
         self.snapshots = []
         self.active = {}
         self.events = [
-            {
-                "lifecycle_id": f"test-{index}",
-                "event_type": "CLOSE_FILL",
-                "event_at": datetime.fromtimestamp(row["time"] / 1000, UTC).isoformat(),
-                "realized_pnl": row["income"],
-                "commission": 0,
-            }
+            event
             for index, row in enumerate(income)
+            for event in (
+                {
+                    "lifecycle_id": f"test-{index}",
+                    "event_type": "OPEN",
+                    "event_at": datetime.fromtimestamp(row["time"] / 1000, UTC).isoformat(),
+                    "entry_price": 100,
+                    "risk_verifiable": True,
+                },
+                {
+                    "lifecycle_id": f"test-{index}",
+                    "event_type": "CLOSE_FILL",
+                    "event_at": datetime.fromtimestamp(row["time"] / 1000, UTC).isoformat(),
+                    "realized_pnl": row["income"],
+                    "commission": 0,
+                },
+            )
         ]
 
     async def lifecycle_analytics_events(self, *, mode=None, limit=5000):
