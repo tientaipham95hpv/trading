@@ -322,6 +322,141 @@ async def test_symbol_stop_loss_lock_expires():
     assert remaining == 0
 
 
+@pytest.mark.asyncio
+async def test_demo_reentry_has_15_minute_hard_lock():
+    from datetime import UTC, datetime, timedelta
+
+    stopped_at = datetime.now(UTC) - timedelta(minutes=10)
+
+    class Storage:
+        async def latest_symbol_stop_loss(self, **_kwargs):
+            return {"event_at": stopped_at.isoformat()}
+
+    state = SimpleNamespace(
+        trading_mode=SimpleNamespace(value="DEMO"),
+        bot_settings=SimpleNamespace(loss_streak_cooldown_minutes=60),
+        settings=SimpleNamespace(
+            demo_reentry_hard_lock_minutes=15,
+            demo_reentry_min_score=85,
+            demo_reentry_max_ema20_distance_atr=0.75,
+        ),
+        storage=Storage(),
+    )
+    result = SimpleNamespace(symbol="TSTUSDT")
+
+    remaining, reason = await AutoTrader(state)._symbol_reentry_cooldown(result)
+
+    assert 4 * 60 < remaining <= 5 * 60
+    assert reason == "khóa cứng 15 phút"
+
+
+@pytest.mark.asyncio
+async def test_demo_reentry_unlocks_fresh_confirmed_setup_after_hard_lock():
+    from datetime import UTC, datetime, timedelta
+
+    from app.domain.models import DataQualityAssessment, IndicatorSnapshot
+
+    stopped_at = datetime.now(UTC) - timedelta(minutes=20)
+
+    class Storage:
+        async def latest_symbol_stop_loss(self, **_kwargs):
+            return {"event_at": stopped_at.isoformat()}
+
+    state = SimpleNamespace(
+        trading_mode=SimpleNamespace(value="DEMO"),
+        bot_settings=SimpleNamespace(loss_streak_cooldown_minutes=60),
+        settings=SimpleNamespace(
+            demo_reentry_hard_lock_minutes=15,
+            demo_reentry_min_score=85,
+            demo_reentry_max_ema20_distance_atr=0.75,
+        ),
+        storage=Storage(),
+    )
+    result = SimpleNamespace(
+        symbol="TSTUSDT",
+        long_score=88,
+        short_score=20,
+        price=101,
+        indicators=IndicatorSnapshot(ema20=100, atr=2),
+        data_quality=DataQualityAssessment(
+            accepted=True,
+            status="PASS",
+            confidence=1,
+            minimum_confidence=0.9,
+            sample_size=200,
+            minimum_candles=200,
+            latest_closed_at=stopped_at + timedelta(minutes=15),
+            complete=True,
+            continuous=True,
+            valid=True,
+            fresh=True,
+        ),
+    )
+
+    remaining, reason = await AutoTrader(state)._symbol_reentry_cooldown(result)
+
+    assert remaining == 0
+    assert reason == "setup mới đủ điều kiện mở khóa sớm"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure", ["old_candle", "low_score", "far_from_ema"])
+async def test_demo_reentry_keeps_full_lock_without_independent_setup(failure: str):
+    from datetime import UTC, datetime, timedelta
+
+    from app.domain.models import DataQualityAssessment, IndicatorSnapshot
+
+    stopped_at = datetime.now(UTC) - timedelta(minutes=20)
+
+    class Storage:
+        async def latest_symbol_stop_loss(self, **_kwargs):
+            return {"event_at": stopped_at.isoformat()}
+
+    latest_closed_at = stopped_at + timedelta(minutes=15)
+    score = 88
+    price = 101
+    if failure == "old_candle":
+        latest_closed_at = stopped_at
+    elif failure == "low_score":
+        score = 84
+    else:
+        price = 102
+    state = SimpleNamespace(
+        trading_mode=SimpleNamespace(value="DEMO"),
+        bot_settings=SimpleNamespace(loss_streak_cooldown_minutes=60),
+        settings=SimpleNamespace(
+            demo_reentry_hard_lock_minutes=15,
+            demo_reentry_min_score=85,
+            demo_reentry_max_ema20_distance_atr=0.75,
+        ),
+        storage=Storage(),
+    )
+    result = SimpleNamespace(
+        symbol="TSTUSDT",
+        long_score=score,
+        short_score=20,
+        price=price,
+        indicators=IndicatorSnapshot(ema20=100, atr=2),
+        data_quality=DataQualityAssessment(
+            accepted=True,
+            status="PASS",
+            confidence=1,
+            minimum_confidence=0.9,
+            sample_size=200,
+            minimum_candles=200,
+            latest_closed_at=latest_closed_at,
+            complete=True,
+            continuous=True,
+            valid=True,
+            fresh=True,
+        ),
+    )
+
+    remaining, _ = await AutoTrader(state)._symbol_reentry_cooldown(result)
+
+    assert 39 * 60 < remaining <= 40 * 60
+
+
 def test_high_risk_symbol_is_watchlisted_not_hard_blacklisted():
     from app.domain.models import MarketRegime, Timeframe
 

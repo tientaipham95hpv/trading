@@ -68,6 +68,10 @@ class Settings(BaseSettings):
     demo_test_allow_high_vol_regime: bool = True
     # DEMO-only anti-chase gate. LIVE keeps its existing production policy.
     demo_test_max_long_ema20_distance_atr: float = Field(default=1.75, ge=1.0, le=3.0)
+    # After an SL, DEMO may re-enter early only on a fresh, high-quality setup.
+    demo_reentry_hard_lock_minutes: int = Field(default=15, ge=1, le=60)
+    demo_reentry_min_score: int = Field(default=85, ge=80, le=100)
+    demo_reentry_max_ema20_distance_atr: float = Field(default=0.75, ge=0.1, le=1.5)
     taker_fee_rate: float = 0.0005
     maker_fee_rate: float = 0.0002
     slippage_bps: float = 2.0

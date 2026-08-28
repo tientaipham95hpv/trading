@@ -336,11 +336,13 @@ class AutoTrader:
                     level="INFO",
                 )
                 continue
-            cooldown_remaining = await self._symbol_stop_loss_cooldown_remaining(result.symbol)
+            cooldown_remaining, cooldown_reason = await self._symbol_reentry_cooldown(
+                result
+            )
             if cooldown_remaining > 0:
                 reason = (
                     f"{result.symbol} đang khóa {max(1, int(cooldown_remaining // 60) + 1)} "
-                    "phút sau Stop Loss"
+                    f"phút sau Stop Loss: {cooldown_reason}"
                 )
                 rejection_reasons[reason] = rejection_reasons.get(reason, 0) + 1
                 await self.state.storage.log(
@@ -348,6 +350,7 @@ class AutoTrader:
                     {
                         "symbol": result.symbol,
                         "remaining_seconds": round(cooldown_remaining, 1),
+                        "reason": cooldown_reason,
                     },
                     level="INFO",
                 )
@@ -1367,3 +1370,59 @@ class AutoTrader:
         stopped_at = datetime.fromisoformat(str(event_at))
         elapsed = (datetime.now(UTC) - stopped_at).total_seconds()
         return max(0.0, settings.loss_streak_cooldown_minutes * 60 - elapsed)
+
+    async def _symbol_reentry_cooldown(self, result: Any) -> tuple[float, str]:
+        """Apply a hard SL lock, then allow only a fresh DEMO setup to re-enter early."""
+        settings = getattr(self.state, "bot_settings", None)
+        storage = getattr(self.state, "storage", None)
+        if settings is None or storage is None:
+            return 0.0, "không có cooldown"
+        event = await storage.latest_symbol_stop_loss(
+            mode=self.state.trading_mode.value,
+            symbol=result.symbol,
+        )
+        if event is None or not event.get("event_at"):
+            return 0.0, "không có Stop Loss gần nhất"
+        stopped_at = datetime.fromisoformat(str(event["event_at"]))
+        now = datetime.now(UTC)
+        elapsed = (now - stopped_at).total_seconds()
+        full_seconds = settings.loss_streak_cooldown_minutes * 60
+        full_remaining = max(0.0, full_seconds - elapsed)
+        if full_remaining <= 0:
+            return 0.0, "đã hết cooldown"
+
+        # Conditional early unlock is deliberately DEMO-only.
+        if not self._uses_demo_test_profile():
+            return full_remaining, "LIVE giữ khóa đầy đủ"
+        demo_settings = getattr(self.state, "settings", None)
+        hard_minutes = int(getattr(demo_settings, "demo_reentry_hard_lock_minutes", 15))
+        hard_remaining = max(0.0, hard_minutes * 60 - elapsed)
+        if hard_remaining > 0:
+            return hard_remaining, f"khóa cứng {hard_minutes} phút"
+
+        quality = getattr(result, "data_quality", None)
+        latest_closed_at = getattr(quality, "latest_closed_at", None)
+        if latest_closed_at is None or latest_closed_at <= stopped_at:
+            return full_remaining, "chưa có nến 15m mới đóng sau Stop Loss"
+
+        minimum_score = int(getattr(demo_settings, "demo_reentry_min_score", 85))
+        score = max(int(result.long_score), int(result.short_score))
+        if score < minimum_score:
+            return full_remaining, f"score tái vào dưới {minimum_score}"
+
+        indicators = getattr(result, "indicators", None)
+        atr = float(getattr(indicators, "atr", 0) or 0)
+        ema20 = getattr(indicators, "ema20", None)
+        price = float(getattr(result, "price", 0) or 0)
+        if atr <= 0 or ema20 is None or price <= 0:
+            return full_remaining, "thiếu ATR/EMA20 xác minh setup mới"
+        maximum = float(
+            getattr(demo_settings, "demo_reentry_max_ema20_distance_atr", 0.75)
+        )
+        distance = abs(price - float(ema20)) / atr
+        if distance > maximum:
+            return full_remaining, f"giá chưa reset quanh EMA20 (>{maximum:g} ATR)"
+
+        # The result reached this point only after the existing closed-candle MTF,
+        # quality, RR and trend confirmation gates have already passed.
+        return 0.0, "setup mới đủ điều kiện mở khóa sớm"
