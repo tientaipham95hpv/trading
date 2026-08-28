@@ -60,6 +60,7 @@ import type {
   BotSettings,
   Candle,
   ExchangeSnapshot,
+  EquityPoint,
   ExitAnalytics,
   SmartEntryPayload,
   JournalCategory,
@@ -186,6 +187,8 @@ function DashboardContent({ page }: { page: PageKey }) {
   const [scanner, setScanner] = useState<ScannerResult[]>([]);
   const [positions, setPositions] = useState<Position[]>([]);
   const [trades, setTrades] = useState<Trade[]>([]);
+  const [archivedTrades, setArchivedTrades] = useState<Trade[]>([]);
+  const [equityHistory, setEquityHistory] = useState<EquityPoint[]>([]);
   const [logs, setLogs] = useState<LogItem[]>([]);
   const [journalEntries, setJournalEntries] = useState<JournalEntry[]>([]);
   const [journalFilter, setJournalFilter] = useState<JournalCategory>("ALL");
@@ -215,6 +218,8 @@ function DashboardContent({ page }: { page: PageKey }) {
         api.signals().then((payload) => setScanner(payload.items)),
         api.positions().then((payload) => setPositions(payload.items)),
         api.trades().then((payload) => setTrades(payload.items)),
+        api.trades("archive").then((payload) => setArchivedTrades(payload.items)),
+        api.equityHistory().then((payload) => setEquityHistory(payload.points)),
         api.performance().then(setPerformance),
         api.exitAnalytics().then(setExitAnalytics),
         api.smartEntry().then(setSmartEntry),
@@ -538,6 +543,7 @@ function DashboardContent({ page }: { page: PageKey }) {
           {page === "dashboard" && (
             <Dashboard
               exchange={exchange ?? status?.exchange ?? null}
+              equityHistory={equityHistory}
               markets={markets}
               onDone={refresh}
               performance={performance}
@@ -552,11 +558,12 @@ function DashboardContent({ page }: { page: PageKey }) {
             <Positions markets={markets} positions={positions} />
           )}
           {page === "orders" && <Orders orders={exchange?.orders ?? []} trades={trades} />}
-          {page === "trades" && <Trades trades={trades} />}
+          {page === "trades" && <Trades archivedTrades={archivedTrades} trades={trades} />}
           {page === "strategies" && <Strategies scanner={scanner} />}
           {page === "analytics" && (
             <Analytics
               exitAnalytics={exitAnalytics}
+              equityHistory={equityHistory}
               smartEntry={smartEntry}
               performance={performance}
               trades={trades}
@@ -661,6 +668,7 @@ function PageHeader({ title, description, actions }: { title: string; descriptio
 
 function Dashboard({
   exchange,
+  equityHistory,
   markets,
   onDone,
   performance,
@@ -669,6 +677,7 @@ function Dashboard({
   status,
 }: {
   exchange: ExchangeSnapshot | null;
+  equityHistory: EquityPoint[];
   markets: Market[];
   onDone: () => Promise<void>;
   performance: Performance | null;
@@ -677,8 +686,8 @@ function Dashboard({
   status: StatusPayload | null;
 }) {
   const equitySeries = useMemo(
-    () => buildEquitySeries(performance),
-    [performance],
+    () => equityHistory.map((point) => point.equity),
+    [equityHistory],
   );
   const [activeChartSymbol, setActiveChartSymbol] = useState<string | null>(null);
   const chartSymbol =
@@ -1169,6 +1178,7 @@ function MarketChart({
 
   useEffect(() => {
     if (!containerRef.current || chartRef.current) return;
+    const compactChart = window.matchMedia("(max-width: 639px)").matches;
     // lightweight-charts draws on canvas, so CSS var(...) strings are not
     // resolved as colors. Use their concrete values or the canvas silently
     // falls back to black, making candles and indicator lines invisible.
@@ -1183,13 +1193,13 @@ function MarketChart({
     };
     const chart = createChart(containerRef.current, {
       autoSize: true,
-      height: 360,
+      height: compactChart ? 420 : 560,
       layout: { background: { color: chartColors.background }, textColor: chartColors.text },
       grid: {
         vertLines: { color: "rgba(255, 255, 255, 0.04)" },
         horzLines: { color: "rgba(255, 255, 255, 0.04)" },
       },
-      rightPriceScale: { borderColor: "rgba(148, 163, 184, 0.10)" },
+      rightPriceScale: { borderColor: "rgba(148, 163, 184, 0.10)", minimumWidth: compactChart ? 54 : 72 },
       timeScale: {
         borderColor: "rgba(148, 163, 184, 0.10)",
         timeVisible: true,
@@ -1246,28 +1256,28 @@ function MarketChart({
       axisLabelVisible: true,
       title: "Quá bán",
     });
-    const macdLine = chart.addSeries(LineSeries, {
+    const macdLine = compactChart ? null : chart.addSeries(LineSeries, {
       color: chartColors.info,
       lineWidth: 2,
       title: "MACD",
       priceLineVisible: false,
       lastValueVisible: false,
     }, 3);
-    const macdSignal = chart.addSeries(LineSeries, {
+    const macdSignal = compactChart ? null : chart.addSeries(LineSeries, {
       color: chartColors.warning,
       lineWidth: 2,
       title: "Signal",
       priceLineVisible: false,
       lastValueVisible: false,
     }, 3);
-    const macdHistogram = chart.addSeries(HistogramSeries, {
+    const macdHistogram = compactChart ? null : chart.addSeries(HistogramSeries, {
       priceLineVisible: false,
       lastValueVisible: false,
     }, 3);
     const panes = chart.panes();
-    panes[0]?.setStretchFactor(5);
-    panes[1]?.setStretchFactor(1.25);
-    panes[2]?.setStretchFactor(1.75);
+    panes[0]?.setStretchFactor(compactChart ? 6 : 5);
+    panes[1]?.setStretchFactor(compactChart ? 1 : 1.25);
+    panes[2]?.setStretchFactor(compactChart ? 2 : 1.75);
     panes[3]?.setStretchFactor(1.75);
     chartRef.current = chart;
     seriesRef.current = series;
@@ -1297,6 +1307,9 @@ function MarketChart({
 
   useEffect(() => {
     if (!seriesRef.current || !history.length) return;
+    const referencePrice = history.at(-1)?.close ?? 1;
+    const precision = referencePrice >= 100 ? 2 : referencePrice >= 1 ? 4 : referencePrice >= 0.01 ? 6 : 8;
+    seriesRef.current.applyOptions({ priceFormat: { type: "price", precision, minMove: 10 ** -precision } });
     seriesRef.current.setData(history.map((item) => ({
       time: Math.floor(item.open_time / 1000) as Time,
       open: item.open,
@@ -1341,7 +1354,8 @@ function MarketChart({
       ...(position?.take_profits ?? signal?.take_profits ?? []).map((price, index) => ({ price, color: "#22c55e", title: `TP${index + 1}` })),
       !position && signal?.stop_loss && { price: signal.stop_loss, color: "#ef4444", title: "SL" },
     ].filter((item): item is { price: number; color: string; title: string } => Boolean(item && Number.isFinite(item.price) && item.price > 0));
-    priceLinesRef.current = levels.map((level) => seriesRef.current!.createPriceLine({ ...level, lineWidth: 1, lineStyle: 2, axisLabelVisible: true }));
+    const showLevelLabels = !window.matchMedia("(max-width: 639px)").matches;
+    priceLinesRef.current = levels.map((level) => seriesRef.current!.createPriceLine({ ...level, lineWidth: 1, lineStyle: 2, axisLabelVisible: showLevelLabels }));
     const markerSignal = scanner.find((item) => item.symbol === effectiveSymbol && item.timeframe === interval && item.action !== "NO_TRADE") ?? signal;
     markerRef.current?.setMarkers(markerSignal && markerSignal.action !== "NO_TRADE" && candles.at(-1) ? [{
       time: Math.floor(candles.at(-1)!.open_time / 1000) as Time,
@@ -1468,14 +1482,14 @@ function MarketChart({
           <span className="flex items-center gap-1.5"><span className="h-0.5 w-4 bg-[var(--color-info)]" />EMA50 {latestEma50 === null ? "-" : money(latestEma50)}</span>
           <span className="flex items-center gap-1.5"><span className="h-2.5 w-2.5 bg-[var(--color-info)]/50" />Vol</span>
           <span className="flex items-center gap-1.5"><span className="h-0.5 w-4 bg-[var(--color-ai)]" />RSI14 {latestRsi === null ? "-" : latestRsi.toFixed(1)}</span>
-          <span className="flex items-center gap-1.5"><span className="h-0.5 w-4 bg-[var(--color-info)]" />MACD {latestMacdVal === null ? "-" : latestMacdVal.toFixed(4)}</span>
-          <span className="flex items-center gap-1.5"><span className="h-0.5 w-4 bg-[var(--color-warning)]" />Signal {latestSignalVal === null ? "-" : latestSignalVal.toFixed(4)}</span>
-          <span className="flex items-center gap-1.5">Hist {(latestHistVal ?? 0) >= 0 ? <span className="text-[var(--color-profit)]">{(latestHistVal ?? 0).toFixed(4)}</span> : <span className="text-[var(--color-loss)]">{(latestHistVal ?? 0).toFixed(4)}</span>}</span>
+          <span className="hidden items-center gap-1.5 sm:flex"><span className="h-0.5 w-4 bg-[var(--color-info)]" />MACD {latestMacdVal === null ? "-" : latestMacdVal.toFixed(4)}</span>
+          <span className="hidden items-center gap-1.5 sm:flex"><span className="h-0.5 w-4 bg-[var(--color-warning)]" />Signal {latestSignalVal === null ? "-" : latestSignalVal.toFixed(4)}</span>
+          <span className="hidden items-center gap-1.5 sm:flex">Hist {(latestHistVal ?? 0) >= 0 ? <span className="text-[var(--color-profit)]">{(latestHistVal ?? 0).toFixed(4)}</span> : <span className="text-[var(--color-loss)]">{(latestHistVal ?? 0).toFixed(4)}</span>}</span>
           {latestAtr !== null ? (
             <span className="flex items-center gap-1.5">ATR14 {money(latestAtr)}</span>
           ) : null}
         </div>
-        <div className="h-[420px] w-full md:h-[560px]" ref={containerRef} />
+        <div className="h-[420px] w-full min-w-0 md:h-[560px]" ref={containerRef} />
         {busy && (
           <div className="absolute right-5 top-5 rounded-full bg-[var(--bg-elevated)]/90 px-3 py-1 text-xs font-bold text-[var(--text-secondary)] shadow border border-[var(--border-default)]">
             Đang tải
@@ -2357,14 +2371,16 @@ function Orders({
 
 /* ──────────────────────────── TRADES PAGE ──────────────────────────── */
 
-function Trades({ trades }: { trades: Trade[] }) {
+function Trades({ archivedTrades, trades }: { archivedTrades: Trade[]; trades: Trade[] }) {
+  const [dataset, setDataset] = useState<"current" | "archive">("current");
   const [query, setQuery] = useState("");
   const [side, setSide] = useState("ALL");
   const [result, setResult] = useState("ALL");
   const [period, setPeriod] = useState<"TODAY" | "7D" | "30D" | "ALL">("ALL");
   const [referenceTime] = useState(() => new Date());
 
-  const filteredTrades = trades.filter((trade) => {
+  const sourceTrades = dataset === "current" ? trades : archivedTrades;
+  const filteredTrades = sourceTrades.filter((trade) => {
     const createdAt = new Date(trade.created_at).getTime();
     if (period === "TODAY") {
       if (createdAt < vietnamDayStart(referenceTime).getTime()) return false;
@@ -2411,6 +2427,10 @@ function Trades({ trades }: { trades: Trade[] }) {
 
       {/* Filters */}
       <div className="flex flex-wrap items-center gap-3">
+        <div className="inline-flex rounded-lg border border-[var(--border-default)] bg-[var(--bg-surface)] p-1">
+          <button className={`rounded-md px-3 py-1.5 text-xs font-bold ${dataset === "current" ? "bg-[var(--color-info)] text-white" : "text-[var(--text-muted)]"}`} onClick={() => setDataset("current")} type="button">Cohort hiện tại</button>
+          <button className={`rounded-md px-3 py-1.5 text-xs font-bold ${dataset === "archive" ? "bg-[var(--color-info)] text-white" : "text-[var(--text-muted)]"}`} onClick={() => setDataset("archive")} type="button">Lưu trữ trước kiểm định</button>
+        </div>
         <select
           className="terminal-select"
           value={period}
@@ -2444,6 +2464,7 @@ function Trades({ trades }: { trades: Trade[] }) {
 
       {/* Trades Table */}
       <div className="glass-card overflow-hidden">
+        {!filteredTrades.length && <div className="border-b border-[var(--border-default)] p-4 text-sm text-[var(--text-muted)]">{dataset === "current" ? "Chưa có giao dịch đóng sau mốc kiểm định sạch." : "Không có giao dịch lifecycle cũ để hiển thị."}</div>}
         <Table
           columns={["Ngày", "Cặp", "Hướng", "Giá vào", "Giá thoát", "PnL", "Chiến lược", "Thời gian giữ"]}
           rows={filteredTrades.map((trade) => {
@@ -2541,11 +2562,13 @@ function InfoPair({ label, value }: { label: string; value: string }) {
 /* ──────────────────────────── ANALYTICS PAGE ──────────────────────────── */
 
 function Analytics({
+  equityHistory,
   exitAnalytics,
   smartEntry,
   performance,
   trades,
 }: {
+  equityHistory: EquityPoint[];
   exitAnalytics: ExitAnalytics | null;
   smartEntry: SmartEntryPayload | null;
   performance: Performance | null;
@@ -2553,6 +2576,7 @@ function Analytics({
 }) {
   type Range = "7D" | "30D" | "90D" | "ALL";
   const [range, setRange] = useState<Range>("30D");
+  const [referenceTime] = useState(() => new Date());
   const cutoff = { "7D": 7, "30D": 30, "90D": 90, ALL: Infinity }[range];
   const filteredTrades = useMemo(() => {
     if (cutoff === Infinity) return trades;
@@ -2560,12 +2584,17 @@ function Analytics({
     threshold.setDate(threshold.getDate() - cutoff);
     return trades.filter((trade) => new Date(trade.created_at) >= threshold);
   }, [cutoff, trades]);
+  const filteredEquity = useMemo(() => {
+    if (cutoff === Infinity) return equityHistory;
+    const threshold = referenceTime.getTime() - cutoff * 86_400_000;
+    return equityHistory.filter((point) => new Date(point.taken_at).getTime() >= threshold);
+  }, [cutoff, equityHistory, referenceTime]);
   const analytics = useMemo(() => buildAnalytics(filteredTrades, performance), [filteredTrades, performance]);
 
   return <div className="space-y-5">
     <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between"><div><p className="text-xs font-bold uppercase tracking-[0.12em] text-[var(--color-ai)]">Phân tích hiệu suất</p><h2 className="mt-1 text-xl font-bold">Hiệu suất giao dịch</h2><p className="mt-1 text-sm text-[var(--text-muted)]">Phân tích kết quả theo thời gian, chiến lược và mã giao dịch.</p></div><div className="inline-flex w-fit rounded-lg border border-[var(--border-default)] bg-[var(--bg-surface)] p-1">{(["7D", "30D", "90D", "ALL"] as Range[]).map((item) => <button className={`rounded-md px-3 py-1.5 text-xs font-bold transition ${range === item ? "bg-[var(--color-info)] text-white" : "text-[var(--text-muted)] hover:text-[var(--text-primary)]"}`} key={item} onClick={() => setRange(item)} type="button">{item}</button>)}</div></div>
     <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-5"><Metric label="PnL ròng" value={money(analytics.netPnl)} tone={analytics.netPnl >= 0 ? "good" : "bad"} /><Metric label="Tỷ lệ thắng" value={percent(analytics.winRate)} tone={analytics.winRate >= 50 ? "good" : "bad"} /><Metric label="Hệ số lợi nhuận" value={analytics.profitFactor === null ? "–" : analytics.profitFactor.toFixed(2)} tone={(analytics.profitFactor ?? 0) >= 1 ? "good" : "bad"} /><Metric label="Sụt giảm tối đa" value={percent(analytics.maxDrawdown)} tone="bad" /><Metric label="Hệ số Sharpe" value={performance ? number(performance.sharpe) : "–"} tone={(performance?.sharpe ?? 0) > 0 ? "good" : "neutral"} /></div>
-    <section className="glass-card p-4 lg:p-5"><div className="flex items-center justify-between gap-3"><div><h3 className="font-bold">Đường cong vốn</h3><p className="mt-1 text-xs text-[var(--text-muted)]">Diễn biến vốn dựa trên các lệnh đã đóng trong kỳ.</p></div><span className={`text-sm font-bold num-display ${analytics.netPnl >= 0 ? "text-[var(--color-profit)]" : "text-[var(--color-loss)]"}`}>{analytics.netPnl >= 0 ? "+" : ""}{money(analytics.netPnl)}</span></div><AnalyticsEquityCurve points={analytics.equityPoints} /></section>
+    <section className="glass-card p-4 lg:p-5"><div className="flex items-center justify-between gap-3"><div><h3 className="font-bold">Đường cong vốn</h3><p className="mt-1 text-xs text-[var(--text-muted)]">Dữ liệu equity thật được ghi nhận trực tiếp từ tài khoản.</p></div><span className="text-xs font-bold text-[var(--text-muted)]">{filteredEquity.length.toLocaleString("vi-VN")} mẫu</span></div><AnalyticsEquityCurve points={filteredEquity.map((point) => point.equity)} /></section>
     <div className="grid gap-4 xl:grid-cols-2"><AnalyticsBreakdown title="Hiệu suất theo chiến lược" subtitle="Nhóm theo chiến lược và lý do từ dữ liệu giao dịch." rows={analytics.byStrategy} /><AnalyticsBreakdown title="Hiệu suất theo mã" subtitle="Các mã có kết quả trong kỳ đã chọn." rows={analytics.bySymbol} /></div>
     <section className="glass-card p-4 lg:p-5"><div><h3 className="font-bold">Lịch giao dịch</h3><p className="mt-1 text-xs text-[var(--text-muted)]">Mỗi ô là PnL ròng của một ngày giao dịch. Đậm hơn = biên độ lớn hơn.</p></div><TradingHeatmap days={analytics.calendar} /></section>
     <div className="grid gap-4 md:grid-cols-3"><Metric label="Lệnh trong kỳ" value={String(filteredTrades.length)} /><Metric label="Lệnh thắng" value={String(analytics.wins)} tone="good" /><Metric label="Lệnh thua" value={String(analytics.losses)} tone="bad" /></div>
@@ -4351,16 +4380,6 @@ function EmptyState({ message, title }: { title: string; message: string }) {
 }
 
 /* ──────────────────────────── UTILITY FUNCTIONS ──────────────────────────── */
-
-function buildEquitySeries(performance: Performance | null) {
-  if (!performance) return [];
-  const realizedBalance = performance.initial_capital + performance.net_pnl;
-  return [
-    performance.initial_capital,
-    realizedBalance,
-    performance.equity,
-  ].filter((value) => Number.isFinite(value));
-}
 
 function viAction(value: ScannerResult["action"]) {
   if (value === "NO_TRADE") return "Không vào lệnh";

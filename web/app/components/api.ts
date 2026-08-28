@@ -10,6 +10,7 @@ import type {
   Market,
   LogItem,
   Performance,
+  EquityPoint,
   Position,
   OperationsStatus,
   RiskPayload,
@@ -91,7 +92,10 @@ export const api = {
     ),
   signals: () => request<{ items: ScannerResult[] }>("/api/signals"),
   positions: () => request<{ items: Position[] }>("/api/positions"),
-  trades: () => request<{ items: Trade[] }>("/api/trades"),
+  trades: (scope: "current" | "archive" | "all" = "current") =>
+    request<{ items: Trade[]; source?: string }>(`/api/trades?scope=${scope}`),
+  equityHistory: (limit = 5000) =>
+    request<{ mode: string; points: EquityPoint[] }>(`/api/equity/history?limit=${limit}`),
   logs: () => request<{ items: LogItem[] }>("/api/logs"),
   journal: (
     category: JournalCategory = "ALL",

@@ -439,6 +439,18 @@ export type Performance = {
   expectancy: number;
 };
 
+export type EquityPoint = {
+  id: number;
+  mode: string;
+  equity: number;
+  balance: number;
+  margin_balance: number;
+  unrealized_pnl: number;
+  open_positions: number;
+  source: string;
+  taken_at: string;
+};
+
 export type BacktestConfig = {
   name: string;
   min_score: number;

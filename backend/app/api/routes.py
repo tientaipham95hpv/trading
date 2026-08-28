@@ -552,7 +552,9 @@ async def positions() -> dict[str, object]:
 
 
 @router.get("/trades")
-async def trades() -> dict[str, object]:
+async def trades(scope: str = "current") -> dict[str, object]:
+    if scope not in {"current", "archive", "all"}:
+        raise HTTPException(status_code=422, detail="scope must be current, archive, or all")
     if state.trading_mode in {TradingMode.DEMO, TradingMode.LIVE}:
         adapter = _current_adapter()
         try:
@@ -571,21 +573,24 @@ async def trades() -> dict[str, object]:
             }
         rows.sort(key=lambda row: int(_float(row.get("time"))), reverse=True)
         reset_at = state.performance_reset_at_for()
-        if reset_at is not None:
+        if reset_at is not None and scope != "all":
             cutoff_ms = int(reset_at.timestamp() * 1000)
-            rows = [row for row in rows if int(_float(row.get("time"))) >= cutoff_ms]
+            rows = [
+                row for row in rows
+                if (int(_float(row.get("time"))) < cutoff_ms) == (scope == "archive")
+            ]
         items = _exchange_trades_for_app(rows)
         source = "BINANCE_USER_TRADES"
         if not items:
             lifecycle_events = await state.storage.lifecycle_analytics_events(
                 mode=state.trading_mode.value, limit=5000
             )
-            if reset_at is not None:
+            if reset_at is not None and scope != "all":
                 cutoff_ms = int(reset_at.timestamp() * 1000)
                 lifecycle_events = [
                     event
                     for event in lifecycle_events
-                    if _event_time_ms(event) >= cutoff_ms
+                    if (_event_time_ms(event) < cutoff_ms) == (scope == "archive")
                 ]
             items = _lifecycle_trades_for_app(lifecycle_events)
             source = "BOT_LIFECYCLE_AUDIT"
