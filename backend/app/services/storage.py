@@ -454,6 +454,28 @@ class Storage:
             ).scalar_one_or_none()
             return row.payload if row is not None else None
 
+    async def latest_symbol_stop_loss(
+        self, *, mode: str, symbol: str
+    ) -> dict[str, Any] | None:
+        """Return the latest final SL fill for one symbol, if it exists."""
+        async with self.session_factory() as session:
+            rows = (
+                await session.execute(
+                    select(LifecycleAnalyticsEventRow)
+                    .where(
+                        LifecycleAnalyticsEventRow.mode == mode,
+                        LifecycleAnalyticsEventRow.symbol == symbol.upper(),
+                        LifecycleAnalyticsEventRow.event_type == "CLOSE_FILL",
+                    )
+                    .order_by(LifecycleAnalyticsEventRow.event_at.desc())
+                    .limit(100)
+                )
+            ).scalars()
+            return next(
+                (row.payload for row in rows if row.payload.get("reason") == "STOP_LOSS"),
+                None,
+            )
+
     async def save_smart_entry_event(self, payload: dict[str, Any]) -> bool:
         """Persist immutable shadow evidence without feeding strategy behavior."""
         async with self.session_factory() as session:

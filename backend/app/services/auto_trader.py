@@ -336,6 +336,22 @@ class AutoTrader:
                     level="INFO",
                 )
                 continue
+            cooldown_remaining = await self._symbol_stop_loss_cooldown_remaining(result.symbol)
+            if cooldown_remaining > 0:
+                reason = (
+                    f"{result.symbol} đang khóa {max(1, int(cooldown_remaining // 60) + 1)} "
+                    "phút sau Stop Loss"
+                )
+                rejection_reasons[reason] = rejection_reasons.get(reason, 0) + 1
+                await self.state.storage.log(
+                    "Auto-trader skip symbol SL cooldown",
+                    {
+                        "symbol": result.symbol,
+                        "remaining_seconds": round(cooldown_remaining, 1),
+                    },
+                    level="INFO",
+                )
+                continue
             signal = self.state.scanner.signal_from_result(result)
             if signal is None:
                 reason = "Không tạo được kế hoạch từ tín hiệu"
@@ -1332,3 +1348,22 @@ class AutoTrader:
         if (datetime.now(UTC) - latest_loss_at).total_seconds() >= cooldown_seconds:
             return 0
         return min(streak, settings.max_loss_streak)
+
+    async def _symbol_stop_loss_cooldown_remaining(self, symbol: str) -> float:
+        """Block a symbol after one final SL fill, including across restarts."""
+        settings = getattr(self.state, "bot_settings", None)
+        storage = getattr(self.state, "storage", None)
+        if settings is None or storage is None:
+            return 0.0
+        event = await storage.latest_symbol_stop_loss(
+            mode=self.state.trading_mode.value,
+            symbol=symbol,
+        )
+        if event is None:
+            return 0.0
+        event_at = event.get("event_at")
+        if not event_at:
+            return 0.0
+        stopped_at = datetime.fromisoformat(str(event_at))
+        elapsed = (datetime.now(UTC) - stopped_at).total_seconds()
+        return max(0.0, settings.loss_streak_cooldown_minutes * 60 - elapsed)

@@ -284,6 +284,44 @@ def test_loss_streak_groups_partial_close_fills_by_lifecycle():
     assert AutoTrader(state)._loss_streak() == 2
 
 
+@pytest.mark.asyncio
+async def test_symbol_is_locked_for_60_minutes_after_stop_loss():
+    from datetime import UTC, datetime, timedelta
+
+    class Storage:
+        async def latest_symbol_stop_loss(self, **_kwargs):
+            return {"event_at": (datetime.now(UTC) - timedelta(minutes=10)).isoformat()}
+
+    state = SimpleNamespace(
+        trading_mode=SimpleNamespace(value="DEMO"),
+        bot_settings=SimpleNamespace(loss_streak_cooldown_minutes=60),
+        storage=Storage(),
+    )
+
+    remaining = await AutoTrader(state)._symbol_stop_loss_cooldown_remaining("TSTUSDT")
+
+    assert 49 * 60 < remaining <= 50 * 60
+
+
+@pytest.mark.asyncio
+async def test_symbol_stop_loss_lock_expires():
+    from datetime import UTC, datetime, timedelta
+
+    class Storage:
+        async def latest_symbol_stop_loss(self, **_kwargs):
+            return {"event_at": (datetime.now(UTC) - timedelta(minutes=61)).isoformat()}
+
+    state = SimpleNamespace(
+        trading_mode=SimpleNamespace(value="DEMO"),
+        bot_settings=SimpleNamespace(loss_streak_cooldown_minutes=60),
+        storage=Storage(),
+    )
+
+    remaining = await AutoTrader(state)._symbol_stop_loss_cooldown_remaining("TSTUSDT")
+
+    assert remaining == 0
+
+
 def test_high_risk_symbol_is_watchlisted_not_hard_blacklisted():
     from app.domain.models import MarketRegime, Timeframe
 
