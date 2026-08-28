@@ -1514,7 +1514,7 @@ async def _submit_order(plan: OrderPlan) -> dict[str, object]:
     symbol = plan.symbol.upper()
     hard_blacklist = {
         item.strip().upper()
-        for item in state.settings.scanner_blacklist.split(",")
+        for item in state.settings.scanner_hard_blacklist.split(",")
         if item.strip()
     }
     if (

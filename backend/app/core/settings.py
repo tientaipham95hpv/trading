@@ -54,6 +54,9 @@ class Settings(BaseSettings):
     # Comma-separated overrides keep the runtime universe durable across restarts.
     scanner_whitelist: str = "BTCUSDT,ETHUSDT,SOLUSDT"
     scanner_blacklist: str = "PROMUSDT,ZECUSDT,XMRUSDT,SUIUSDT,UNIUSDT,KAITOUSDT"
+    # Cannot be cleared through runtime universe settings. These symbols require
+    # an explicit deployment/config change before automated or manual entries.
+    scanner_hard_blacklist: str = "PROMUSDT,ZECUSDT,XMRUSDT,SUIUSDT,UNIUSDT,KAITOUSDT"
     scanner_max_symbols: int = Field(default=40, ge=1, le=100)
     scanner_min_quote_volume: float = 50_000_000
     scanner_max_spread_bps: float = 8.0

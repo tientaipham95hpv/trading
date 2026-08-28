@@ -1329,7 +1329,7 @@ class AutoTrader:
     def _configured_hard_blacklist(self) -> set[str]:
         """Environment safety blacklist cannot be cleared by a runtime settings update."""
         settings = getattr(self.state, "settings", None)
-        raw = str(getattr(settings, "scanner_blacklist", "") or "")
+        raw = str(getattr(settings, "scanner_hard_blacklist", "") or "")
         return {symbol.strip().upper() for symbol in raw.split(",") if symbol.strip()}
 
     def _allows_demo_high_vol(self) -> bool:

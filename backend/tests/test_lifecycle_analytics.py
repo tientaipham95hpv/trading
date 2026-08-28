@@ -132,7 +132,7 @@ def test_break_even_stop_fill_maps_back_to_original_lifecycle():
 
 def test_environment_blacklist_cannot_be_cleared_by_runtime_settings():
     trader = AutoTrader(
-        SimpleNamespace(settings=SimpleNamespace(scanner_blacklist="XMRUSDT, ZECUSDT"))
+        SimpleNamespace(settings=SimpleNamespace(scanner_hard_blacklist="XMRUSDT, ZECUSDT"))
     )
 
     assert trader._configured_hard_blacklist() == {"XMRUSDT", "ZECUSDT"}
