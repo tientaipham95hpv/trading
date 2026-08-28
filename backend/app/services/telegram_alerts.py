@@ -40,9 +40,14 @@ class TelegramAlertService:
         self.task: asyncio.Task[None] | None = None
         self.command_task: asyncio.Task[None] | None = None
         self.daily_report_task: asyncio.Task[None] | None = None
+        self.operational_monitor_task: asyncio.Task[None] | None = None
         self.running = False
         self.command_handler: Callable[[str, str], Awaitable[str]] | None = None
         self.daily_report_provider: Callable[[], Awaitable[str]] | None = None
+        self.operational_monitor_provider: Callable[[], Mapping[str, Any]] | None = None
+        self._operational_conditions: dict[str, str] = {}
+        self._last_bot_state: str | None = None
+        self._last_rejected = 0
         self.update_offset: int | None = None
         self._recent: dict[str, float] = {}
         self.sent_count = 0
@@ -61,17 +66,21 @@ class TelegramAlertService:
         self,
         command_handler: Callable[[str, str], Awaitable[str]] | None = None,
         daily_report_provider: Callable[[], Awaitable[str]] | None = None,
+        operational_monitor_provider: Callable[[], Mapping[str, Any]] | None = None,
     ) -> None:
         if not self.configured or (self.task and not self.task.done()):
             return
         self.command_handler = command_handler
         self.daily_report_provider = daily_report_provider
+        self.operational_monitor_provider = operational_monitor_provider
         self.running = True
         self.task = asyncio.create_task(self._worker())
         if command_handler is not None:
             self.command_task = asyncio.create_task(self._command_worker())
         if daily_report_provider is not None:
             self.daily_report_task = asyncio.create_task(self._daily_report_worker())
+        if operational_monitor_provider is not None:
+            self.operational_monitor_task = asyncio.create_task(self._operational_monitor_worker())
 
     async def stop(self) -> None:
         self.running = False
@@ -91,6 +100,12 @@ class TelegramAlertService:
             self.daily_report_task.cancel()
             try:
                 await self.daily_report_task
+            except asyncio.CancelledError:
+                pass
+        if self.operational_monitor_task and not self.operational_monitor_task.done():
+            self.operational_monitor_task.cancel()
+            try:
+                await self.operational_monitor_task
             except asyncio.CancelledError:
                 pass
 
@@ -133,6 +148,12 @@ class TelegramAlertService:
             "API_DISCONNECT": ("🚨", "CRITICAL", "MẤT KẾT NỐI SÀN", "Giữ bot dừng và kiểm tra reconciliation."),
             "SAFE_MODE": ("🚨", "CRITICAL", "SAFE MODE", "Không resume trước khi xử lý nguyên nhân."),
             "EMERGENCY_STOP": ("🚨", "CRITICAL", "DỪNG KHẨN CẤP", "Entry mới bị khóa; kiểm tra vị thế bảo vệ."),
+            "BOT_STOPPED": ("⚠️", "WARNING", "BOT ĐÃ DỪNG", "Kiểm tra nguyên nhân trước khi chạy lại."),
+            "AUTO_LOOP_STALLED": ("🚨", "CRITICAL", "VÒNG LẶP BỊ TREO", "Giữ entry khóa và kiểm tra backend."),
+            "SL_MISSING": ("🚨", "CRITICAL", "VỊ THẾ THIẾU SL", "Kiểm tra và bảo vệ vị thế ngay."),
+            "RECONCILIATION": ("⚠️", "WARNING", "ĐỐI SOÁT BỊ TRỄ", "Kiểm tra kết nối và đồng bộ sàn."),
+            "ORDER_REJECTED": ("⚠️", "WARNING", "LỆNH BỊ TỪ CHỐI TĂNG", "Kiểm tra risk gate và nhật ký."),
+            "RECOVERED": ("✅", "INFO", "HỆ THỐNG ĐÃ PHỤC HỒI", "Không cần thao tác nếu trạng thái vẫn ổn định."),
         }
         icon, severity, heading, action = templates.get(
             event_key,
@@ -388,6 +409,106 @@ class TelegramAlertService:
             except Exception:  # noqa: BLE001 - báo cáo lỗi không được làm chết alert worker
                 self.dropped_count += 1
 
+    async def _operational_monitor_worker(self) -> None:
+        """Alert only on incident transitions; NO_SIGNAL is intentionally ignored."""
+        await asyncio.sleep(15.0)
+        while self.running:
+            try:
+                if self.operational_monitor_provider is not None:
+                    snapshot = dict(self.operational_monitor_provider())
+                    conditions = self._evaluate_operational_snapshot(snapshot)
+                    previous = self._operational_conditions
+                    for key, detail in conditions.items():
+                        if key not in previous:
+                            await self.send_alert(key, key, detail)
+                    for key in previous.keys() - conditions.keys():
+                        await self.send_alert(
+                            "RECOVERED",
+                            "Hệ thống phục hồi",
+                            f"{self._condition_label(key)} đã trở lại bình thường.",
+                        )
+                    self._operational_conditions = conditions
+            except asyncio.CancelledError:
+                raise
+            except Exception:  # noqa: BLE001 - watchdog không được làm chết alert worker
+                self.dropped_count += 1
+            await asyncio.sleep(60.0)
+
+    def _evaluate_operational_snapshot(self, snapshot: Mapping[str, Any]) -> dict[str, str]:
+        conditions: dict[str, str] = {}
+        bot_state = str(snapshot.get("bot_state") or "UNKNOWN")
+        if self._last_bot_state == "RUNNING" and bot_state != "RUNNING":
+            conditions["BOT_STOPPED"] = f"Bot chuyển từ RUNNING sang {bot_state}."
+        self._last_bot_state = bot_state
+
+        exchange = str(snapshot.get("exchange") or "UNKNOWN")
+        if exchange in {"DISCONNECTED", "SAFE_MODE"}:
+            conditions["API_DISCONNECT"] = f"Kết nối sàn đang ở trạng thái {exchange}."
+        elif exchange == "STALE":
+            snapshot_age = snapshot.get("snapshot_age_seconds")
+            if snapshot_age is None or float(snapshot_age) > 120:
+                conditions["API_DISCONNECT"] = (
+                    "Dữ liệu sàn đã cũ quá 120 giây."
+                    if snapshot_age is None
+                    else f"Dữ liệu sàn đã cũ {float(snapshot_age):.0f} giây."
+                )
+        if bool(snapshot.get("safe_mode")):
+            conditions["SAFE_MODE"] = str(
+                snapshot.get("safe_mode_reason") or "SAFE_MODE đang bật."
+            )
+        if bool(snapshot.get("emergency_stop")):
+            conditions["EMERGENCY_STOP"] = str(
+                snapshot.get("emergency_reason") or "Dừng khẩn cấp đang bật."
+            )
+        unprotected = list(snapshot.get("unprotected_positions") or [])
+        if unprotected:
+            conditions["SL_MISSING"] = "Thiếu Stop Loss: " + ", ".join(map(str, unprotected))
+
+        reconciliation_age = snapshot.get("reconciliation_age_seconds")
+        if reconciliation_age is None or float(reconciliation_age) > 180:
+            detail = "Chưa có dữ liệu đối soát."
+            if reconciliation_age is not None:
+                detail = f"Lần đối soát gần nhất cách đây {float(reconciliation_age):.0f} giây."
+            conditions["RECONCILIATION"] = detail
+
+        last_run_age = snapshot.get("auto_loop_last_run_age_seconds")
+        interval = max(int(snapshot.get("auto_loop_interval_seconds") or 45), 1)
+        if (
+            bot_state == "RUNNING"
+            and (
+                not bool(snapshot.get("auto_loop_running"))
+                or last_run_age is None
+                or float(last_run_age) > max(interval * 3, 180)
+            )
+        ):
+            conditions["AUTO_LOOP_STALLED"] = (
+                "Auto loop không hoạt động."
+                if last_run_age is None
+                else f"Auto loop chưa chạy lại trong {float(last_run_age):.0f} giây."
+            )
+
+        rejected = int(snapshot.get("rejected") or 0)
+        rejected_delta = max(rejected - self._last_rejected, 0)
+        if self._last_rejected and rejected_delta >= 3:
+            conditions["ORDER_REJECTED"] = (
+                f"Số lần backend từ chối tăng thêm {rejected_delta} trong một phút."
+            )
+        self._last_rejected = rejected
+        return conditions
+
+    @staticmethod
+    def _condition_label(key: str) -> str:
+        return {
+            "BOT_STOPPED": "Bot",
+            "API_DISCONNECT": "Kết nối sàn",
+            "SAFE_MODE": "SAFE_MODE",
+            "EMERGENCY_STOP": "Dừng khẩn cấp",
+            "SL_MISSING": "Bảo vệ Stop Loss",
+            "RECONCILIATION": "Đối soát",
+            "AUTO_LOOP_STALLED": "Vòng lặp tự động",
+            "ORDER_REJECTED": "Tỷ lệ lệnh bị từ chối",
+        }.get(key, key)
+
     async def _poll_updates(self) -> list[dict[str, Any]]:
         payload: dict[str, Any] = {
             "timeout": 20,
@@ -446,6 +567,10 @@ class TelegramAlertService:
             "daily_report_alive": self.daily_report_task is not None
             and not self.daily_report_task.done(),
             "daily_report_time": "21:00 Asia/Ho_Chi_Minh",
+            "operational_monitor_alive": self.operational_monitor_task is not None
+            and not self.operational_monitor_task.done(),
+            "operational_monitor_interval_seconds": 60,
+            "active_operational_alerts": sorted(self._operational_conditions),
             "queued": self.queue.qsize(),
             "queue_capacity": self.MAX_QUEUE_SIZE,
             "sent": self.sent_count,

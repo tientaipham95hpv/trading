@@ -205,6 +205,40 @@ class AppState:
             "emergency_stop": self.emergency_stop.active,
         }
 
+    def telegram_operational_snapshot(self) -> dict[str, object]:
+        """Read-only health evidence for the native Telegram watchdog."""
+        snapshot = self._active_exchange().snapshot_cache
+        now = datetime.now(UTC)
+        auto = self.auto_trader.snapshot()
+        last_run_at = auto.get("last_run_at")
+        last_run_age = None
+        if last_run_at:
+            last_run_age = (now - datetime.fromisoformat(str(last_run_at))).total_seconds()
+        reconciliation_age = (
+            (now - snapshot.last_reconciled_at).total_seconds()
+            if snapshot.last_reconciled_at
+            else None
+        )
+        snapshot_age = (
+            (now - snapshot.snapshot_at).total_seconds() if snapshot.snapshot_at else None
+        )
+        unprotected = self.auto_trader._unprotected_exchange_positions(snapshot)
+        return {
+            "bot_state": self.bot_state.value,
+            "exchange": snapshot.connection.value,
+            "snapshot_age_seconds": snapshot_age,
+            "safe_mode": bool(snapshot.safe_mode or self.safe_mode),
+            "safe_mode_reason": snapshot.safe_mode_reason or self.safe_mode_reason,
+            "emergency_stop": self.emergency_stop.active,
+            "emergency_reason": self.emergency_stop.reason,
+            "unprotected_positions": unprotected,
+            "reconciliation_age_seconds": reconciliation_age,
+            "auto_loop_running": bool(auto.get("running")),
+            "auto_loop_last_run_age_seconds": last_run_age,
+            "auto_loop_interval_seconds": int(auto.get("interval_seconds") or 45),
+            "rejected": int(auto.get("rejected") or 0),
+        }
+
     async def handle_telegram_command(self, command: str, args: str = "") -> str:
         """Restricted operator commands for the allowlisted Telegram chat only."""
         adapter = self._active_exchange()

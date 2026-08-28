@@ -33,6 +33,7 @@ async def startup() -> None:
     state.telegram_alerts.start(
         command_handler=state.handle_telegram_command,
         daily_report_provider=state.telegram_forward_test_report,
+        operational_monitor_provider=state.telegram_operational_snapshot,
     )
     configure_realtime()
     await state.realtime.start()

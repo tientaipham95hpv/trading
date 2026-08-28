@@ -174,3 +174,57 @@ def test_status_exposes_native_daily_report_schedule() -> None:
 
     assert status["daily_report_alive"] is False
     assert status["daily_report_time"] == "21:00 Asia/Ho_Chi_Minh"
+    assert status["operational_monitor_alive"] is False
+    assert status["operational_monitor_interval_seconds"] == 60
+
+
+def test_operational_monitor_only_alerts_real_incidents() -> None:
+    service = TelegramAlertService("token", "123")
+    healthy = {
+        "bot_state": "RUNNING",
+        "exchange": "CONNECTED",
+        "snapshot_age_seconds": 10,
+        "safe_mode": False,
+        "emergency_stop": False,
+        "unprotected_positions": [],
+        "reconciliation_age_seconds": 20,
+        "auto_loop_running": True,
+        "auto_loop_last_run_age_seconds": 10,
+        "auto_loop_interval_seconds": 45,
+        "rejected": 1,
+        "last_status": "NO_SIGNAL",
+    }
+
+    assert service._evaluate_operational_snapshot(healthy) == {}
+    assert service._evaluate_operational_snapshot(healthy) == {}
+
+
+def test_operational_monitor_detects_and_clears_incidents() -> None:
+    service = TelegramAlertService("token", "123")
+    service._last_bot_state = "RUNNING"
+    service._last_rejected = 2
+    broken = {
+        "bot_state": "STOPPED",
+        "exchange": "DISCONNECTED",
+        "snapshot_age_seconds": 300,
+        "safe_mode": True,
+        "safe_mode_reason": "Dữ liệu không chắc chắn",
+        "emergency_stop": False,
+        "unprotected_positions": ["BTCUSDT"],
+        "reconciliation_age_seconds": 300,
+        "auto_loop_running": True,
+        "auto_loop_last_run_age_seconds": 10,
+        "auto_loop_interval_seconds": 45,
+        "rejected": 5,
+    }
+
+    conditions = service._evaluate_operational_snapshot(broken)
+
+    assert set(conditions) == {
+        "BOT_STOPPED",
+        "API_DISCONNECT",
+        "SAFE_MODE",
+        "SL_MISSING",
+        "RECONCILIATION",
+        "ORDER_REJECTED",
+    }
