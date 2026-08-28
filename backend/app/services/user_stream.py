@@ -231,6 +231,13 @@ class UserStreamWatchdog:
                 recorder = getattr(self.state.storage, "save_lifecycle_analytics_event", None)
                 if lifecycle_fact is not None and recorder is not None:
                     await recorder(lifecycle_fact)
+                    if lifecycle_fact.get("event_type") == "ENTRY_FILL":
+                        task = asyncio.create_task(
+                            self.state.auto_trader.repair_lifecycle_open_from_entry_fill(
+                                adapter, lifecycle_fact
+                            )
+                        )
+                        task.add_done_callback(self._background_task_done)
                 for index, action in enumerate(lifecycle_actions):
                     if recorder is None:
                         break
@@ -280,6 +287,11 @@ class UserStreamWatchdog:
                 "client_order_id": fact.get("client_order_id"),
             },
         )
+
+    @staticmethod
+    def _background_task_done(task: asyncio.Task[None]) -> None:
+        if not task.cancelled():
+            task.exception()
 
     async def _handle_failure(self, exc: Exception) -> None:
         self.connected = False

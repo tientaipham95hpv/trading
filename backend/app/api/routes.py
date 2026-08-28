@@ -1551,6 +1551,16 @@ async def _submit_order(plan: OrderPlan) -> dict[str, object]:
                 trades=result.trades,
                 performance=state.execution.performance().model_dump(mode="json"),
             )
+        if result.accepted:
+            recorded = await state.auto_trader.ensure_lifecycle_open(
+                plan, result, timeframe="MANUAL_API"
+            )
+            if not recorded:
+                return {
+                    "accepted": False,
+                    "status": "OPEN_AUDIT_FAILED_POSITION_CLOSED",
+                    "reason": "Không xác minh được lifecycle OPEN; vị thế đã đóng fail-closed",
+                }
         if result.critical_alert:
             state.enter_safe_mode(result.critical_alert)
             await state.storage.log(

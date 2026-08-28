@@ -214,6 +214,10 @@ class BinanceFuturesAdapter(ExchangeAdapter):
                 critical_alert=alert,
             )
 
+        # Publish the position and its protective algo orders to the cache as one
+        # snapshot. Readers either see the old flat state or the fully protected
+        # state, never a transient position without its SL.
+        protected_snapshot = await self.snapshot()
         return ExchangeExecutionResult(
             accepted=True,
             status=f"{self.mode.value}_SUBMITTED",
@@ -223,11 +227,22 @@ class BinanceFuturesAdapter(ExchangeAdapter):
                 "submitted_plan": plan.model_dump(mode="json"),
             },
             positions=[
-                position.model_dump(mode="json") for position in (await self.positions(plan.symbol))
+                position.model_dump(mode="json")
+                for position in protected_snapshot.positions
+                if position.symbol == plan.symbol
             ],
             fills=[],
             trades=[],
         )
+
+    def submitted_plan(self, symbol: str) -> OrderPlan | None:
+        return self._submitted_plans_by_symbol.get(symbol.upper())
+
+    async def close_submitted_plan_fail_closed(self, plan: OrderPlan) -> None:
+        """Cancel protection orders and flatten one just-submitted plan."""
+        await self.cancel_all_orders(plan.symbol)
+        await self._close_position_market(plan)
+        await self.snapshot()
 
     async def snapshot(self) -> ExchangeSnapshot:
         if not self.configured:

@@ -438,6 +438,22 @@ class Storage:
             ).scalars()
             return [row.payload for row in rows]
 
+    async def lifecycle_open_event(
+        self, *, mode: str, lifecycle_id: str
+    ) -> dict[str, Any] | None:
+        """Return the immutable verified OPEN fact for one lifecycle, if present."""
+        async with self.session_factory() as session:
+            row = (
+                await session.execute(
+                    select(LifecycleAnalyticsEventRow).where(
+                        LifecycleAnalyticsEventRow.mode == mode,
+                        LifecycleAnalyticsEventRow.lifecycle_id == lifecycle_id,
+                        LifecycleAnalyticsEventRow.event_type == "OPEN",
+                    )
+                )
+            ).scalar_one_or_none()
+            return row.payload if row is not None else None
+
     async def save_smart_entry_event(self, payload: dict[str, Any]) -> bool:
         """Persist immutable shadow evidence without feeding strategy behavior."""
         async with self.session_factory() as session:

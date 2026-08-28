@@ -204,6 +204,32 @@ async def test_binance_demo_places_entry_sl_and_reduce_only_take_profits():
     assert any(params.get("reduceOnly") == "true" for _, _, params in adapter.calls)
 
 
+async def test_submit_publishes_position_and_protective_stop_in_one_snapshot():
+    adapter = FakeBinanceAdapter()
+    adapter.open_algo_orders = []
+    adapter.position_risk = [
+        {
+            "symbol": "BTCUSDT",
+            "positionAmt": "0.01",
+            "entryPrice": "100",
+            "markPrice": "100",
+            "unRealizedProfit": "0",
+            "liquidationPrice": "80",
+            "leverage": "2",
+            "marginType": "isolated",
+        }
+    ]
+
+    result = await adapter.submit_order_plan(plan())
+
+    assert result.accepted is True
+    assert [position.symbol for position in adapter.snapshot_cache.positions] == ["BTCUSDT"]
+    assert any(
+        order.client_order_id == "demo-BTCUSDT-1-sl-0"
+        for order in adapter.snapshot_cache.orders
+    )
+
+
 async def test_take_profit_skips_levels_that_would_immediately_trigger():
     adapter = FakeBinanceAdapter()
     adapter.position_risk = [

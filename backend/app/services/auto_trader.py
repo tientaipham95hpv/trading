@@ -521,9 +521,15 @@ class AutoTrader:
                 return await self._skip("ORDER_ERROR", f"{plan.symbol}: {exc}")
             await self._persist_exchange_result(plan, result)
             if result.accepted:
-                await self._record_lifecycle_open(
+                recorded = await self.ensure_lifecycle_open(
                     plan, result, timeframe=timeframe, entry_evidence=entry_evidence
                 )
+                if not recorded:
+                    self.rejected += 1
+                    return await self._skip(
+                        "OPEN_AUDIT_FAILED_POSITION_CLOSED",
+                        f"{plan.symbol}: không xác minh được lifecycle OPEN, đã đóng fail-closed",
+                    )
             if result.critical_alert:
                 self.state.enter_safe_mode(result.critical_alert)
                 await self.state.notifications.alert(
@@ -707,6 +713,122 @@ class AutoTrader:
                 "source": "ORDER_PLAN_ACCEPTED",
             }
         )
+
+    async def ensure_lifecycle_open(
+        self,
+        plan: OrderPlan,
+        result: ExchangeExecutionResult,
+        *,
+        timeframe: str,
+        entry_evidence: Any | None = None,
+    ) -> bool:
+        """Persist and verify OPEN; flatten the new position if audit cannot be proven."""
+        try:
+            await self._record_lifecycle_open(
+                plan, result, timeframe=timeframe, entry_evidence=entry_evidence
+            )
+            event = await self.state.storage.lifecycle_open_event(
+                mode=self.state.trading_mode.value,
+                lifecycle_id=plan.client_order_id,
+            )
+            if (
+                event is not None
+                and event.get("risk_verifiable") is True
+                and float(event.get("entry_price") or 0) > 0
+            ):
+                return True
+            raise RuntimeError("OPEN fact thiếu giá fill/risk đã xác minh")
+        except Exception as exc:  # noqa: BLE001 - audit is a fail-closed execution gate
+            adapter = (
+                self.state.live_exchange
+                if self.state.trading_mode == TradingMode.LIVE
+                else self.state.demo_exchange
+            )
+            try:
+                await adapter.close_submitted_plan_fail_closed(plan)
+            except Exception as close_exc:  # noqa: BLE001 - preserve both failure causes
+                reason = f"Lifecycle OPEN lỗi: {exc}; đóng fail-closed cũng lỗi: {close_exc}"
+            else:
+                reason = f"Lifecycle OPEN lỗi: {exc}; vị thế đã đóng fail-closed"
+            self.state.enter_safe_mode(reason)
+            try:
+                await self.state.storage.log(
+                    "Lifecycle OPEN fail-closed",
+                    {
+                        "mode": self.state.trading_mode.value,
+                        "symbol": plan.symbol,
+                        "client_order_id": plan.client_order_id,
+                        "reason": reason,
+                    },
+                    level="CRITICAL",
+                )
+            except Exception as log_exc:  # noqa: BLE001 - storage may be original failure
+                _ = log_exc
+            return False
+
+    async def repair_lifecycle_open_from_entry_fill(
+        self, adapter: Any, fact: dict[str, object]
+    ) -> None:
+        """Repair a missing OPEN from the exact entry fill after the submit path settles."""
+        await asyncio.sleep(2)
+        lifecycle_id = str(fact.get("lifecycle_id") or "")
+        plan = adapter.submitted_plan(str(fact.get("symbol") or ""))
+        if plan is None or plan.client_order_id != lifecycle_id:
+            return
+        try:
+            existing = await self.state.storage.lifecycle_open_event(
+                mode=self.state.trading_mode.value, lifecycle_id=lifecycle_id
+            )
+            if existing is not None:
+                return
+            entry_price = float(fact.get("last_fill_price") or 0)
+            quantity = float(fact.get("cumulative_quantity") or 0)
+            initial_risk = abs(entry_price - plan.stop_loss) * quantity
+            payload = {
+                "event_key": f"{self.state.trading_mode.value}:{lifecycle_id}:OPEN",
+                "mode": self.state.trading_mode.value,
+                "lifecycle_id": lifecycle_id,
+                "symbol": plan.symbol,
+                "event_type": "OPEN",
+                "event_at": str(fact.get("event_at") or datetime.now(UTC).isoformat()),
+                "entry_timestamp_verifiable": bool(fact.get("event_at")),
+                "side": plan.side.value,
+                "entry_price": entry_price,
+                "initial_quantity": quantity,
+                "initial_stop_loss": plan.stop_loss,
+                "initial_risk": initial_risk,
+                "risk_verifiable": entry_price > 0 and quantity > 0 and initial_risk > 0,
+                "timeframe": "RECOVERED_FROM_ENTRY_FILL",
+                "take_profits": plan.take_profits,
+                "entry_order_id": fact.get("order_id"),
+                "entry_client_order_id": lifecycle_id,
+                "source": "BINANCE_USER_STREAM_REPAIR",
+            }
+            await self.state.storage.save_lifecycle_analytics_event(payload)
+            verified = await self.state.storage.lifecycle_open_event(
+                mode=self.state.trading_mode.value, lifecycle_id=lifecycle_id
+            )
+            if verified is not None and verified.get("risk_verifiable") is True:
+                return
+            raise RuntimeError("OPEN repair không tạo được fact đã xác minh")
+        except Exception as exc:  # noqa: BLE001 - repair is also fail-closed
+            try:
+                await adapter.close_submitted_plan_fail_closed(plan)
+            finally:
+                reason = f"Không repair được lifecycle OPEN cho {lifecycle_id}: {exc}"
+                self.state.enter_safe_mode(reason)
+                try:
+                    await self.state.storage.log(
+                        "Lifecycle OPEN repair fail-closed",
+                        {
+                            "mode": self.state.trading_mode.value,
+                            "lifecycle_id": lifecycle_id,
+                            "reason": reason,
+                        },
+                        level="CRITICAL",
+                    )
+                except Exception as log_exc:  # noqa: BLE001 - storage may be unavailable
+                    _ = log_exc
 
     async def _notify_position_open(self, plan: OrderPlan) -> None:
         notification = await self.state.notifications.alert(
