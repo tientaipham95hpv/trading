@@ -68,13 +68,20 @@ class PortfolioRiskEngine:
                     )
             elif stop is None or abs(stop - matching[0]) > 1e-9:
                 stop = matching[0]
+            # A stop moved past entry after partial take-profit is still protective:
+            # it locks profit instead of adding downside risk. Validate the stop
+            # against the current mark (so an already-crossed/wrong-side stop still
+            # fails closed), then clamp remaining open risk at zero.
             protected = stop is not None and (
-                (side == "LONG" and stop < position.entry_price)
-                or (side == "SHORT" and stop > position.entry_price)
+                (side == "LONG" and stop < price)
+                or (side == "SHORT" and stop > price)
             )
-            risk_amount = (
-                abs(position.entry_price - stop) * quantity if protected and stop else None
-            )
+            risk_amount = None
+            if protected and stop is not None:
+                if side == "LONG":
+                    risk_amount = max(0.0, position.entry_price - stop) * quantity
+                else:
+                    risk_amount = max(0.0, stop - position.entry_price) * quantity
             if risk_amount is None:
                 reasons.append(f"{position.symbol} chưa có Stop Loss hợp lệ để tính open risk")
             else:

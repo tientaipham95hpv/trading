@@ -83,6 +83,39 @@ def test_missing_duplicate_and_wrong_side_stops_fail_closed():
     assert "nhiều Stop Loss" in duplicate.reasons[0]
 
 
+@pytest.mark.parametrize(
+    ("side", "mark_price", "stop_side", "stop_price"),
+    [
+        ("LONG", 110.0, "SELL", 105.0),
+        ("SHORT", 90.0, "BUY", 95.0),
+    ],
+)
+def test_profit_locking_stop_is_protected_with_zero_open_risk(
+    side: str, mark_price: float, stop_side: str, stop_price: float
+):
+    exchange = ExchangeSnapshot(
+        balance=ExchangeBalance(balance=1000),
+        positions=[
+            ExchangePosition(
+                symbol="BTCUSDT",
+                side=side,
+                quantity=1,
+                entry_price=100,
+                mark_price=mark_price,
+            )
+        ],
+        orders=[stop("BTCUSDT", stop_side, stop_price)],
+    )
+
+    result = PortfolioRiskEngine().snapshot(exchange, **limits())
+
+    assert result.positions[0].protected is True
+    assert result.positions[0].open_risk == 0
+    assert result.open_risk == 0
+    assert not result.reasons
+    assert result.would_reject_new_entries is False
+
+
 def test_symbol_direction_and_boundary_concentration_are_deterministic():
     exchange = ExchangeSnapshot(
         balance=ExchangeBalance(balance=1000),
