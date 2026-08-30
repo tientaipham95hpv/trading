@@ -175,19 +175,24 @@ class BinanceFuturesAdapter(ExchangeAdapter):
 
         take_profit_orders = []
         try:
-            tp_created = 0
-            for index, take_profit in enumerate(plan.take_profits):
-                if not self._take_profit_is_actionable(
+            actionable_take_profits = [
+                (index, take_profit)
+                for index, take_profit in enumerate(plan.take_profits)
+                if self._take_profit_is_actionable(
                     plan.side,
                     take_profit,
                     reference_price=reference_price,
                     price_tick=filters["price_tick"],
-                ):
-                    continue
-                quantity = await self._take_profit_quantity_for_plan(
-                    plan, index, len(plan.take_profits)
                 )
-                is_last = index == len(plan.take_profits) - 1
+            ]
+            quantities = await self._take_profit_quantities_for_plan(
+                plan, len(actionable_take_profits)
+            )
+            tp_created = 0
+            for leg_index, ((original_index, take_profit), quantity) in enumerate(
+                zip(actionable_take_profits, quantities, strict=True)
+            ):
+                is_last = leg_index == len(actionable_take_profits) - 1
                 if quantity <= 0 and not is_last:
                     continue
                 take_profit_orders.append(
@@ -195,7 +200,7 @@ class BinanceFuturesAdapter(ExchangeAdapter):
                         plan,
                         take_profit,
                         quantity,
-                        index,
+                        original_index,
                         close_position=quantity <= 0,
                     )
                 )
@@ -992,14 +997,30 @@ class BinanceFuturesAdapter(ExchangeAdapter):
             return take_profit > reference_price + buffer
         return take_profit < reference_price - buffer
 
-    async def _take_profit_quantity_for_plan(
-        self, plan: OrderPlan, index: int, total: int
-    ) -> float:
+    async def _take_profit_quantities_for_plan(
+        self, plan: OrderPlan, total: int
+    ) -> list[float]:
+        if total <= 0:
+            return []
         filters = await self._filters_for(plan.symbol)
-        return _round_step(
-            self._take_profit_quantity(plan.quantity, index, total),
-            filters["quantity_step"],
-        )
+        step = filters["quantity_step"]
+        total_quantity = _round_step(plan.quantity, step)
+        quantities: list[float] = []
+        allocated = Decimal(0)
+        for index in range(total):
+            if index == total - 1:
+                # The final TP owns every tradable step left after earlier legs
+                # were rounded down. Decimal subtraction avoids losing one step
+                # to binary floating-point noise.
+                remainder = Decimal(str(total_quantity)) - allocated
+                quantity = _round_step(float(remainder), step)
+            else:
+                quantity = _round_step(
+                    self._take_profit_quantity(total_quantity, index, total), step
+                )
+            quantities.append(quantity)
+            allocated += Decimal(str(quantity))
+        return quantities
 
     async def _close_position_market(self, plan: OrderPlan) -> str:
         client_order_id = _client_order_id(plan.client_order_id, "close")
@@ -1350,9 +1371,11 @@ class BinanceFuturesAdapter(ExchangeAdapter):
             return quantity
         if index == 0:
             return quantity * 0.4
+        if total == 2:
+            return quantity * 0.6
         if index == 1:
             return quantity * 0.3
-        return quantity * 0.3 / max(total - 2, 1)
+        return quantity * 0.3 / (total - 2)
 
     @staticmethod
     def _is_bot_order_id(client_order_id: str) -> bool:

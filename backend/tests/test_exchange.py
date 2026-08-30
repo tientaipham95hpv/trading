@@ -204,6 +204,58 @@ async def test_binance_demo_places_entry_sl_and_reduce_only_take_profits():
     assert any(params.get("reduceOnly") == "true" for _, _, params in adapter.calls)
 
 
+async def test_take_profit_rounding_assigns_all_remaining_steps_to_final_target():
+    adapter = FakeBinanceAdapter()
+    adapter._symbol_filters["BTCUSDT"]["quantity_step"] = Decimal(1)
+
+    result = await adapter.submit_order_plan(plan(quantity=2242))
+
+    assert result.accepted is True
+    tp_quantities = [
+        params.get("quantity")
+        for _, path, params in adapter.calls
+        if path == "/fapi/v1/algoOrder" and params.get("type") == "TAKE_PROFIT_MARKET"
+    ]
+    assert tp_quantities == ["896", "672", "674"]
+    assert sum(map(float, tp_quantities)) == 2242
+
+
+async def test_two_take_profits_allocate_full_position_without_dust():
+    adapter = FakeBinanceAdapter()
+    adapter._symbol_filters["BTCUSDT"]["quantity_step"] = Decimal(1)
+
+    result = await adapter.submit_order_plan(
+        plan(quantity=2242, take_profits=[105.0, 110.0])
+    )
+
+    assert result.accepted is True
+    tp_quantities = [
+        params.get("quantity")
+        for _, path, params in adapter.calls
+        if path == "/fapi/v1/algoOrder" and params.get("type") == "TAKE_PROFIT_MARKET"
+    ]
+    assert tp_quantities == ["896", "1346"]
+    assert sum(map(float, tp_quantities)) == 2242
+
+
+async def test_skipped_take_profit_redistributes_quantity_across_actionable_targets():
+    adapter = FakeBinanceAdapter()
+    adapter._symbol_filters["BTCUSDT"]["quantity_step"] = Decimal(1)
+
+    result = await adapter.submit_order_plan(
+        plan(quantity=10, take_profits=[99.0, 105.0, 110.0])
+    )
+
+    assert result.accepted is True
+    tp_orders = [
+        params
+        for _, path, params in adapter.calls
+        if path == "/fapi/v1/algoOrder" and params.get("type") == "TAKE_PROFIT_MARKET"
+    ]
+    assert [order["triggerPrice"] for order in tp_orders] == ["105", "110"]
+    assert [order["quantity"] for order in tp_orders] == ["4", "6"]
+
+
 async def test_submit_publishes_position_and_protective_stop_in_one_snapshot():
     adapter = FakeBinanceAdapter()
     adapter.open_algo_orders = []
