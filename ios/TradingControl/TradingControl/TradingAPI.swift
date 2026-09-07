@@ -10,7 +10,7 @@ public actor TradingAPI {
     private let authStore: SecureAuthStore
 
     public init(
-        baseURL: URL = URL(string: "https://trading.cineviet.live")!,
+        baseURL: URL = URL(string: "https://trading.noza.site")!,
         session: URLSession = .shared,
         authStore: SecureAuthStore = .shared
     ) {

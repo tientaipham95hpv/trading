@@ -64,7 +64,7 @@ Các cổng loopback:
 - Backend: `127.0.0.1:18000`
 - PostgreSQL: `127.0.0.1:15432`
 - Redis: `127.0.0.1:16379`
-- Domain: `https://trading.cineviet.live`
+- Domain: `https://trading.noza.site`
 
 Kiểm tra:
 
