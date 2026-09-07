@@ -50,19 +50,25 @@ jobs:
             -scheme TradingControlApp \
             -configuration Debug \
             -sdk iphonesimulator \
-            -destination 'platform=iOS Simulator,name=iPhone 16 Pro' \
+            -destination 'generic/platform=iOS Simulator' \
             clean build
 
       - name: Test (iPhone 390pt)
         run: |
           set -euo pipefail
+          DEVICE_ID=$(xcrun simctl list devices available -j | jq -r \
+            '[.devices[][] | select(.name | startswith("iPhone"))][0].udid // empty')
+          if [ -z "$DEVICE_ID" ]; then
+            echo "::error title=Missing iOS simulator::No available iPhone simulator was found"
+            exit 1
+          fi
           set +e
           xcodebuild \
             -project TradingControlApp/TradingControlApp.xcodeproj \
             -scheme TradingControlApp \
             -configuration Debug \
             -sdk iphonesimulator \
-            -destination 'platform=iOS Simulator,name=iPhone 16 Pro' \
+            -destination "platform=iOS Simulator,id=$DEVICE_ID" \
             test 2>&1 | tee xcodetest.log
           TEST_STATUS=${PIPESTATUS[0]}
           set -e
