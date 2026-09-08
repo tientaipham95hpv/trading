@@ -6,6 +6,7 @@ from typing import Any
 
 from app.domain.models import DemoStabilityReport, StabilityCheck, TradingMode
 from app.services.exchange import ExchangeError
+from app.services.lifecycle_metrics import closed_lifecycle_outcomes
 
 
 class DemoStabilityService:
@@ -43,9 +44,11 @@ class DemoStabilityService:
                 await self.report()
             except asyncio.CancelledError:
                 raise
-            except (OSError, RuntimeError, ValueError) as exc:
+            except Exception as exc:  # noqa: BLE001 - watchdog must survive unknown faults
                 await self.state.storage.log(
-                    "Stability monitor error", {"error": str(exc)}, level="ERROR"
+                    "Stability monitor error",
+                    {"error": str(exc), "error_type": type(exc).__name__},
+                    level="ERROR",
                 )
             await asyncio.sleep(45)
 
@@ -60,7 +63,12 @@ class DemoStabilityService:
         snapshot = adapter.snapshot_cache
         performance = self.state.execution.performance()
         try:
-            snapshot = await adapter.snapshot()
+            snapshot = await asyncio.wait_for(adapter.snapshot(), timeout=20)
+        except (ExchangeError, TimeoutError, OSError, RuntimeError, ValueError):
+            # Readiness must remain available from the reconciled cache even when
+            # a fresh signed snapshot is temporarily slow or rate-limited.
+            snapshot = adapter.snapshot_cache
+        try:
             lifecycle_reader = getattr(
                 self.state.storage, "lifecycle_analytics_events", None
             )
@@ -74,53 +82,16 @@ class DemoStabilityService:
                     for event in events
                     if datetime.fromisoformat(str(event.get("event_at"))) >= reset_at
                 ]
-            grouped: dict[str, list[dict[str, object]]] = {}
-            for event in events:
-                lifecycle_id = str(event.get("lifecycle_id") or "")
-                if lifecycle_id:
-                    grouped.setdefault(lifecycle_id, []).append(event)
-            outcomes: list[tuple[datetime, float]] = []
-            for lifecycle_events in grouped.values():
-                verified_open = next(
-                    (
-                        event
-                        for event in lifecycle_events
-                        if event.get("event_type") == "OPEN"
-                        and event.get("risk_verifiable") is True
-                        and float(event.get("entry_price") or 0) > 0
-                    ),
-                    None,
-                )
-                if verified_open is None:
-                    continue
-                final_events = [
-                    event
-                    for event in lifecycle_events
-                    if event.get("event_type") == "CLOSE_FILL"
-                ]
-                if not final_events:
-                    continue
-                close_events = [
-                    event
-                    for event in lifecycle_events
-                    if event.get("event_type") in {"PARTIAL_CLOSE", "CLOSE_FILL"}
-                ]
-                entry_events = [
-                    event
-                    for event in lifecycle_events
-                    if event.get("event_type") == "ENTRY_FILL"
-                ]
-                closed_at = max(
-                    datetime.fromisoformat(str(event.get("event_at")))
-                    for event in final_events
-                )
-                net_pnl = sum(
-                    float(event.get("realized_pnl") or 0)
-                    - abs(float(event.get("commission") or 0))
-                    for event in close_events
-                ) - sum(abs(float(event.get("commission") or 0)) for event in entry_events)
-                outcomes.append((closed_at, net_pnl))
-            values = [value for _, value in sorted(outcomes)[-self.MAX_VALIDATION_TRADES :]]
+            open_symbols = {
+                position.symbol
+                for position in snapshot.positions
+                if abs(position.quantity) > 0
+            }
+            outcomes = closed_lifecycle_outcomes(events, open_symbols=open_symbols)
+            values = [
+                float(outcome["net_pnl"])
+                for outcome in reversed(outcomes[: self.MAX_VALIDATION_TRADES])
+            ]
             trade_count = len(values)
             realized_pnl = sum(values)
             win_rate = sum(value > 0 for value in values) / trade_count if trade_count else 0.0

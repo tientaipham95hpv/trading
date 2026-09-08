@@ -45,6 +45,7 @@ from app.domain.models import (
 )
 from app.services.analytics_history import AnalyticsHistorySnapshot
 from app.services.app_state import state
+from app.services.binance_gateway import CircuitOpenError, RateLimitBudgetExceeded
 from app.services.capital_risk import capital_risk_profile_for_mode
 from app.services.exchange import ExchangeCredentialsError, ExchangeError
 from app.services.exit_analytics import (
@@ -52,6 +53,7 @@ from app.services.exit_analytics import (
     excursion_requests,
     normalize_exchange_closes,
 )
+from app.services.lifecycle_metrics import closed_lifecycle_outcomes
 
 AUTH_COOKIE_NAME = "trading_operator_session"
 DISPLAY_TIMEZONE = ZoneInfo("Asia/Ho_Chi_Minh")
@@ -109,6 +111,19 @@ def _refresh_token_hash(token: str) -> str:
     return hmac.new(credential.encode(), token.encode(), hashlib.sha256).hexdigest()
 
 
+def _operator_credential_matches(supplied: str) -> bool:
+    """Accept either configured full-access credential during migration."""
+    credentials = (
+        state.settings.operator_password.strip(),
+        state.settings.api_auth_token.strip(),
+    )
+    matches = False
+    for credential in credentials:
+        if credential:
+            matches |= secrets.compare_digest(supplied, credential)
+    return matches
+
+
 def _set_session_cookie(response: Response) -> None:
     settings = state.settings
     response.set_cookie(
@@ -159,11 +174,16 @@ async def login(
     password: Annotated[str, Body(embed=True, min_length=1, max_length=256)],
 ) -> dict[str, object]:
     settings = state.settings
-    expected = settings.operator_password.strip() or settings.api_auth_token.strip()
-    if not expected or not secrets.compare_digest(password, expected):
+    if not _operator_credential_matches(password):
         raise HTTPException(status_code=401, detail="Mật khẩu vận hành không hợp lệ")
     _set_session_cookie(response)
     return {"authenticated": True, "expires_in": settings.auth_session_ttl_seconds}
+
+
+@auth_router.get("/status", dependencies=[Depends(require_api_auth)])
+async def auth_status() -> dict[str, bool]:
+    """Validate an operator session without loading trading state."""
+    return {"authenticated": True}
 
 
 @auth_router.post("/device-login")
@@ -173,8 +193,7 @@ async def device_login(
     device_name: Annotated[str, Body(min_length=1, max_length=120)],
 ) -> dict[str, object]:
     settings = state.settings
-    expected = settings.operator_password.strip() or settings.api_auth_token.strip()
-    if not expected or not secrets.compare_digest(password, expected):
+    if not _operator_credential_matches(password):
         raise HTTPException(status_code=401, detail="Mật khẩu vận hành không hợp lệ")
     refresh_token = _new_refresh_token()
     expires_at = datetime.now(UTC) + timedelta(seconds=settings.auth_device_ttl_seconds)
@@ -326,6 +345,7 @@ async def status() -> dict[str, object]:
         "live_readiness": _live_readiness(state.stability.last_report).model_dump(mode="json"),
         "auto_trader": state.auto_trader.snapshot(),
         "user_stream": state.user_stream.snapshot(),
+        "self_healing": state.self_healing.snapshot(),
         "performance_reset_at": state.performance_reset_at_for().isoformat()
         if state.performance_reset_at_for()
         else None,
@@ -334,7 +354,39 @@ async def status() -> dict[str, object]:
 
 @router.get("/markets")
 async def markets() -> dict[str, object]:
-    return {"items": [item.model_dump() for item in await state.scanner.scan_usdm_pairs()]}
+    try:
+        items = await asyncio.wait_for(state.scanner.scan_usdm_pairs(), timeout=12.0)
+        return {"items": [item.model_dump() for item in items], "degraded": False}
+    except (
+        CircuitOpenError,
+        RateLimitBudgetExceeded,
+        TimeoutError,
+        httpx.HTTPError,
+        OSError,
+        RuntimeError,
+        ValueError,
+    ) as exc:
+        cached = state.scanner.last_markets
+        await state.storage.log(
+            "Markets dùng cache gần nhất",
+            {
+                "mode": state.trading_mode.value,
+                "cache_available": bool(cached),
+                "error_type": type(exc).__name__,
+            },
+            level="WARNING",
+        )
+        return {
+            "items": [item.model_dump() for item in cached],
+            "degraded": True,
+            "source": "LAST_KNOWN_GOOD" if cached else "SAFE_EMPTY",
+            "cached_at": (
+                state.scanner.last_markets_at.isoformat()
+                if state.scanner.last_markets_at
+                else None
+            ),
+            "reason": "Dữ liệu thị trường tạm thời không khả dụng",
+        }
 
 
 @router.get("/klines/{symbol}")
@@ -592,7 +644,14 @@ async def trades(scope: str = "current") -> dict[str, object]:
                     for event in lifecycle_events
                     if (_event_time_ms(event) < cutoff_ms) == (scope == "archive")
                 ]
-            items = _lifecycle_trades_for_app(lifecycle_events)
+            open_symbols = {
+                position.symbol
+                for position in adapter.snapshot_cache.positions
+                if abs(position.quantity) > 0
+            }
+            items = _lifecycle_trades_for_app(
+                lifecycle_events, open_symbols=open_symbols
+            )
             source = "BOT_LIFECYCLE_AUDIT"
         return {
             "items": items,
@@ -718,6 +777,7 @@ async def journal(
             "id": str(uuid.uuid5(uuid.NAMESPACE_URL, f"{created_at}:{msg}")),
             "timestamp": created_at,
             "category": cat,
+            "level": level,
             "title": msg[:120],
             "details": json.dumps(payload, ensure_ascii=False, default=str) if payload else "",
             "meta": payload if isinstance(payload, dict) else None,
@@ -792,7 +852,12 @@ async def performance() -> dict[str, object]:
             lifecycle_events = [
                 event for event in lifecycle_events if _event_time_ms(event) >= cutoff_ms
             ]
-        lifecycle_trades = _lifecycle_trades_for_app(lifecycle_events)
+        open_symbols = {
+            position.symbol for position in snapshot.positions if abs(position.quantity) > 0
+        }
+        lifecycle_trades = _lifecycle_trades_for_app(
+            lifecycle_events, open_symbols=open_symbols
+        )
         values = [float(item["net_pnl"]) for item in lifecycle_trades]
         wins = [value for value in values if value > 0]
         losses = [value for value in values if value < 0]
@@ -1088,6 +1153,8 @@ async def bot_start() -> dict[str, object]:
                 "reason": "; ".join(readiness.blockers),
             }
     state.bot_state = BotState.RUNNING
+    state.auto_resume_requested = state.trading_mode == TradingMode.DEMO
+    state.save_runtime_config()
     await state.storage.log("Bot đã start", {"mode": state.trading_mode.value})
     return {"bot_state": state.bot_state, "accepted": True}
 
@@ -1100,6 +1167,8 @@ async def bot_auto_run_once() -> dict[str, object]:
 @router.post("/bot/pause")
 async def bot_pause() -> dict[str, object]:
     state.bot_state = BotState.PAUSED
+    state.auto_resume_requested = False
+    state.save_runtime_config()
     await state.storage.log("Bot đã pause", {"mode": state.trading_mode.value})
     return {"bot_state": state.bot_state}
 
@@ -1107,6 +1176,8 @@ async def bot_pause() -> dict[str, object]:
 @router.post("/bot/stop")
 async def bot_stop() -> dict[str, object]:
     state.bot_state = BotState.STOPPED
+    state.auto_resume_requested = False
+    state.save_runtime_config()
     await state.storage.log("Bot đã stop", {"mode": state.trading_mode.value})
     return {"bot_state": state.bot_state}
 
@@ -1343,6 +1414,8 @@ async def prepare_live() -> dict[str, object]:
 @router.post("/controls/pause-new-trades")
 async def pause_new_trades() -> dict[str, object]:
     state.bot_state = BotState.PAUSED
+    state.auto_resume_requested = False
+    state.save_runtime_config()
     await state.storage.log("Pause New Trades", {"mode": state.trading_mode.value}, level="WARNING")
     return {"accepted": True, "bot_state": state.bot_state}
 
@@ -1374,6 +1447,8 @@ async def close_all() -> dict[str, object]:
 async def activate_emergency_stop(reason: str = "manual") -> dict[str, object]:
     state.emergency_stop.active = True
     state.emergency_stop.reason = reason
+    state.auto_resume_requested = False
+    state.save_runtime_config()
     await state.storage.log("Dừng khẩn cấp đã bật", {"reason": reason}, level="WARNING")
     notification = await state.notifications.alert(
         NotificationEvent.EMERGENCY_STOP,
@@ -1778,77 +1853,28 @@ def _exchange_trades_for_app(rows: list[dict[str, object]]) -> list[dict[str, ob
     return trades
 
 
-def _lifecycle_trades_for_app(events: list[dict[str, object]]) -> list[dict[str, object]]:
-    grouped: dict[str, list[dict[str, object]]] = {}
-    for event in events:
-        lifecycle_id = str(event.get("lifecycle_id") or "")
-        if lifecycle_id:
-            grouped.setdefault(lifecycle_id, []).append(event)
-
-    trades: list[dict[str, object]] = []
-    for lifecycle_id, lifecycle_events in grouped.items():
-        ordered = sorted(lifecycle_events, key=_event_time_ms)
-        final_events = [event for event in ordered if event.get("event_type") == "CLOSE_FILL"]
-        if not final_events:
-            continue
-        open_event = next(
-            (
-                event
-                for event in ordered
-                if event.get("event_type") == "OPEN"
-                and event.get("risk_verifiable") is True
-                and _float(event.get("entry_price")) > 0
-            ),
-            None,
-        )
-        if open_event is None:
-            continue
-        close_events = [
-            event
-            for event in ordered
-            if event.get("event_type") in {"PARTIAL_CLOSE", "CLOSE_FILL"}
-        ]
-        entry_events = [
-            event for event in ordered if event.get("event_type") == "ENTRY_FILL"
-        ]
-        final_event = final_events[-1]
-        gross_pnl = sum(_float(event.get("realized_pnl")) for event in close_events)
-        fee = abs(
-            sum(
-                _float(event.get("commission"))
-                for event in [*entry_events, *close_events]
-            )
-        )
-        entry_quantity = sum(_float(event.get("last_fill_quantity")) for event in entry_events)
-        entry_notional = sum(
-            _float(event.get("last_fill_quantity")) * _float(event.get("last_fill_price"))
-            for event in entry_events
-        )
-        exact_entry_price = (
-            entry_notional / entry_quantity
-            if entry_quantity > 0 and entry_notional > 0
-            else _float(open_event.get("entry_price"))
-        )
-        side = str(open_event.get("side") or "CLOSED")
-        event_at = str(final_event.get("event_at") or datetime.now(UTC).isoformat())
-        trades.append(
-            {
-                "id": lifecycle_id,
-                "symbol": str(final_event.get("symbol") or open_event.get("symbol") or "-"),
-                "side": side,
-                "entry_price": exact_entry_price,
-                "exit_price": _float(final_event.get("last_fill_price")),
-                "quantity": _float(open_event.get("initial_quantity")),
-                "gross_pnl": gross_pnl,
-                "fee": fee,
-                "slippage": 0.0,
-                "funding": 0.0,
-                "net_pnl": gross_pnl - fee,
-                "reason": str(final_event.get("reason") or "Đóng vị thế"),
-                "created_at": event_at,
-            }
-        )
-    return sorted(trades, key=lambda item: str(item["created_at"]), reverse=True)
+def _lifecycle_trades_for_app(
+    events: list[dict[str, object]], *, open_symbols: set[str] | None = None
+) -> list[dict[str, object]]:
+    outcomes = closed_lifecycle_outcomes(events, open_symbols=open_symbols)
+    return [
+        {
+            "id": outcome["lifecycle_id"],
+            "symbol": outcome["symbol"],
+            "side": outcome["side"],
+            "entry_price": outcome["entry_price"],
+            "exit_price": outcome["exit_price"],
+            "quantity": outcome["quantity"],
+            "gross_pnl": outcome["gross_pnl"],
+            "fee": outcome["fee"],
+            "slippage": 0.0,
+            "funding": 0.0,
+            "net_pnl": outcome["net_pnl"],
+            "reason": outcome["reason"],
+            "created_at": outcome["closed_at"].isoformat(),
+        }
+        for outcome in outcomes
+    ]
 
 
 def _exchange_performance(

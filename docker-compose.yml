@@ -46,7 +46,9 @@ services:
         condition: service_healthy
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=3)"]
+      # Three consecutive probe failures terminate uvicorn; restart:unless-stopped
+      # then recreates the process without defeating an explicit operator stop.
+      test: ["CMD", "python", "-m", "app.healthcheck"]
       interval: 15s
       timeout: 5s
       retries: 5

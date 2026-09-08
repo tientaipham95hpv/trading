@@ -581,6 +581,7 @@ export type JournalEntry = {
   id: string;
   timestamp: string;
   category: "TRADING" | "AI" | "RISK" | "SYSTEM" | "ERRORS";
+  level?: "INFO" | "WARNING" | "ERROR" | "CRITICAL" | string;
   title: string;
   details: string;
   meta?: Record<string, unknown> | null;

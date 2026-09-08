@@ -127,13 +127,16 @@ tbody tr:hover, .table-row-hover:hover { background: rgba(255,255,255,.025); }
 
 .terminal-disclosure { border-top: 1px solid var(--border-default); padding-top: 10px; }
 .terminal-disclosure > summary { width: fit-content; cursor: pointer; color: var(--text-muted); font-size: 12px; font-weight: 600; list-style-position: inside; }
-.mobile-bottom-bar { position: fixed; right: 0; bottom: 0; left: 0; z-index: 40; display: flex; align-items: stretch; justify-content: space-around; border-top: 1px solid var(--border-default); background: rgba(15,17,21,.96); padding: 5px 6px max(5px, env(safe-area-inset-bottom)); backdrop-filter: blur(14px); }
+.mobile-bottom-bar { position: fixed; right: 0; bottom: 0; left: 0; z-index: 40; display: none; align-items: stretch; justify-content: space-around; border-top: 1px solid var(--border-default); background: rgba(15,17,21,.96); padding: 5px 6px max(5px, env(safe-area-inset-bottom)); backdrop-filter: blur(14px); }
 .mobile-nav-item { display: flex; min-width: 58px; flex-direction: column; align-items: center; justify-content: center; gap: 2px; border: 0; border-radius: 7px; background: transparent; padding: 5px 6px; font-size: 9px; font-weight: 650; }
 .mobile-menu-sheet { position: absolute; right: 0; bottom: 0; left: 0; max-height: min(82vh, 640px); overflow-y: auto; border-top: 1px solid var(--border-strong); border-radius: 14px 14px 0 0; background: var(--bg-elevated); padding-bottom: env(safe-area-inset-bottom); animation: drawer-slide-in .18s ease-out; }
 .mobile-menu-link { display: flex; min-width: 0; align-items: center; gap: 9px; border: 1px solid var(--border-default); border-radius: 8px; background: var(--bg-surface); padding: 11px; color: var(--text-secondary); font-size: 12px; font-weight: 600; }
 .mobile-menu-link-active { border-color: rgba(59,130,246,.3); background: rgba(59,130,246,.08); color: var(--color-info); }
 
-@media (max-width: 1023px) { :root { --sidebar-width: 0px; } }
+@media (max-width: 1023px) {
+  :root { --sidebar-width: 0px; }
+  .mobile-bottom-bar { display: flex; }
+}
 @media (max-width: 768px) {
   .glass-card { padding: 13px; }
   .page-header { align-items: flex-start; }

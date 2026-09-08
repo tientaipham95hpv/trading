@@ -21,7 +21,7 @@ export function AuthGate({ children }: { children: ReactNode }) {
 
     async function validateSession() {
       try {
-        await api.status();
+        await api.authStatus();
         if (active) setAuthenticated(true);
       } catch { /* login form remains visible */ } finally {
         if (active) setChecked(true);
@@ -41,7 +41,6 @@ export function AuthGate({ children }: { children: ReactNode }) {
     setError(null);
     try {
       await api.login(password);
-      await api.status();
       setAuthenticated(true);
     } catch {
       setError("Mật khẩu không hợp lệ hoặc máy chủ chưa sẵn sàng.");

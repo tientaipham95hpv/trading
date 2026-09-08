@@ -36,6 +36,7 @@ class FuturesScanner:
         self._client = client
         self.settings = settings or BotSettings()
         self.last_markets: list[SymbolCandidate] = []
+        self.last_markets_at: datetime | None = None
         self.last_results: list[ScannerResult] = []
         self.last_scan_at: datetime | None = None
         # ALL_MARKET is rate-limit bounded; rotate the eligible set so low-volume
@@ -97,6 +98,7 @@ class FuturesScanner:
                 candidates.append(candidate)
         candidates.sort(key=lambda item: item.quote_volume, reverse=True)
         self.last_markets = candidates
+        self.last_markets_at = datetime.now(UTC)
         return candidates
 
     async def scan(

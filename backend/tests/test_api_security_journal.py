@@ -139,17 +139,27 @@ async def test_login_issues_httponly_cookie_that_authenticates_api(
     transport = httpx.ASGITransport(app=api_app)
     async with httpx.AsyncClient(transport=transport, base_url="https://test") as client:
         rejected = await client.post("/api/auth/login", json={"password": "wrong"})
+        unauthenticated_status = await client.get("/api/auth/status")
+        legacy_token_accepted = await client.post(
+            "/api/auth/login", json={"password": "signing-secret"}
+        )
+        client.cookies.clear()
         accepted = await client.post(
             "/api/auth/login", json={"password": "memorable-password"}
         )
+        authenticated_status = await client.get("/api/auth/status")
         journal = await client.get("/api/journal")
 
     assert rejected.status_code == 401
+    assert unauthenticated_status.status_code == 401
+    assert legacy_token_accepted.status_code == 200
     assert accepted.status_code == 200
     cookie = accepted.headers["set-cookie"].lower()
     assert "httponly" in cookie
     assert "secure" in cookie
     assert "samesite=strict" in cookie
+    assert authenticated_status.status_code == 200
+    assert authenticated_status.json() == {"authenticated": True}
     assert journal.status_code == 200
 
 

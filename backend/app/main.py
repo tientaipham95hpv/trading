@@ -27,6 +27,7 @@ async def startup() -> None:
             )
     state.auto_trader.start()
     state.user_stream.start()
+    state.self_healing.start()
     state.stability.start()
     state.smart_entry_collector.start()
     state.equity_tracker.start()
@@ -46,6 +47,7 @@ async def shutdown() -> None:
     await state.equity_tracker.stop()
     await state.smart_entry_collector.stop()
     await state.stability.stop()
+    await state.self_healing.stop()
     await state.user_stream.stop()
     await state.auto_trader.stop()
 

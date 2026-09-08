@@ -21,6 +21,11 @@ class Settings(BaseSettings):
     binance_demo_api_secret: str = ""
     database_url: str = "postgresql+asyncpg://trading:trading@localhost:5432/trading"
     redis_url: str = "redis://localhost:6379/0"
+    self_heal_enabled: bool = True
+    self_heal_interval_seconds: int = Field(default=30, ge=10, le=300)
+    self_heal_verification_delay_seconds: float = Field(default=2.0, ge=0, le=30)
+    self_heal_max_attempts: int = Field(default=3, ge=1, le=10)
+    self_heal_attempt_window_seconds: int = Field(default=1800, ge=300, le=86400)
     max_leverage: int = Field(default=5, ge=1, le=125)
     risk_per_trade: float = Field(default=0.001, gt=0, le=0.05)
     max_risk_per_trade: float = Field(default=0.0025, gt=0, le=0.05)

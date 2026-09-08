@@ -81,6 +81,7 @@ export const api = {
     }),
   logout: () =>
     request<{ authenticated: boolean }>("/api/auth/logout", { method: "POST" }),
+  authStatus: () => request<{ authenticated: boolean }>("/api/auth/status"),
   authExpiredEvent: AUTH_EXPIRED_EVENT,
   status: () => request<StatusPayload>("/api/status"),
   risk: () => request<RiskPayload>("/api/risk"),

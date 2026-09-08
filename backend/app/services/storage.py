@@ -816,10 +816,28 @@ class Storage:
                     select(StabilitySnapshotRow).order_by(StabilitySnapshotRow.id.desc()).limit(1)
                 )
             ).scalar_one_or_none()
+            # Do not suppress a new forward-test result merely because its
+            # score/verdict bucket stayed the same. Trade count and expectancy
+            # can change substantially while both remain COLLECTING_DATA.
+            tracked_metric_keys = (
+                "trades",
+                "realized_pnl",
+                "win_rate",
+                "profit_factor",
+                "positions",
+                "orders",
+                "user_stream_reconnects",
+            )
+            latest_metrics = (latest.payload or {}).get("metrics", {}) if latest else {}
+            current_metrics = payload.get("metrics", {})
             if (
                 latest
                 and latest.score == int(payload["score"])
                 and latest.verdict == str(payload["verdict"])
+                and all(
+                    latest_metrics.get(key) == current_metrics.get(key)
+                    for key in tracked_metric_keys
+                )
             ):
                 return
             session.add(

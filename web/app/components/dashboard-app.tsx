@@ -101,7 +101,7 @@ const nav = [
   { key: "strategies", href: "/strategy", label: "Chiến lược", icon: Bot },
   { key: "analytics", href: "/analytics", label: "Phân tích", icon: BarChart3 },
   { key: "risk", href: "/risk", label: "Rủi ro", icon: ShieldAlert },
-  { key: "journal", href: "/journal", label: "Nhật ký", icon: Clock },
+  { key: "journal", href: "/journal", label: "Nhật ký & cảnh báo", icon: Clock },
   { key: "settings", href: "/settings", label: "Cài đặt", icon: Settings },
 ] as const;
 
@@ -116,7 +116,7 @@ const pageTitles: Record<PageKey, string> = {
   analytics: "Phân tích hiệu suất",
   risk: "Quản trị rủi ro",
   logs: "Nhật ký hệ thống",
-  journal: "Nhật ký giao dịch",
+  journal: "Nhật ký & cảnh báo",
   settings: "Cài đặt",
 };
 
@@ -468,8 +468,23 @@ function DashboardContent({ page }: { page: PageKey }) {
               )}
             </div>
 
-            {/* Right: minimal controls */}
+            {/* Right: bot power + system controls */}
             <div className="flex items-center gap-2">
+              <div className="hidden lg:flex items-center gap-2 rounded-lg border border-[var(--border-default)] bg-[rgba(255,255,255,0.025)] px-2 py-1">
+                <span className="inline-flex items-center gap-1.5 text-[11px] font-semibold text-[var(--text-secondary)]">
+                  <span
+                    className={`h-1.5 w-1.5 rounded-full ${
+                      status?.bot_state === "RUNNING"
+                        ? "bg-[var(--color-profit)] shadow-[0_0_7px_rgba(34,197,94,0.55)]"
+                        : status?.bot_state === "SAFE_MODE"
+                          ? "bg-[var(--color-warning)]"
+                          : "bg-[var(--text-muted)]"
+                    }`}
+                  />
+                  Bot
+                </span>
+                <BotControls compact onDone={refresh} status={status} />
+              </div>
               {/* Journal / notifications */}
               <Link
                 className="sidebar-icon-btn"
@@ -2960,13 +2975,170 @@ function Logs({ logs }: { logs: LogItem[] }) {
 /* ──────────────────────────── JOURNAL PAGE ──────────────────────────── */
 
 const JOURNAL_FILTERS: { key: JournalCategory; label: string; color: string }[] = [
-  { key: "ALL", label: "All", color: "var(--text-secondary)" },
+  { key: "ALL", label: "Tất cả", color: "var(--text-secondary)" },
   { key: "TRADING", label: "Giao dịch", color: "var(--color-info)" },
-  { key: "AI", label: "AI", color: "var(--color-ai)" },
+  { key: "AI", label: "Trí tuệ nhân tạo", color: "var(--color-ai)" },
   { key: "RISK", label: "Rủi ro", color: "var(--color-warning)" },
   { key: "SYSTEM", label: "Hệ thống", color: "var(--text-muted)" },
-  { key: "ERRORS", label: "Errors", color: "var(--color-loss)" },
+  { key: "ERRORS", label: "Lỗi nghiêm trọng", color: "var(--color-loss)" },
 ];
+
+const JOURNAL_CATEGORY_LABELS: Record<JournalEntry["category"], string> = {
+  TRADING: "Giao dịch",
+  AI: "Trí tuệ nhân tạo",
+  RISK: "Rủi ro",
+  SYSTEM: "Hệ thống",
+  ERRORS: "Lỗi",
+};
+
+const JOURNAL_TITLE_TRANSLATIONS: Record<string, string> = {
+  "Auto-trader skip": "Bot bỏ qua chu kỳ giao dịch",
+  "Self-healing resumed DEMO bot": "Hệ thống đã tự khôi phục bot DEMO",
+  "User-stream connected": "Đã kết nối luồng dữ liệu tài khoản",
+  "User-stream watchdog started": "Đã khởi động bộ giám sát kết nối tài khoản",
+  "Self-healing watchdog started": "Đã khởi động bộ tự khôi phục",
+  "Smart Entry outcome collector started": "Đã khởi động bộ thu thập kết quả vào lệnh",
+  "Auto-trader worker started": "Bot giao dịch tự động đã khởi động",
+  "User-stream listenKey keepalive": "Đã gia hạn kết nối dữ liệu tài khoản",
+  "Auto-trader cleaned orphan exchange orders": "Bot đã dọn các lệnh mồ côi trên sàn",
+  "User-stream event": "Sàn vừa gửi cập nhật tài khoản",
+  "AI Haiku shadow evaluation": "AI đã đánh giá tín hiệu ở chế độ quan sát",
+  "Auto-trader submitted order": "Bot đã gửi lệnh lên sàn",
+  "APNs-ready notification": "Đã tạo thông báo giao dịch",
+  "Portfolio risk pre-trade": "Đã kiểm tra rủi ro trước giao dịch",
+  "Auto-trader skip non-tradable symbol": "Bot bỏ qua cặp không được phép giao dịch",
+  "Auto-trader cycle error": "Chu kỳ giao dịch tự động gặp lỗi",
+  "Auto-trader hard blacklist skip": "Bot bỏ qua cặp trong danh sách chặn",
+  "Close All": "Đã yêu cầu đóng toàn bộ vị thế",
+  "Pause New Trades": "Đã khóa lệnh giao dịch mới",
+  "SAFE_MODE do reconcile mismatch": "Đã bật chế độ an toàn vì dữ liệu không khớp",
+  "Unknown managed entry closed fail-closed": "Đã đóng vị thế không xác minh được để bảo đảm an toàn",
+  "Auto-trader managed protective stops": "Bot đã cập nhật dừng lỗ bảo vệ",
+  "User-stream reconnect needed": "Cần kết nối lại luồng dữ liệu tài khoản",
+  "Auto-trader risk skip": "Bot bỏ qua cơ hội do giới hạn rủi ro",
+  "SAFE_MODE cleared after verified reconciliation": "Đã thoát chế độ an toàn sau khi đối soát thành công",
+  "Auto-trader skip symbol SL cooldown": "Bot tạm bỏ qua cặp vừa chạm dừng lỗ",
+  "Auto-trader weak signal skip": "Bot bỏ qua tín hiệu yếu",
+  "Exchange DEMO disconnected": "Mất kết nối sàn DEMO",
+  "Performance dùng exchange cache": "Hiệu suất đang dùng dữ liệu sàn đã lưu gần nhất",
+  "Trades dùng fallback do exchange rate-limit": "Lịch sử giao dịch đang dùng dữ liệu dự phòng vì sàn giới hạn truy cập",
+  "Positions dùng exchange cache": "Vị thế đang dùng dữ liệu sàn đã lưu gần nhất",
+  "Exit analytics dùng fallback do exchange rate-limit": "Phân tích thoát lệnh đang dùng dữ liệu dự phòng vì sàn giới hạn truy cập",
+  "Equity capture bỏ qua do exchange lỗi": "Tạm bỏ qua ghi nhận vốn vì kết nối sàn gặp lỗi",
+};
+
+const JOURNAL_DETAIL_LABELS: Record<string, string> = {
+  mode: "Chế độ",
+  status: "Trạng thái",
+  reason: "Lý do",
+  error: "Lỗi",
+  symbol: "Cặp giao dịch",
+  side: "Hướng",
+  action: "Hành động",
+  score: "Điểm tín hiệu",
+  positions: "Vị thế đang mở",
+  orders: "Lệnh đang chờ",
+  previous_reason: "Nguyên nhân trước đó",
+  verification_passes: "Số lần kiểm tra đạt",
+  attempts_in_window: "Số lần thử trong chu kỳ",
+  interval_seconds: "Chu kỳ kiểm tra (giây)",
+  batch_size: "Số bản ghi mỗi lượt",
+  enabled: "Đang bật",
+  max_attempts: "Số lần thử tối đa",
+  attempt_window_seconds: "Khoảng theo dõi (giây)",
+  reconnects: "Số lần kết nối lại",
+  quantity: "Khối lượng",
+  price: "Giá",
+  entry_price: "Giá vào",
+  stop_price: "Giá dừng lỗ",
+  take_profit: "Giá chốt lời",
+  realized_pnl: "Lãi/lỗ đã chốt",
+  commission: "Phí giao dịch",
+  decision: "Quyết định",
+  severity: "Mức độ",
+  event: "Sự kiện",
+};
+
+const JOURNAL_VALUE_TRANSLATIONS: Record<string, string> = {
+  DEMO: "Thử nghiệm (DEMO)",
+  LIVE: "Tiền thật (LIVE)",
+  NO_SIGNAL: "Chưa có tín hiệu đạt yêu cầu",
+  NO_ACCEPTED_SIGNAL: "Tín hiệu chưa vượt qua bộ lọc",
+  IDLE: "Đang chờ",
+  RUNNING: "Đang chạy",
+  PAUSED: "Tạm dừng",
+  STOPPED: "Đã dừng",
+  ORDER_SUBMITTED: "Đã gửi lệnh",
+  WAITING_POSITION: "Đang chờ vị thế hiện tại",
+  BUY: "Mua",
+  SELL: "Bán",
+  LONG: "Mua lên",
+  SHORT: "Bán xuống",
+  WARNING: "Cảnh báo",
+  ERROR: "Lỗi",
+  CRITICAL: "Nghiêm trọng",
+};
+
+function journalMeta(entry: JournalEntry): Record<string, unknown> {
+  if (entry.meta && Object.keys(entry.meta).length) return entry.meta;
+  if (!entry.details) return {};
+  try {
+    const parsed: unknown = JSON.parse(entry.details);
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed)
+      ? (parsed as Record<string, unknown>)
+      : {};
+  } catch {
+    return {};
+  }
+}
+
+function viJournalTitle(entry: JournalEntry): string {
+  const meta = journalMeta(entry);
+  if (entry.title === "Auto-trader skip") {
+    const status = String(meta.status ?? "");
+    if (status === "NO_SIGNAL") return "Bot chưa tìm thấy tín hiệu phù hợp";
+    if (status === "IDLE") return "Bot đang chờ lệnh vận hành";
+  }
+  const incident = entry.title.match(/^Stability incident (opened|resolved): (.+)$/);
+  if (incident) {
+    const incidentNames: Record<string, string> = {
+      reconciliation: "đối soát dữ liệu",
+      safe_mode: "chế độ an toàn",
+      sl_protection: "bảo vệ dừng lỗ",
+      user_stream: "kết nối dữ liệu tài khoản",
+      duplicate_orders: "lệnh bị trùng",
+      order_ownership: "quyền sở hữu lệnh",
+    };
+    const name = incidentNames[incident[2]] ?? incident[2];
+    return incident[1] === "opened"
+      ? `Phát hiện cảnh báo ổn định: ${name}`
+      : `Đã xử lý cảnh báo ổn định: ${name}`;
+  }
+  return JOURNAL_TITLE_TRANSLATIONS[entry.title] ?? entry.title.replace(/^CRITICAL:\s*/i, "NGHIÊM TRỌNG: ");
+}
+
+function viJournalValue(value: unknown): string {
+  if (typeof value === "boolean") return value ? "Có" : "Không";
+  if (typeof value === "number") return value.toLocaleString("vi-VN", { maximumFractionDigits: 8 });
+  if (typeof value === "string") return JOURNAL_VALUE_TRANSLATIONS[value] ?? value;
+  return JSON.stringify(value);
+}
+
+function viJournalDetails(entry: JournalEntry): string {
+  const meta = journalMeta(entry);
+  const readable = Object.entries(meta)
+    .filter(([key, value]) => key in JOURNAL_DETAIL_LABELS && value !== null && value !== "")
+    .slice(0, 8)
+    .map(([key, value]) => `${JOURNAL_DETAIL_LABELS[key]}: ${viJournalValue(value)}`);
+  if (readable.length) return readable.join(" · ");
+  if (entry.details && !entry.details.trim().startsWith("{")) return entry.details;
+  return entry.details ? "Sự kiện đã được ghi nhận. Mở dữ liệu kỹ thuật để xem thêm." : "";
+}
+
+function viJournalLevel(level?: string): string | null {
+  if (!level || level === "INFO") return null;
+  return JOURNAL_VALUE_TRANSLATIONS[level] ?? level;
+}
 
 const JOURNAL_CATEGORY_COLORS: Record<string, { bg: string; text: string; line: string }> = {
   TRADING: { bg: "rgba(59,130,246,0.10)", text: "var(--color-info)", line: "var(--color-info)" },
@@ -2989,6 +3161,10 @@ function JournalPage({
 }) {
   return (
     <div className="grid gap-4">
+      <PageHeader
+        title="Nhật ký & cảnh báo"
+        description="Theo dõi hoạt động của bot bằng nội dung tiếng Việt; dữ liệu kỹ thuật gốc vẫn được giữ để kiểm tra khi cần."
+      />
       {/* Filter bar */}
       <div className="flex items-center gap-2 flex-wrap">
         {JOURNAL_FILTERS.map(({ key, label, color }) => {
@@ -3022,7 +3198,7 @@ function JournalPage({
           title="Làm mới"
         >
           <RefreshCw size={13} />
-          Refresh
+          Làm mới
         </button>
       </div>
 
@@ -3081,12 +3257,33 @@ function JournalPage({
                             color: colors.text,
                           }}
                         >
-                          {entry.category}
+                          {JOURNAL_CATEGORY_LABELS[entry.category]}
                         </span>
+                        {viJournalLevel(entry.level) && (
+                          <span
+                            className={`rounded px-1.5 py-0.5 text-[9px] font-bold ${
+                              entry.level === "CRITICAL" || entry.level === "ERROR"
+                                ? "bg-[rgba(239,68,68,0.1)] text-[var(--color-loss)]"
+                                : "bg-[rgba(245,158,11,0.1)] text-[var(--color-warning)]"
+                            }`}
+                          >
+                            {viJournalLevel(entry.level)}
+                          </span>
+                        )}
                       </div>
-                      <p className="journal-title">{entry.title}</p>
+                      <p className="journal-title">{viJournalTitle(entry)}</p>
+                      {viJournalDetails(entry) && (
+                        <p className="journal-details">{viJournalDetails(entry)}</p>
+                      )}
                       {entry.details && (
-                        <p className="journal-details">{entry.details}</p>
+                        <details className="mt-2 text-[11px] text-[var(--text-muted)]">
+                          <summary className="w-fit cursor-pointer select-none hover:text-[var(--text-secondary)]">
+                            Xem dữ liệu kỹ thuật gốc
+                          </summary>
+                          <pre className="mt-2 max-h-52 overflow-auto whitespace-pre-wrap break-words rounded-md border border-[var(--border-default)] bg-black/20 p-2 text-[10px] leading-relaxed">
+                            {entry.details}
+                          </pre>
+                        </details>
                       )}
                     </div>
                   </div>
@@ -3629,10 +3826,12 @@ function SettingsPage({
 /* ──────────────────────────── BOT CONTROLS ──────────────────────────── */
 
 function BotControls({
+  compact = false,
   mobile = false,
   onDone,
   status,
 }: {
+  compact?: boolean;
   mobile?: boolean;
   onDone: () => Promise<void>;
   status: StatusPayload | null;
@@ -3840,44 +4039,46 @@ function BotControls({
           </ActionIcon>
         </div>
       )}
-      <div className="flex rounded-lg border border-[rgba(239,68,68,0.15)] bg-[rgba(255,255,255,0.03)] p-0.5">
-        <ActionIcon
-          busy={busy === "pause-new-trades"}
-          disabled={disabled}
-          label="Tạm dừng lệnh mới"
-          onClick={() => void control("pause-new-trades")}
-          tone="warning"
-        >
-          <ShieldX size={15} />
-        </ActionIcon>
-        <ActionIcon
-          busy={busy === "cancel-orders"}
-          disabled={disabled}
-          label="Hủy order"
-          onClick={() => void control("cancel-orders")}
-          tone="orange"
-        >
-          <XCircle size={15} />
-        </ActionIcon>
-        <ActionIcon
-          busy={busy === "close-all"}
-          disabled={disabled}
-          label="Đóng toàn bộ vị thế"
-          onClick={() => void control("close-all")}
-          tone="danger"
-        >
-          <Trash2 size={15} />
-        </ActionIcon>
-        <ActionIcon
-          busy={busy === "emergency"}
-          disabled={disabled}
-          label="Emergency Stop"
-          onClick={() => void emergency()}
-          tone="solidDanger"
-        >
-          <ShieldAlert size={15} />
-        </ActionIcon>
-      </div>
+      {!compact && (
+        <div className="flex rounded-lg border border-[rgba(239,68,68,0.15)] bg-[rgba(255,255,255,0.03)] p-0.5">
+          <ActionIcon
+            busy={busy === "pause-new-trades"}
+            disabled={disabled}
+            label="Tạm dừng lệnh mới"
+            onClick={() => void control("pause-new-trades")}
+            tone="warning"
+          >
+            <ShieldX size={15} />
+          </ActionIcon>
+          <ActionIcon
+            busy={busy === "cancel-orders"}
+            disabled={disabled}
+            label="Hủy order"
+            onClick={() => void control("cancel-orders")}
+            tone="orange"
+          >
+            <XCircle size={15} />
+          </ActionIcon>
+          <ActionIcon
+            busy={busy === "close-all"}
+            disabled={disabled}
+            label="Đóng toàn bộ vị thế"
+            onClick={() => void control("close-all")}
+            tone="danger"
+          >
+            <Trash2 size={15} />
+          </ActionIcon>
+          <ActionIcon
+            busy={busy === "emergency"}
+            disabled={disabled}
+            label="Emergency Stop"
+            onClick={() => void emergency()}
+            tone="solidDanger"
+          >
+            <ShieldAlert size={15} />
+          </ActionIcon>
+        </div>
+      )}
     </div>
   );
 }

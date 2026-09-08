@@ -21,6 +21,7 @@ from app.services.realtime import RealtimeBroadcaster
 from app.services.reconciliation import ExchangeReconciliationService
 from app.services.risk_engine import RiskEngine
 from app.services.scanner import FuturesScanner
+from app.services.self_healing import SelfHealingWatchdog
 from app.services.smart_entry import SmartEntryOutcomeCollector
 from app.services.stability import DemoStabilityService
 from app.services.storage import Storage
@@ -94,6 +95,9 @@ class AppState:
             TradingMode.DEMO: None,
             TradingMode.LIVE: None,
         }
+        # Persist operator intent separately from transient RUNNING/SAFE_MODE state.
+        # This lets a clean DEMO process restart resume, while explicit pause/stop survives.
+        self.auto_resume_requested = False
         self.ai_shadow_config = {
             "enabled": settings.ai_evaluator_enabled,
             "model": settings.ai_model,
@@ -157,6 +161,13 @@ class AppState:
         self.reconciliation = ExchangeReconciliationService(self.storage, self.execution)
         self.auto_trader = AutoTrader(self)
         self.user_stream = UserStreamWatchdog(self)
+        self.self_healing = SelfHealingWatchdog(
+            self,
+            interval_seconds=settings.self_heal_interval_seconds,
+            verification_delay_seconds=settings.self_heal_verification_delay_seconds,
+            max_attempts=settings.self_heal_max_attempts,
+            attempt_window_seconds=settings.self_heal_attempt_window_seconds,
+        )
         self.stability = DemoStabilityService(self)
         self.smart_entry_collector = SmartEntryOutcomeCollector(self)
         self.ai_shadow_evaluator = AIShadowEvaluator(self)
@@ -173,6 +184,9 @@ class AppState:
         return self._active_exchange().snapshot_cache.safe_mode_reason
 
     def enter_safe_mode(self, reason: str) -> None:
+        if self.bot_state == BotState.RUNNING:
+            self.auto_resume_requested = True
+            self.save_runtime_config()
         self.bot_state = BotState.SAFE_MODE
         adapter = self._active_exchange()
         adapter.snapshot_cache.safe_mode = True
@@ -320,6 +334,8 @@ class AppState:
             )
         if command == "/pause":
             self.bot_state = BotState.PAUSED
+            self.auto_resume_requested = False
+            self.save_runtime_config()
             await self.storage.log(
                 "Telegram command pause", {"args": args, "mode": self.trading_mode.value}
             )
@@ -332,6 +348,8 @@ class AppState:
             if self.emergency_stop.active:
                 return f"Không resume vì Emergency Stop: {self.emergency_stop.reason or 'active'}"
             self.bot_state = BotState.RUNNING
+            self.auto_resume_requested = True
+            self.save_runtime_config()
             await self.storage.log("Telegram command resume", {"mode": self.trading_mode.value})
             return "▶️ Đã resume DEMO bot. LIVE vẫn tắt."
         if command == "/safe":
@@ -408,6 +426,7 @@ class AppState:
         payload = {
             "trading_mode": self.trading_mode.value,
             "live_trading_enabled": self.live_trading_enabled,
+            "auto_resume_requested": getattr(self, "auto_resume_requested", False),
             "live_preflight": self.live_preflight,
             "ai_shadow": {
                 key: self.ai_shadow_config[key]
@@ -447,6 +466,8 @@ class AppState:
             self.trading_mode = TradingMode(mode)
         if isinstance(payload.get("live_trading_enabled"), bool):
             self.live_trading_enabled = payload["live_trading_enabled"]
+        if isinstance(payload.get("auto_resume_requested"), bool):
+            self.auto_resume_requested = payload["auto_resume_requested"]
         preflight = payload.get("live_preflight")
         if isinstance(preflight, dict):
             for key in self.live_preflight:

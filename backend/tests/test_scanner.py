@@ -76,6 +76,7 @@ async def test_scanner_discovers_trading_usdt_perpetuals_without_hardcoding():
     pairs = await scanner.scan_usdm_pairs()
 
     assert [pair.symbol for pair in pairs] == ["BTCUSDT"]
+    assert scanner.last_markets_at is not None
 
 
 async def test_all_market_accepts_eligible_low_volume_symbol_without_whitelist():

@@ -13,6 +13,7 @@ DerivedData/
 *.pyc
 *.log
 runtime-config.json
+.database-maintenance.lock
 
 # Runtime health/status captures
 logs/

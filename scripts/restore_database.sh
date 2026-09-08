@@ -4,6 +4,7 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 BACKUP_DIR="${BACKUP_DIR:-$ROOT_DIR/backups}"
+LOCK_FILE="$ROOT_DIR/.database-maintenance.lock"
 
 if [[ $# -ne 1 ]]; then
   printf 'Usage: %s <backup-file-or-path>\n' "$0" >&2
@@ -21,5 +22,10 @@ read -r confirmation
 [[ "$confirmation" == "RESTORE" ]] || { printf 'Cancelled.\n'; exit 0; }
 
 cd "$ROOT_DIR"
+exec 9>"$LOCK_FILE"
+if ! flock -n 9; then
+  printf 'Restore blocked: another database backup or restore is running.\n' >&2
+  exit 75
+fi
 gzip -cd "$backup" | docker compose exec -T postgres pg_restore -U trading -d trading --clean --if-exists --no-owner --no-privileges
 printf 'Restore completed from: %s\n' "$backup"
