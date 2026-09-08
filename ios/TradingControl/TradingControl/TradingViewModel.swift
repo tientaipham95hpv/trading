@@ -170,8 +170,9 @@ public final class TradingViewModel: ObservableObject {
             }
             isAuthenticated = response.authenticated
             passwordDraft = ""
-            await refreshAll()
             if isAuthenticated { start() }
+        } catch TradingAPIError.unauthorized {
+            errorMessage = "Mật khẩu vận hành không hợp lệ."
         } catch {
             errorMessage = "Không thể đăng nhập. Hãy kiểm tra mật khẩu và kết nối mạng."
         }

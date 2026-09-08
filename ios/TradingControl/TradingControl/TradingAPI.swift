@@ -8,15 +8,18 @@ public actor TradingAPI {
     private let decoder: JSONDecoder
     private let encoder: JSONEncoder
     private let authStore: SecureAuthStore
+    private let requestTimeout: TimeInterval
 
     public init(
         baseURL: URL = URL(string: "https://trading.noza.site")!,
         session: URLSession = .shared,
-        authStore: SecureAuthStore = .shared
+        authStore: SecureAuthStore = .shared,
+        requestTimeout: TimeInterval = 15
     ) {
         self.baseURL = baseURL
         self.session = session
         self.authStore = authStore
+        self.requestTimeout = requestTimeout
         self.decoder = JSONDecoder()
         self.encoder = JSONEncoder()
     }
@@ -210,6 +213,7 @@ public actor TradingAPI {
         }
         var request = URLRequest(url: url)
         request.httpMethod = method
+        request.timeoutInterval = requestTimeout
         request.setValue("application/json", forHTTPHeaderField: "content-type")
         request.setValue("application/json", forHTTPHeaderField: "accept")
         if authenticated, let token = authStore.loadToken(), !token.isEmpty {

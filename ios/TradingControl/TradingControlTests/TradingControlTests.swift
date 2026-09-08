@@ -2,8 +2,44 @@ import Foundation
 import Testing
 @testable import TradingControl
 
+private final class RequestCapturingURLProtocol: URLProtocol {
+    static var observedTimeout: TimeInterval?
+
+    override class func canInit(with request: URLRequest) -> Bool { true }
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+
+    override func startLoading() {
+        Self.observedTimeout = request.timeoutInterval
+        let response = HTTPURLResponse(
+            url: request.url!,
+            statusCode: 200,
+            httpVersion: nil,
+            headerFields: ["content-type": "application/json"]
+        )!
+        client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+        client?.urlProtocol(self, didLoad: #"{"authenticated":true,"expires_in":43200}"#.data(using: .utf8)!)
+        client?.urlProtocolDidFinishLoading(self)
+    }
+
+    override func stopLoading() {}
+}
+
 @Test func packageLoads() async throws {
     _ = TradingControlView()
+}
+
+@Test func apiAppliesExplicitRequestTimeout() async throws {
+    let configuration = URLSessionConfiguration.ephemeral
+    configuration.protocolClasses = [RequestCapturingURLProtocol.self]
+    let api = TradingAPI(
+        baseURL: URL(string: "https://example.invalid")!,
+        session: URLSession(configuration: configuration),
+        requestTimeout: 15
+    )
+
+    _ = try await api.login(password: "not-a-real-password")
+
+    #expect(RequestCapturingURLProtocol.observedTimeout == 15)
 }
 
 @Test func trangThaiBotDecodesSnakeCaseBackendPayload() async throws {
