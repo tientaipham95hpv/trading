@@ -642,8 +642,28 @@ class BinanceFuturesAdapter(ExchangeAdapter):
             await self._signed("GET", "/fapi/v1/allOrders", {"symbol": symbol, "limit": limit})
         )
         clients = {str(row.get("orderId")): str(row.get("clientOrderId") or "") for row in orders}
+        # Conditional SL/TP orders submitted through Binance's algo endpoint are
+        # absent from allOrders.  Map their actual fill order back to the bot's
+        # clientAlgoId so history and lifecycle reconciliation retain ownership
+        # and exit reason even when the user stream emits no ORDER_TRADE_UPDATE.
+        algo_orders = list(
+            await self._signed("GET", "/fapi/v1/allAlgoOrders", {"symbol": symbol, "limit": limit})
+        )
+        algo_clients = {
+            str(row.get("actualOrderId")): (
+                str(row.get("clientAlgoId") or ""),
+                str(row.get("orderType") or row.get("type") or ""),
+            )
+            for row in algo_orders
+            if row.get("actualOrderId") not in (None, "")
+        }
         for trade in trades:
-            trade.setdefault("clientOrderId", clients.get(str(trade.get("orderId")), ""))
+            order_id = str(trade.get("orderId"))
+            algo_client_id, algo_order_type = algo_clients.get(order_id, ("", ""))
+            if not trade.get("clientOrderId"):
+                trade["clientOrderId"] = clients.get(order_id, "") or algo_client_id
+            if algo_order_type:
+                trade.setdefault("conditionalOrderType", algo_order_type)
         return trades
 
     async def repair_missing_stop_losses(
@@ -1383,7 +1403,7 @@ class BinanceFuturesAdapter(ExchangeAdapter):
 
     @staticmethod
     def _order_group_id(client_order_id: str) -> str:
-        for marker in ("-tp-", "-sl-", "-be-", "-lock-", "-close"):
+        for marker in ("-tp-", "-sl-", "-be-", "-lock-", "-repair-", "-close"):
             if marker in client_order_id:
                 return client_order_id.split(marker, 1)[0]
         return client_order_id

@@ -129,6 +129,31 @@ class FakeStorage:
         return None
 
 
+async def test_trade_history_maps_algo_fill_to_managed_client_id_and_type():
+    adapter = FakeBinanceAdapter()
+
+    async def signed(_method: str, path: str, _params: dict[str, Any]) -> Any:
+        if path == "/fapi/v1/userTrades":
+            return [{"symbol": "BTCUSDT", "orderId": 77, "id": 88, "clientOrderId": ""}]
+        if path == "/fapi/v1/allOrders":
+            return []
+        if path == "/fapi/v1/allAlgoOrders":
+            return [
+                {
+                    "actualOrderId": 77,
+                    "clientAlgoId": "a-demo-BTCUSDT-abc-sl-0",
+                    "orderType": "STOP_MARKET",
+                }
+            ]
+        raise AssertionError(path)
+
+    adapter._signed = signed  # type: ignore[method-assign]
+    rows = await adapter.trade_history("BTCUSDT")
+
+    assert rows[0]["clientOrderId"] == "a-demo-BTCUSDT-abc-sl-0"
+    assert rows[0]["conditionalOrderType"] == "STOP_MARKET"
+
+
 async def test_three_bot_positions_each_get_individual_protective_stop_recovery_close():
     from app.domain.models import ExchangeOrder, ExchangePosition, ExchangeSnapshot
 

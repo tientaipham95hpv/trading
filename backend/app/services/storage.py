@@ -454,6 +454,25 @@ class Storage:
             ).scalar_one_or_none()
             return row.payload if row is not None else None
 
+    async def lifecycle_open_events_since(
+        self, *, mode: str, since: datetime, limit: int = 100
+    ) -> list[dict[str, Any]]:
+        """Return recent verified opens for read-only exchange fill reconciliation."""
+        async with self.session_factory() as session:
+            rows = (
+                await session.execute(
+                    select(LifecycleAnalyticsEventRow)
+                    .where(
+                        LifecycleAnalyticsEventRow.mode == mode,
+                        LifecycleAnalyticsEventRow.event_type == "OPEN",
+                        LifecycleAnalyticsEventRow.event_at >= since,
+                    )
+                    .order_by(LifecycleAnalyticsEventRow.event_at.asc())
+                    .limit(limit)
+                )
+            ).scalars()
+            return [row.payload for row in rows]
+
     async def latest_symbol_stop_loss(
         self, *, mode: str, symbol: str
     ) -> dict[str, Any] | None:
@@ -637,7 +656,8 @@ class Storage:
                     await session.execute(
                         select(SmartEntryEventRow.event_key, SmartEntryEventRow.decision_at).where(
                             SmartEntryEventRow.mode == mode,
-                            SmartEntryEventRow.payload["version"].as_string() == SMART_ENTRY_AUDIT_VERSION,
+                            SmartEntryEventRow.payload["version"].as_string()
+                            == SMART_ENTRY_AUDIT_VERSION,
                         )
                     )
                 ).all()

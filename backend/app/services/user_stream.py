@@ -1,6 +1,6 @@
 import asyncio
 import json
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import websockets
@@ -22,11 +22,14 @@ class UserStreamWatchdog:
         self.reconnects = 0
         self.events = 0
         self._consecutive_failures = 0
+        self._started_at: datetime | None = None
+        self._history_reconciled_lifecycles: set[str] = set()
 
     def start(self) -> None:
         if self.task and not self.task.done():
             return
         self.running = True
+        self._started_at = datetime.now(UTC)
         self.task = asyncio.create_task(self._run())
 
     async def stop(self) -> None:
@@ -66,7 +69,8 @@ class UserStreamWatchdog:
                 self.last_connected_at = datetime.now(UTC)
                 self.last_error = None
                 self._consecutive_failures = 0
-                await self._reconcile_after_connect(adapter)
+                snapshot = await self._reconcile_after_connect(adapter)
+                await self._reconcile_lifecycle_history_safely(adapter, snapshot)
                 await self.state.storage.log(
                     "User-stream connected",
                     {"mode": self.state.trading_mode.value},
@@ -105,7 +109,7 @@ class UserStreamWatchdog:
                 except asyncio.CancelledError:
                     pass
 
-    async def _reconcile_after_connect(self, adapter: Any) -> None:
+    async def _reconcile_after_connect(self, adapter: Any) -> Any:
         """Reconnect cannot prove that no account events were missed."""
         # DEMO/LIVE positions are authoritative on Binance. ExecutionService is
         # in-memory, so recover positions proven to be bot-managed before the
@@ -149,6 +153,7 @@ class UserStreamWatchdog:
             )
             self.state.enter_safe_mode(reason)
             raise ExchangeError(reason)
+        return snapshot
 
     def _restore_managed_positions(self, snapshot: Any) -> None:
         from uuid import uuid4
@@ -202,7 +207,8 @@ class UserStreamWatchdog:
         keepalive_at = datetime.now(UTC)
         while True:
             await asyncio.sleep(60)
-            await self._reconcile_after_connect(adapter)
+            snapshot = await self._reconcile_after_connect(adapter)
+            await self._reconcile_lifecycle_history_safely(adapter, snapshot)
             if (datetime.now(UTC) - keepalive_at).total_seconds() >= 25 * 60:
                 await adapter.keepalive_user_stream()
                 keepalive_at = datetime.now(UTC)
@@ -223,16 +229,18 @@ class UserStreamWatchdog:
             if event_type == "ORDER_TRADE_UPDATE" and hasattr(adapter, "handle_user_stream_event"):
                 lifecycle_actions = await adapter.handle_user_stream_event(event)
                 lifecycle_fact = _lifecycle_fact(self.state.trading_mode, event)
-                if lifecycle_fact is not None and lifecycle_fact.get("event_type") in {
-                    "PARTIAL_CLOSE",
-                    "CLOSE_FILL",
-                }:
-                    await self._notify_lifecycle(lifecycle_fact)
                 recorder = getattr(self.state.storage, "save_lifecycle_analytics_event", None)
                 if lifecycle_fact is not None and recorder is not None:
-                    await recorder(lifecycle_fact)
+                    recorded = await recorder(lifecycle_fact)
+                    if recorded and lifecycle_fact.get("event_type") in {
+                        "PARTIAL_CLOSE",
+                        "CLOSE_FILL",
+                    }:
+                        await self._log_lifecycle_fill(lifecycle_fact)
+                        await self._notify_lifecycle(lifecycle_fact)
                     if (
-                        lifecycle_fact.get("event_type") == "ENTRY_FILL"
+                        recorded
+                        and lifecycle_fact.get("event_type") == "ENTRY_FILL"
                         and lifecycle_fact.get("order_status") == "FILLED"
                     ):
                         task = asyncio.create_task(
@@ -258,6 +266,85 @@ class UserStreamWatchdog:
                 },
                 level="INFO",
             )
+
+    async def _reconcile_lifecycle_history_safely(self, adapter: Any, snapshot: Any) -> None:
+        """Recover algo SL/TP fills that Binance did not publish on the user stream."""
+        try:
+            await self._reconcile_lifecycle_history(adapter, snapshot)
+        except Exception as exc:  # noqa: BLE001 - audit recovery must not drop the live stream
+            await self.state.storage.log(
+                "Lifecycle fill reconciliation deferred",
+                {"mode": self.state.trading_mode.value, "error": str(exc)},
+                level="WARNING",
+            )
+
+    async def _reconcile_lifecycle_history(self, adapter: Any, snapshot: Any) -> None:
+        reader = getattr(self.state.storage, "lifecycle_open_events_since", None)
+        recorder = getattr(self.state.storage, "save_lifecycle_analytics_event", None)
+        if not callable(reader) or not callable(recorder):
+            return
+        opens = await reader(
+            mode=self.state.trading_mode.value,
+            since=datetime.now(UTC) - timedelta(days=30),
+            limit=100,
+        )
+        open_symbols = {
+            position.symbol for position in snapshot.positions if abs(position.quantity) > 0
+        }
+        by_symbol: dict[str, list[dict[str, object]]] = {}
+        for item in opens:
+            lifecycle_id = str(item.get("lifecycle_id") or "")
+            symbol = str(item.get("symbol") or "").upper()
+            if (
+                not lifecycle_id
+                or not symbol
+                or lifecycle_id in self._history_reconciled_lifecycles
+            ):
+                continue
+            by_symbol.setdefault(symbol, []).append(item)
+
+        for symbol, symbol_opens in by_symbol.items():
+            trades = await adapter.trade_history(symbol, limit=1000)
+            for trade in trades:
+                fact = _history_lifecycle_fact(self.state.trading_mode, trade, symbol_opens)
+                if fact is None:
+                    continue
+                recorded = await recorder(fact)
+                event_at = datetime.fromisoformat(str(fact["event_at"]))
+                is_close = fact.get("event_type") in {"PARTIAL_CLOSE", "CLOSE_FILL"}
+                if recorded and is_close:
+                    await self._log_lifecycle_fill(fact)
+                if (
+                    recorded
+                    and is_close
+                    and self._started_at is not None
+                    and event_at >= self._started_at
+                ):
+                    await self._notify_lifecycle(fact)
+            settled_opens = (
+                symbol_opens
+                if symbol not in open_symbols
+                else sorted(symbol_opens, key=_fact_time)[:-1]
+            )
+            self._history_reconciled_lifecycles.update(
+                str(item.get("lifecycle_id") or "") for item in settled_opens
+            )
+
+    async def _log_lifecycle_fill(self, fact: dict[str, object]) -> None:
+        await self.state.storage.log(
+            "Lifecycle close fill recorded",
+            {
+                "mode": fact.get("mode"),
+                "lifecycle_id": fact.get("lifecycle_id"),
+                "symbol": fact.get("symbol"),
+                "reason": fact.get("reason"),
+                "quantity": fact.get("last_fill_quantity"),
+                "price": fact.get("last_fill_price"),
+                "realized_pnl": fact.get("realized_pnl"),
+                "source": fact.get("source"),
+            },
+            level="INFO",
+        )
 
     async def _notify_lifecycle(self, fact: dict[str, object]) -> None:
         notifications = getattr(self.state, "notifications", None)
@@ -393,6 +480,89 @@ def _lifecycle_fact(mode: TradingMode, event: dict[str, Any]) -> dict[str, objec
         "commission_asset": order.get("N"),
         "source": "BINANCE_USER_STREAM",
     }
+
+
+def _history_lifecycle_fact(
+    mode: TradingMode,
+    trade: dict[str, Any],
+    opens: list[dict[str, object]],
+) -> dict[str, object] | None:
+    """Build the same immutable close fact from Binance's authoritative trade ledger."""
+    client_id = str(trade.get("clientOrderId") or "")
+    order_type = str(trade.get("conditionalOrderType") or "")
+    if not client_id.startswith(("a-demo-", "a-live-", "demo-", "live-")):
+        return None
+    close_markers = ("-tp-", "-sl-", "-be-", "-lock-", "-repair-", "-close")
+    is_entry_client = any(client_id == str(item.get("lifecycle_id") or "") for item in opens)
+    if (
+        not is_entry_client
+        and not order_type
+        and not any(marker in client_id for marker in close_markers)
+    ):
+        return None
+    trade_time = int(trade.get("time") or 0)
+    event_at = datetime.fromtimestamp(trade_time / 1000, UTC) if trade_time else datetime.now(UTC)
+    eligible = [
+        item
+        for item in opens
+        if str(item.get("symbol") or "").upper() == str(trade.get("symbol") or "").upper()
+        and _fact_time(item) <= event_at
+    ]
+    if not eligible:
+        return None
+    lifecycle_id = ""
+    for item in eligible:
+        candidate = str(item.get("lifecycle_id") or "")
+        if client_id == candidate or any(
+            client_id.startswith(f"{candidate}{marker}") for marker in close_markers
+        ):
+            lifecycle_id = candidate
+            break
+    if not lifecycle_id:
+        # Binance limits client IDs to 36 characters; long repair/lock IDs are
+        # suffix-hashed. Time segmentation is the durable fallback association.
+        lifecycle_id = str(max(eligible, key=_fact_time).get("lifecycle_id") or "")
+    reason = (
+        "ENTRY"
+        if is_entry_client
+        else "TAKE_PROFIT"
+        if "TAKE_PROFIT" in order_type or "-tp-" in client_id
+        else "STOP_LOSS"
+        if "STOP" in order_type
+        or any(marker in client_id for marker in ("-sl-", "-be-", "-lock-", "-repair-"))
+        else "MARKET_CLOSE"
+    )
+    order_id = str(trade.get("orderId") or "")
+    trade_id = str(trade.get("id") or trade.get("tradeId") or "")
+    return {
+        "event_key": f"{mode.value}:{order_id}:{trade_id}:FILLED",
+        "mode": mode.value,
+        "lifecycle_id": lifecycle_id,
+        "symbol": str(trade.get("symbol") or ""),
+        "event_type": "ENTRY_FILL" if is_entry_client else "CLOSE_FILL",
+        "event_at": event_at.isoformat(),
+        "reason": reason,
+        "client_order_id": client_id,
+        "order_id": order_id,
+        "trade_id": trade_id,
+        "order_status": "FILLED",
+        "side": str(trade.get("side") or ""),
+        "last_fill_quantity": float(trade.get("qty") or 0),
+        "cumulative_quantity": float(trade.get("qty") or 0),
+        "last_fill_price": float(trade.get("price") or 0),
+        "realized_pnl": float(trade.get("realizedPnl") or 0),
+        "commission": float(trade.get("commission") or 0),
+        "commission_asset": trade.get("commissionAsset"),
+        "source": "BINANCE_TRADE_HISTORY_RECONCILIATION",
+    }
+
+
+def _fact_time(fact: dict[str, object]) -> datetime:
+    value = fact.get("event_at")
+    if isinstance(value, datetime):
+        return value if value.tzinfo else value.replace(tzinfo=UTC)
+    parsed = datetime.fromisoformat(str(value))
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=UTC)
 
 
 def _stop_management_fact(
